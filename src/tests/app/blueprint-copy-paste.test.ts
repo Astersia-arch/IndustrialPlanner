@@ -477,8 +477,10 @@ describe("createMovePreviewBlueprintDocument", () => {
 });
 
 // ─── Phase 2: 全链路 Ctrl+C / Ctrl+V 集成测试 ───
+// AI-CORRECTION 2026-09-27: 本段同时覆盖 Ctrl+X，且三键只在框选模式生效。
+// AI-CORRECTION 2026-09-27: 用户确认 Ctrl+V 在所有画布工具生效；仅 Ctrl+C、Ctrl+X 限定框选模式。
 
-describe("Ctrl+C/Ctrl+V full pipeline", () => {
+describe("Ctrl+C/Ctrl+X/Ctrl+V full pipeline", () => {
   it("2.0: moving multi-selection Ctrl+click restores originals, places one copy and keeps paste armed", () => {
     const workspace = createWorkspace();
     const editorHost = createEditorHost(workspace);
@@ -1014,6 +1016,147 @@ describe("Ctrl+C/Ctrl+V full pipeline", () => {
       // 退出 placement 模式
       appHost.internalActions.setActiveTool("select");
     }
+  });
+
+  it("Ctrl+X removes the selected devices and arms their configuration and links for Ctrl+V", () => {
+    const workspace = createWorkspace();
+    const editorHost = createEditorHost(workspace);
+    editorHost.internalDocument.setSnapshot(createTestDocument({
+      entities: {
+        "unloader-1": {
+          id: "unloader-1",
+          definitionId: "unloader_1",
+          position: { x: 32, y: 26 },
+          rotation: 180,
+          config: { "storageSlotGroups[0].slots[0].ignoreStock": true },
+          tags: ["cut-content"],
+        },
+        "belt-1": {
+          id: "belt-1",
+          definitionId: "belt_straight_1x1",
+          position: { x: 33, y: 26 },
+          rotation: 0,
+          config: {},
+          tags: [],
+        },
+      },
+      entityOrder: ["unloader-1", "belt-1"],
+      slotLinks: [{
+        id: "warehouse-link:unloader-1:unloader_buffer:slot_1",
+        linkType: "share-all",
+        source: { entityId: "unloader-1", storageSlotGroupId: "unloader_buffer", slotId: "slot_1" },
+        target: { entityId: "warehouse", storageSlotGroupId: "warehouse", slotId: "item_originium_ore" },
+      }],
+    }));
+    const appHost = createAppHost(workspace);
+    editorHost.actions.addToCollection({ collectionType: EntityCollectionType.selection, entityId: "unloader-1" });
+    editorHost.actions.addToCollection({ collectionType: EntityCollectionType.selection, entityId: "belt-1" });
+    appHost.internalActions.setActiveTool("marquee");
+
+    const consumed = appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyX", key: "x", keyCode: 88, ctrlKey: true }),
+    );
+
+    expect(consumed).toBe(true);
+    expect(appHost.internalState.activeTool).toBe("blueprint-placement");
+    expect(editorHost.document.getSnapshot().entityOrder).toEqual([]);
+    expect(editorHost.document.getSnapshot().slotLinks).toEqual([]);
+    expect(editorHost.state.collections.preview).toHaveLength(2);
+    const cutRecord = appHost.internalState.runtime.blueprintPlacementRecord;
+    expect(cutRecord?.entityOrder).toEqual(["unloader-1", "belt-1"]);
+    expect(cutRecord?.entities["unloader-1"]?.config).toEqual({
+      "storageSlotGroups[0].slots[0].ignoreStock": true,
+    });
+    expect(cutRecord?.entities["unloader-1"]?.tags).toEqual(["cut-content"]);
+    expect(cutRecord?.slotLinks).toHaveLength(1);
+
+    appHost.internalActions.setActiveTool("select");
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyV", key: "v", keyCode: 86, ctrlKey: true }),
+    )).toBe(true);
+    expect(appHost.internalState.runtime.blueprintPlacementRecord?.blueprintId).toBe(cutRecord?.blueprintId);
+    expect(editorHost.state.collections.preview).toHaveLength(2);
+  });
+
+  it("limits Ctrl+C and Ctrl+X to batch selection while Ctrl+V works in other canvas tools", () => {
+    const workspace = createWorkspace();
+    const editorHost = createEditorHost(workspace);
+    editorHost.internalDocument.setSnapshot(createTestDocument({
+      entities: {
+        "belt-1": {
+          id: "belt-1",
+          definitionId: "belt_straight_1x1",
+          position: { x: 10, y: 10 },
+          rotation: 0,
+          config: {},
+          tags: [],
+        },
+      },
+      entityOrder: ["belt-1"],
+    }));
+    const appHost = createAppHost(workspace);
+    editorHost.actions.addToCollection({ collectionType: EntityCollectionType.selection, entityId: "belt-1" });
+
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyC", key: "c", keyCode: 67, ctrlKey: true }),
+    )).toBe(false);
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyX", key: "x", keyCode: 88, ctrlKey: true }),
+    )).toBe(false);
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyV", key: "v", keyCode: 86, ctrlKey: true }),
+    )).toBe(false);
+    expect(editorHost.document.getSnapshot().entityOrder).toEqual(["belt-1"]);
+
+    appHost.internalActions.setActiveTool("marquee");
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyC", key: "c", keyCode: 67, ctrlKey: true }),
+    )).toBe(true);
+    appHost.internalActions.setActiveTool("select");
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyV", key: "v", keyCode: 86, ctrlKey: true }),
+    )).toBe(true);
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyV", key: "v", keyCode: 86, ctrlKey: true }),
+    )).toBe(true);
+  });
+
+  it("does not cut a mixed selection containing an undeletable protocol core", () => {
+    const workspace = createWorkspace();
+    const editorHost = createEditorHost(workspace);
+    editorHost.internalDocument.setSnapshot(createTestDocument({
+      entities: {
+        core: {
+          id: "core",
+          definitionId: "sp_hub_1",
+          position: { x: 20, y: 20 },
+          rotation: 0,
+          config: {},
+          tags: [],
+        },
+        "belt-1": {
+          id: "belt-1",
+          definitionId: "belt_straight_1x1",
+          position: { x: 30, y: 30 },
+          rotation: 0,
+          config: {},
+          tags: [],
+        },
+      },
+      entityOrder: ["core", "belt-1"],
+    }));
+    const appHost = createAppHost(workspace);
+    expect(workspace.registry.queries.isProtocolCore("sp_hub_1")).toBe(true);
+    editorHost.actions.addToCollection({ collectionType: EntityCollectionType.selection, entityId: "core" });
+    editorHost.actions.addToCollection({ collectionType: EntityCollectionType.selection, entityId: "belt-1" });
+    appHost.internalActions.setActiveTool("marquee");
+
+    expect(appHost.gestureAdapter.handleKeyDown(
+      keyEvent({ code: "KeyX", key: "x", keyCode: 88, ctrlKey: true }),
+    )).toBe(false);
+    expect(editorHost.document.getSnapshot().entityOrder).toEqual(["core", "belt-1"]);
+    expect(appHost.internalState.activeTool).toBe("marquee");
+    expect(appHost.internalState.runtime.blueprintPlacementRecord).toBeNull();
   });
 });
 

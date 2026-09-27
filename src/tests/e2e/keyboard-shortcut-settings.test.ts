@@ -33,7 +33,7 @@ const SCREEN_PROFILES = [
 const EXPECTED_GROUPS = [
   { id: "quick-access", title: "快速访问与面板", actionCount: 6 },
   { id: "placement", title: "放置入口", actionCount: 7 },
-  { id: "operation", title: "当前操作与选区", actionCount: 8 },
+  { id: "operation", title: "当前操作与选区", actionCount: 9 },
   { id: "viewport", title: "视口", actionCount: 5 },
   { id: "history", title: "历史", actionCount: 2 },
 ] as const;
@@ -73,7 +73,8 @@ test("shortcut settings groups actions and resolves conflicts from real route sc
       });
 
       const shortcutDialog = page.locator(".keyboard-shortcut-settings-dialog");
-      await expect(shortcutDialog.locator('[data-shortcut-id][data-slot-index="0"]')).toHaveCount(28);
+      await expect(shortcutDialog.locator('[data-shortcut-id][data-slot-index="0"]')).toHaveCount(29);
+      await expect(primarySlot(page, "shortcut-cut-selection")).toHaveAttribute("aria-label", /剪切选区.*Ctrl\+X/);
       await expect(shortcutDialog.locator("[data-shortcut-group]")).toHaveCount(5);
       for (const groupSpec of EXPECTED_GROUPS) {
         const group = shortcutDialog.locator(`[data-shortcut-group="${groupSpec.id}"]`);

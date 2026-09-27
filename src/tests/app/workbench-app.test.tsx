@@ -2948,9 +2948,10 @@ describe("WorkbenchApp", () => {
     //   "一系列用于调试的设置内容。",
     // ]);
     // AI-CORRECTION 2026-09-09: 设置页现按用户意图拆为系统、显示、交互模式、辅助显示、便捷操作、活动和快捷键。
+    // AI-CORRECTION 2026-09-26: 动画与音效移入常规设置，“显示”同步更名为“显示与性能”。
     expect(groupTitles).toEqual([
       "系统",
-      "显示",
+      "显示与性能",
       "交互模式",
       "辅助显示",
       "便捷操作",
@@ -2961,7 +2962,7 @@ describe("WorkbenchApp", () => {
     ]);
     expect(groupDescriptions).toEqual([
       "语言、主题与全局界面偏好。",
-      "调整设备与画布的外观。",
+      "调整设备与画布的外观、动画和音效。",
       "调整设备选择与属性面板的交互方式。",
       "控制网格、供电范围与物流状态等辅助信息。",
       "提供简化规划操作流程的便捷功能。",
@@ -5150,9 +5151,10 @@ describe("WorkbenchApp", () => {
     // 2026-06-14: system/display 合并，arknights-operation 改为 operation，
     // PWA 移入 other 分组内，快捷键分组 mobileHidden。
     // AI-CORRECTION 2026-09-09: 新分组均在非桌面单栏中展示；仅“显示快捷键”设置项继续保持非桌面隐藏。
+    // AI-CORRECTION 2026-09-26: “显示与性能”在手机单栏中使用相同分组名称。
     expect(groupTitles).toEqual([
       "系统",
-      "显示",
+      "显示与性能",
       "交互模式",
       "辅助显示",
       "便捷操作",

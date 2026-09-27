@@ -87,11 +87,17 @@ describe('建筑高度与端口特效', () => {
     expect(fieldBounds(surface).left).toBeCloseTo(1 - 1 / 128);
   });
 
-  it('按项目坐标契约匹配 Registry，不反转 Registry 或猜测环状态', () => {
-    const scene = resolveBuildingEffectScene({ manifest, definitions, entities: [entity] });
+  it.each([
+    ['transmuter_1_gastrans', 5, 7],
+    ['transmuter_1_liquidtrans', 5, 7],
+    ['shaper_1_gas', 1, 0],
+  ] as const)('%s 按项目坐标契约匹配 Registry，不反转 Registry 或猜测环状态', (definitionId, portCount, ringCount) => {
+    const scene = resolveBuildingEffectScene({ manifest, definitions, entities: [{ ...entity, definitionId }] });
     expect(scene.surfaces).toHaveLength(1);
-    expect(scene.effects).toHaveLength(4);
-    expect(scene.ringEffects).toHaveLength(7);
+    expect(scene.effects).toHaveLength(portCount);
+    expect(scene.portKeys.size).toBe(portCount);
+    expect(new Set(scene.portKeys.values()).size).toBe(portCount);
+    expect(scene.ringEffects).toHaveLength(ringCount);
     expect(scene.issues).toHaveLength(0);
   });
 
@@ -126,9 +132,13 @@ describe('建筑高度与端口特效', () => {
   it.each([
     ['filling_pd_mc_1_liquid', 'fluid_input', 'in_e_2'],
     ['shaper_1_gas', 'gas_input', 'in_e_1'],
-  ])('%s 在新版素材未交付对应模式时不借用其他管道特效', (definitionId) => {
+  ])('%s 缺少对应模式时不借用其他管道特效', (definitionId) => {
+    const fixture = structuredClone(manifest);
+    const view = fixture.views[fixture.definitions[definitionId]!]!;
+    // 显式构造仅含其他模式的交付，避免负例随正式素材补齐而失效。
+    view.variants = { unrelated__0: Object.values(view.variants)[0]! };
     const target: WorldEntity = { ...entity, id: definitionId, definitionId };
-    const scene = resolveBuildingEffectScene({ manifest, definitions, entities: [target] });
+    const scene = resolveBuildingEffectScene({ manifest: fixture, definitions, entities: [target] });
 
     expect(scene.effects).toHaveLength(0);
     expect(scene.issues).toHaveLength(0);
@@ -139,8 +149,9 @@ describe('建筑高度与端口特效', () => {
     const fixture = structuredClone(manifest);
     fixture.views['transmuter_1/top']!.variants['gastrans__0']![0]!.position[0] += 0.125;
     const scene = resolveBuildingEffectScene({ manifest: fixture, definitions, entities: [entity] });
-    expect(scene.effects).toHaveLength(3);
-    expect(scene.issues).toContain('transmuter_1_gastrans/gastrans__0/input:0: source anchor or direction conflicts with Registry');
+    expect(scene.effects).toHaveLength(4);
+    expect(scene.issues).toEqual(['transmuter_1_gastrans/gastrans__0/input:0: source anchor or direction conflicts with Registry']);
+    expect(scene.portKeys.has('device:gastrans__0:input:0')).toBe(false);
   });
 
   it('验证单端口 ON/OFF、反向邻居、实体旋转和移除', () => {
@@ -148,7 +159,7 @@ describe('建筑高度与端口特效', () => {
     const pipe: WorldEntity = { ...entity, id: 'pipe', definitionId: 'pipe_straight_1x1', position: { x: 5, y: 1 }, rotation: 0 };
     const render = (entities: WorldEntity[]) => resolveBuildingEffectScene({ manifest, definitions, entities });
     const disconnected = render([entity]);
-    expect(disconnected.effects).toHaveLength(4);
+    expect(disconnected.effects).toHaveLength(5);
     expect(disconnected.effects.every((effect) => effect.resourceId.includes('pipeoff'))).toBe(true);
     const connected = render([entity, pipe]);
     expect(connected.effects.filter((effect) => effect.resourceId.includes('pipeon'))).toHaveLength(1);
@@ -239,7 +250,9 @@ describe('建筑高度与端口特效', () => {
     const changed = resolveBuildingEffectScene({ manifest: fixture, definitions,
       entities: [{ ...entity, definitionId: 'transmuter_1_liquidtrans' }], ringStatus: new Map([[entity.id, -1]]) });
     expect(changed.effects.filter((effect) => effect.ring)).toHaveLength(0);
-    expect(changed.effects).toHaveLength(0);
+    expect(changed.effects).toHaveLength(5);
+    expect(changed.effects.every((effect) => effect.id.startsWith('device:liquidtrans__0:'))).toBe(true);
+    expect(changed.issues).toHaveLength(0);
   });
 
   it('动画使用逐帧时长，独立于建筑动画帧号', () => {

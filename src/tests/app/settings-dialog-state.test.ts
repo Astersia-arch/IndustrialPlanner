@@ -10,19 +10,23 @@ import {
 import { FORCE_FLATTEN_BLUEPRINT_VERSION_DEBUG_OPTION_ENABLED } from "@/shared/logging/debug-mode-runtime";
 
 describe("WorkbenchSettingsDialogController", () => {
-  it("keeps device audio independent of animation and image style, persists it and honors the experimental master", () => {
+  it("keeps device audio independent of animation, image style and experiments, and persists it", () => {
     const controller = new WorkbenchSettingsDialogController();
     expect(controller.getValue("game-play-device-audio")).toBe(false);
-    expect(controller.isSettingEditable("game-play-device-audio")).toBe(false);
-    controller.updateSwitchValue("other-experimental-features", true);
+    expect(controller.isSettingEditable("game-play-device-audio")).toBe(true);
+    controller.updateSwitchValue("other-experimental-features", false);
     controller.updateSwitchValue("game-play-device-audio", true);
     controller.updateSwitchValue("game-use-blueprint-style-device-images", true);
     expect(controller.isSettingEditable("game-play-device-audio")).toBe(true);
     expect(controller.getValue("game-play-device-audio")).toBe(true);
     const restored = new WorkbenchSettingsDialogController();
     expect(restored.getValue("game-play-device-audio")).toBe(true);
+    restored.updateSwitchValue("other-experimental-features", true);
     restored.updateSwitchValue("other-experimental-features", false);
-    expect(restored.getValue("game-play-device-audio")).toBe(false);
+    expect(restored.getValue("game-play-device-audio")).toBe(true);
+    expect(restored.isSettingEditable("game-play-device-audio")).toBe(true);
+    expect(new WorkbenchSettingsDialogController().getValue("game-play-device-audio")).toBe(true);
+    expect(resolveGroupSettingIds("experimental")).not.toContain("game-play-device-audio");
   });
   afterEach(() => {
     localStorage.clear();
@@ -47,6 +51,8 @@ describe("WorkbenchSettingsDialogController", () => {
       "system-theme",
     ]);
     expect(resolveGroupSettingIds("display")).toEqual([
+      "game-play-device-animations",
+      "game-play-device-audio",
       "game-pipe-wall-reflection",
       "game-use-blueprint-style-device-images",
       "game-show-grass-background",
@@ -350,18 +356,18 @@ describe("WorkbenchSettingsDialogController", () => {
     expect(hydratedController.getValue("game-show-region-annotations")).toBe(false);
   });
 
-  it("places device animation under the experimental gate and preserves it only across blueprint mode", () => {
+  it("places device animation under display and preserves it across blueprint mode and experiment changes", () => {
     const controller = new WorkbenchSettingsDialogController();
     const displayGroup = WORKBENCH_SETTINGS_GROUPS.find((group) => group.id === "display");
     const experimentalGroup = WORKBENCH_SETTINGS_GROUPS.find((group) => group.id === "experimental");
 
-    expect(displayGroup?.items.some((setting) => setting.id === "game-play-device-animations")).toBe(false);
-    expect(experimentalGroup?.items.some((setting) => setting.id === "game-play-device-animations")).toBe(true);
+    expect(displayGroup?.items.some((setting) => setting.id === "game-play-device-animations")).toBe(true);
+    expect(experimentalGroup?.items.some((setting) => setting.id === "game-play-device-animations")).toBe(false);
     expect(controller.getValue("game-play-device-animations")).toBe(false);
-    expect(controller.isSettingEditable("game-play-device-animations")).toBe(false);
+    expect(controller.isSettingEditable("game-play-device-animations")).toBe(true);
 
     controller.updateSwitchValue("game-play-device-animations", true);
-    expect(controller.getValue("game-play-device-animations")).toBe(false);
+    expect(controller.getValue("game-play-device-animations")).toBe(true);
 
     controller.updateSwitchValue("other-experimental-features", true);
     expect(controller.isSettingEditable("game-play-device-animations")).toBe(true);
@@ -383,15 +389,16 @@ describe("WorkbenchSettingsDialogController", () => {
     expect(hydratedController.getValue("game-play-device-animations")).toBe(true);
 
     hydratedController.updateSwitchValue("other-experimental-features", false);
-    expect(hydratedController.isSettingEditable("game-play-device-animations")).toBe(false);
-    expect(hydratedController.getValue("game-play-device-animations")).toBe(false);
+    expect(hydratedController.isSettingEditable("game-play-device-animations")).toBe(true);
+    expect(hydratedController.getValue("game-play-device-animations")).toBe(true);
+    expect(new WorkbenchSettingsDialogController().getValue("game-play-device-animations")).toBe(true);
 
     hydratedController.updateSwitchValue("other-experimental-features", true);
     expect(hydratedController.isSettingEditable("game-play-device-animations")).toBe(true);
-    expect(hydratedController.getValue("game-play-device-animations")).toBe(false);
+    expect(hydratedController.getValue("game-play-device-animations")).toBe(true);
   });
 
-  it("clears the externally bound animation runtime value when experimental features are disabled", () => {
+  it("preserves the externally bound animation runtime value when experimental features are disabled", () => {
     let gameUseBlueprintStyleDeviceImages = false;
     let gamePlayDeviceAnimations = true;
     const controller = new WorkbenchSettingsDialogController({
@@ -415,8 +422,8 @@ describe("WorkbenchSettingsDialogController", () => {
       },
     });
 
-    expect(gamePlayDeviceAnimations).toBe(false);
-    expect(controller.isSettingEditable("game-play-device-animations")).toBe(false);
+    expect(gamePlayDeviceAnimations).toBe(true);
+    expect(controller.isSettingEditable("game-play-device-animations")).toBe(true);
 
     controller.updateSwitchValue("other-experimental-features", true);
     controller.updateSwitchValue("game-play-device-animations", true);
@@ -433,8 +440,8 @@ describe("WorkbenchSettingsDialogController", () => {
     expect(controller.getValue("game-play-device-animations")).toBe(true);
 
     controller.updateSwitchValue("other-experimental-features", false);
-    expect(gamePlayDeviceAnimations).toBe(false);
-    expect(controller.isSettingEditable("game-play-device-animations")).toBe(false);
+    expect(gamePlayDeviceAnimations).toBe(true);
+    expect(controller.isSettingEditable("game-play-device-animations")).toBe(true);
   });
 
   it("resets every experimental setting to its default when the master switch is disabled", () => {
@@ -517,7 +524,7 @@ describe("WorkbenchSettingsDialogController", () => {
       expect(controller.getValue(setting.id)).toBe(setting.defaultValue);
       expect(controller.isSettingEditable(setting.id)).toBe(false);
     }
-    expect(gamePlayDeviceAnimations).toBe(false);
+    expect(gamePlayDeviceAnimations).toBe(true);
     expect(syncProvider).toBe("none");
     expect(regionalMultiBase).toBe(false);
     expect(virtualMousePointer).toBe(false);

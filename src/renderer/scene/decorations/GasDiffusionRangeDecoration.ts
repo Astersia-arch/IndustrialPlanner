@@ -1,4 +1,4 @@
-import { Graphics } from "pixi.js";
+import { Container, Graphics } from "pixi.js";
 
 import type { WorldEntity } from "@/domain/document/world-document";
 import { EntityCollectionType } from "@/domain/editor/types/editor-types";
@@ -22,6 +22,7 @@ import {
   resolveMarqueeGridRectLayout,
   resolveWorldAuxiliaryStrokeWidth,
 } from "./MarqueeRectDecoration";
+import { GasEnvironmentAnimation } from "./GasEnvironmentAnimation";
 
 const GAS_RANGE_STROKE_ALPHA = 0.86;
 const GAS_RANGE_FILL_ALPHA = 0.07;
@@ -47,7 +48,12 @@ const GAS_RANGE_PREVIEW_COLOR = 0x66cc66;
 // const LIQUID_COLOR_TAG_PREFIX = "liquid_color:";
 
 export function createGasDiffusionRangeDecoration(): DecorationLayer {
+  const container = new Container();
+  container.label = "gas-diffusion-range";
+  const previewGraphics = new Graphics({ roundPixels: true });
   const graphics = new Graphics({ roundPixels: true });
+  const animation = new GasEnvironmentAnimation();
+  container.addChild(previewGraphics, graphics, animation.container);
   // AI-REMOVED 2026-09-14:
   // Reason: Registry 已提供按 ID 精确查询，无需为颜色 tag 另建物品索引。
   // Trigger: 气体范围改为读取 ItemDefinition.fluidColors。
@@ -62,8 +68,10 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
   let cachedViewportLayoutState: GasDiffusionViewportLayoutState | null = null;
   let cachedPreviewStamp: GasDiffusionPreviewStamp | null = null;
   let graphicsHasContent = false;
+  let previewGraphicsHasContent = false;
 
   // ---- 活跃气体范围渲染（实色，仿真中） ----
+  // AI-CORRECTION 2026-09-26：工作中的范围仅在动画素材尚未就绪或不支持 WebGL2 时使用实色矩形兜底。
 
   function syncActiveGasRanges(
     ctx: DecorationSyncContext,
@@ -150,23 +158,22 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
 
     cachedGasDiffusions = activeGasDiffusions;
     cachedViewportLayoutState = captureGasDiffusionViewportLayoutState(ctx);
-    cachedPreviewStamp = null;
   }
 
   // ---- 预览气体范围渲染（半透明，无仿真/无活跃气体时） ----
+  // AI-CORRECTION 2026-09-26：预览矩形按设备绘制；即使其他设备正在工作，未工作设备与摆放虚影仍保留矩形。
 
   function syncPreviewGasRanges(
     ctx: DecorationSyncContext,
     hiddenEntityIds: ReadonlySet<string>,
+    activeDeviceIds: ReadonlySet<string>,
   ): void {
     const editor = ctx.renderHost.workspace.editor;
     if (!editor) {
-      if (graphicsHasContent) {
-        graphics.clear();
-        graphicsHasContent = false;
+      if (previewGraphicsHasContent) {
+        previewGraphics.clear();
+        previewGraphicsHasContent = false;
       }
-      cachedGasDiffusions = null;
-      cachedViewportLayoutState = null;
       cachedPreviewStamp = null;
       return;
     }
@@ -186,19 +193,20 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
       entityDefinitionMap,
       gasDiffusionRangeByMachineId,
     );
+    if (previewRanges.length > 0 && ctx.renderHost.textureManager.supportsLogisticsAnimation()) {
+      animation.prepare(ctx);
+    }
 
     if (previewRanges.length === 0) {
-      if (graphicsHasContent) {
-        graphics.clear();
-        graphicsHasContent = false;
+      if (previewGraphicsHasContent) {
+        previewGraphics.clear();
+        previewGraphicsHasContent = false;
       }
-      cachedGasDiffusions = null;
-      cachedViewportLayoutState = null;
       cachedPreviewStamp = null;
       return;
     }
 
-    const nextStamp = captureGasDiffusionPreviewStamp(entities, ctx);
+    const nextStamp = captureGasDiffusionPreviewStamp(entities, ctx, activeDeviceIds);
     if (
       cachedPreviewStamp !== null
       && haveSamePreviewStamp(cachedPreviewStamp, nextStamp)
@@ -206,9 +214,9 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
       return;
     }
 
-    if (graphicsHasContent) {
-      graphics.clear();
-      graphicsHasContent = false;
+    if (previewGraphicsHasContent) {
+      previewGraphics.clear();
+      previewGraphicsHasContent = false;
     }
 
     const visibleGridRect = visibleWorldRectToGridRect(
@@ -219,6 +227,9 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
       * GAS_RANGE_PREVIEW_STROKE_WIDTH_SCALE;
 
     for (const range of previewRanges) {
+      if (activeDeviceIds.has(`device:${range.entityId}`)) {
+        continue;
+      }
       if (!areGridRectsIntersecting(range.gridRect, visibleGridRect)) {
         continue;
       }
@@ -238,23 +249,21 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
         continue;
       }
 
-      graphics
+      previewGraphics
         .rect(layout.x, layout.y, layout.width, layout.height)
         .stroke({
           width: strokeWidth,
           color: GAS_RANGE_PREVIEW_COLOR,
           alpha: GAS_RANGE_PREVIEW_STROKE_ALPHA,
         });
-      graphicsHasContent = true;
+      previewGraphicsHasContent = true;
     }
 
-    cachedGasDiffusions = null;
-    cachedViewportLayoutState = null;
     cachedPreviewStamp = nextStamp;
   }
 
   return {
-    container: graphics,
+    container,
 
     sync(ctx: DecorationSyncContext): void {
       // AI-REMOVED 2026-08-22:
@@ -286,23 +295,27 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
       );
 
       const simulation = workspace.simulation;
-      const activeGasDiffusions = simulation?.queries.getActiveGasDiffusionRanges() ?? [];
+      const hiddenDeviceIds = new Set([...hiddenEntityIds].map((id) => `device:${id}`));
+      const activeGasDiffusions = simulation?.state.runningState === "start"
+        ? simulation.queries.getActiveGasDiffusionRanges().filter(
+          (range) => !hiddenDeviceIds.has(range.sourceDeviceId),
+        )
+        : [];
+      const supportsAnimation = ctx.renderHost.textureManager.supportsLogisticsAnimation();
+      const animatedRanges = supportsAnimation ? activeGasDiffusions : [];
+      const activeDeviceIds = new Set(activeGasDiffusions.map((range) => range.sourceDeviceId));
 
-      if (activeGasDiffusions.length > 0) {
-        syncActiveGasRanges(
-          ctx,
-          activeGasDiffusions.filter(
-            (range) => !hiddenEntityIds.has(range.sourceDeviceId),
-          ),
-        );
-        return;
-      }
+      syncPreviewGasRanges(ctx, hiddenEntityIds, activeDeviceIds);
+      animation.sync(ctx, animatedRanges);
+      syncActiveGasRanges(ctx, supportsAnimation && animation.isReady ? [] : activeGasDiffusions);
 
-      syncPreviewGasRanges(ctx, hiddenEntityIds);
     },
 
     destroy(): void {
+      animation.destroy();
+      previewGraphics.destroy();
       graphics.destroy();
+      container.destroy();
     },
   };
 }
@@ -310,6 +323,7 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
 interface GasDiffusionPreviewStamp {
   readonly entityCount: number;
   readonly entityVersion: number;
+  readonly activeDeviceIds: string;
   readonly centerX: number;
   readonly centerY: number;
   readonly gridCellPixelSize: number;
@@ -317,6 +331,7 @@ interface GasDiffusionPreviewStamp {
 }
 
 interface EditorGasPreviewRange {
+  readonly entityId: string;
   readonly gridRect: GridRect;
 }
 
@@ -363,7 +378,7 @@ function resolveEditorGasPreviewRanges(
       continue;
     }
 
-    ranges.push({ gridRect });
+    ranges.push({ entityId: entity.id, gridRect });
   }
 
   return ranges;
@@ -388,6 +403,7 @@ function buildGasDiffusionRangeByMachineId(
 function captureGasDiffusionPreviewStamp(
   entities: readonly WorldEntity[],
   ctx: DecorationSyncContext,
+  activeDeviceIds: ReadonlySet<string>,
 ): GasDiffusionPreviewStamp {
   let entityVersion = 0;
   for (const entity of entities) {
@@ -401,6 +417,7 @@ function captureGasDiffusionPreviewStamp(
   return {
     entityCount: entities.length,
     entityVersion,
+    activeDeviceIds: [...activeDeviceIds].sort().join("\u0000"),
     centerX: ctx.viewportState.centerX,
     centerY: ctx.viewportState.centerY,
     gridCellPixelSize: ctx.viewportState.gridCellPixelSize,
@@ -414,6 +431,7 @@ function haveSamePreviewStamp(
 ): boolean {
   return left.entityCount === right.entityCount
     && left.entityVersion === right.entityVersion
+    && left.activeDeviceIds === right.activeDeviceIds
     && left.centerX === right.centerX
     && left.centerY === right.centerY
     && left.gridCellPixelSize === right.gridCellPixelSize

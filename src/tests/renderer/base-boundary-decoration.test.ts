@@ -140,13 +140,14 @@ describe("BaseBoundaryDecoration", () => {
     const draftBox = createRegistryContract().baseDefinitions.find(
       (definition) => definition.id === "draft_box",
     )!
+    // 当前零核心分区以 (-60, -60) 为原点，四侧各扩展 20 格；与 Registry 和 base-areas 契约一致。
     expect(resolveBaseBoundaryGridRects(draftBox)).toEqual([
       { x: 0, y: 0, width: 320, height: 320 },
-      { x: -60, y: -60, width: 20, height: 20 },
+      { x: -80, y: -80, width: 40, height: 40 },
     ])
     expect(resolveBaseOuterGridRects(draftBox)).toEqual([
       { x: -20, y: -20, width: 360, height: 360 },
-      { x: -60, y: -60, width: 20, height: 20 },
+      { x: -80, y: -80, width: 40, height: 40 },
     ])
   })
 

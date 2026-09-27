@@ -61,7 +61,7 @@ describe("keyboard shortcut real-route matrix", () => {
     }
   });
 
-  it("keeps the core R, Ctrl+R, G and Ctrl+V scope relationships explicit", () => {
+  it("keeps the core R, Ctrl+R, G and clipboard scope relationships explicit", () => {
     const appHost = createTrackedAppHost(appHosts);
     const routes = appHost.gestureActionRouter.getRegisteredShortcutRoutes();
 
@@ -77,6 +77,8 @@ describe("keyboard shortcut real-route matrix", () => {
       "select",
     ]);
     expect(collectCanvasTools(routes, SHORTCUT_KEY.RESOURCES_POWER)).toEqual(["select"]);
+    expect(collectCanvasTools(routes, SHORTCUT_KEY.COPY_SELECTION)).toEqual(["marquee"]);
+    expect(collectCanvasTools(routes, SHORTCUT_KEY.CUT_SELECTION)).toEqual(["marquee"]);
     expect(collectCanvasTools(routes, SHORTCUT_KEY.PASTE_SELECTION)).toEqual([
       "blueprint-placement",
       "dark-pipe-link",
@@ -110,7 +112,7 @@ describe("keyboard shortcut real-route matrix", () => {
     })).toEqual([]);
   });
 
-  it("explains why changing current-operation rotation to V really conflicts with Ctrl+V", () => {
+  it("reports the overlap between current-operation rotation V and Ctrl+V paste", () => {
     const appHost = createTrackedAppHost(appHosts);
 
     expect(appHost.gestureActionRouter.findShortcutConflicts({
@@ -133,7 +135,7 @@ describe("keyboard shortcut real-route matrix", () => {
     ]);
   });
 
-  it("loads an existing hard conflict without invalidating either stored action", () => {
+  it("reports the overlap between delete F and Ctrl+F paste in move mode", () => {
     persistShortcuts({
       [SHORTCUT_KEY.DELETE_DEVICE]: "F",
       [SHORTCUT_KEY.PASTE_SELECTION]: "Ctrl+F",

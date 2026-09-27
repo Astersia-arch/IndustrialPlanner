@@ -282,13 +282,17 @@ describe("createBeltCargoDecoration", () => {
   it("draws the moving cargo box and only requests each item icon once", async () => {
     const decoration = createBeltCargoDecoration()
     const iconTexture = createIconTexture(32, 32)
-    const getTexture = vi.fn().mockResolvedValue(iconTexture)
+    const publishedBoxTexture = createIconTexture(128, 128)
+    const getTexture = vi.fn(async (key: string) => (
+      key === "belt-cargo-box" ? publishedBoxTexture : iconTexture
+    ))
     const ctx = createContext({ getTexture })
 
     decoration.sync(ctx as never)
     decoration.sync(ctx as never)
 
-    expect(getTexture).toHaveBeenCalledTimes(1)
+    expect(getTexture).toHaveBeenCalledTimes(2)
+    expect(getTexture).toHaveBeenCalledWith("belt-cargo-box")
     expect(getTexture).toHaveBeenCalledWith("item-icon-item_iron_ore")
 
     const cargoRoot = resolveCargoRoot(decoration, 0)
@@ -356,7 +360,10 @@ describe("createBeltCargoDecoration", () => {
       width: number;
       height: number;
     }
-    expect(updatedBoxSprite.texture).not.toBeNull()
+    expect(updatedBoxSprite.texture).toBe(publishedBoxTexture)
+    // 发布纹理的一格画布中，盒子只占半格；画布需放大两倍，保持可见盒宽不变。
+    expect(updatedBoxSprite.width).toBeCloseTo(boxSize * 2)
+    expect(updatedBoxSprite.height).toBeCloseTo(boxSize * 2)
 
     expect(sprite.visible).toBe(true)
     expect(sprite.texture).not.toBe(iconTexture)
@@ -387,8 +394,12 @@ describe("createBeltCargoDecoration", () => {
 
     const resizedBoxSize = resolveBeltCargoBoxSize(100.1)
     expect(renderer.generateTexture).toHaveBeenCalledTimes(1)
-    expect(boxSprite.width).toBeCloseTo(resizedBoxSize)
-    expect(boxSprite.height).toBeCloseTo(resizedBoxSize)
+    expect(boxSprite.width).toBeCloseTo(resizedBoxSize * 2)
+    expect(boxSprite.height).toBeCloseTo(resizedBoxSize * 2)
+    expect(getTexture.mock.calls.map(([key]) => key).sort()).toEqual([
+      "belt-cargo-box",
+      "item-icon-item_iron_ore",
+    ])
 
     decoration.destroy()
   })

@@ -125,9 +125,9 @@ for (const profile of SCREEN_PROFILES) {
 async function installSettingsEnvironment(page: Page, isMobile: boolean): Promise<void> {
   await page.addInitScript((mobile) => {
     localStorage.setItem("v3-user-settings-dialog", JSON.stringify({
-      selectedGroupId: "experimental",
+      selectedGroupId: "display",
       values: {
-        "other-experimental-features": true,
+        "other-experimental-features": false,
       },
     }));
 

@@ -12,9 +12,21 @@ const graphicsTestState = vi.hoisted(() => ({
     destroy: ReturnType<typeof vi.fn>;
   }>,
 }));
+const animationTestState = vi.hoisted(() => ({
+  ready: false,
+  instances: [] as Array<{
+    prepare: ReturnType<typeof vi.fn>;
+    sync: ReturnType<typeof vi.fn>;
+    destroy: ReturnType<typeof vi.fn>;
+  }>,
+}));
 
 vi.mock("pixi.js", () => ({
   BlurFilter: class {},
+  Container: class {
+    public readonly addChild = vi.fn();
+    public readonly destroy = vi.fn();
+  },
   Graphics: class {
     public readonly clear = vi.fn();
     public readonly rect = vi.fn().mockReturnThis();
@@ -27,6 +39,22 @@ vi.mock("pixi.js", () => ({
     }
   },
 }));
+vi.mock("@/renderer/scene/decorations/GasEnvironmentAnimation", () => ({
+  GasEnvironmentAnimation: class {
+    public readonly container = {};
+    public readonly prepare = vi.fn();
+    public readonly sync = vi.fn();
+    public readonly destroy = vi.fn();
+
+    public constructor() {
+      animationTestState.instances.push(this);
+    }
+
+    public get isReady(): boolean {
+      return animationTestState.ready;
+    }
+  },
+}));
 
 import {
   createGasDiffusionRangeDecoration,
@@ -36,8 +64,11 @@ import {
 describe("GasDiffusionRangeDecoration", () => {
   beforeEach(() => {
     graphicsTestState.instances.length = 0;
+    animationTestState.instances.length = 0;
+    animationTestState.ready = false;
   });
 
+  // AI-CORRECTION 2026-09-26：此断言覆盖素材尚未就绪时的活跃矩形兜底；素材就绪时由动画取代。
   it("reads Registry body color only when ranges or viewport change", () => {
     const findItemDefinition = vi.fn(() => ({
       fluidColors: { body: "#00d5ff", skin: "#6bf7ff" },
@@ -52,7 +83,7 @@ describe("GasDiffusionRangeDecoration", () => {
       })),
     });
     const decoration = createGasDiffusionRangeDecoration();
-    const graphics = graphicsTestState.instances[0]!;
+    const graphics = graphicsTestState.instances[1]!;
 
     decoration.sync(ctx);
     expect(graphics.rect).toHaveBeenCalledTimes(1);
@@ -120,15 +151,15 @@ describe("GasDiffusionRangeDecoration", () => {
     const ctx = createContext({
       itemDefinitions: [],
       getRanges: () => [
-        createRange(0, 0, "selected-device"),
-        createRange(10, 0, "unselected-device"),
+        createRange(0, 0, "device:selected-device"),
+        createRange(10, 0, "device:unselected-device"),
       ],
       getMoveKind: () => moveKind,
       getGhostIds: () => ["selected-device"],
       getPreviewIds: () => ["selected-device:draft"],
     });
     const decoration = createGasDiffusionRangeDecoration();
-    const graphics = graphicsTestState.instances[0]!;
+    const graphics = graphicsTestState.instances[1]!;
 
     decoration.sync(ctx);
     expect(graphics.rect).toHaveBeenCalledTimes(2);
@@ -151,18 +182,145 @@ describe("GasDiffusionRangeDecoration", () => {
   it("does not enter editor preview mode when every active range is moved", () => {
     const ctx = createContext({
       itemDefinitions: [],
-      getRanges: () => [createRange(0, 0, "selected-device")],
+      getRanges: () => [createRange(0, 0, "device:selected-device")],
       getMoveKind: () => "batch",
       getGhostIds: () => ["selected-device"],
       getPreviewIds: () => ["selected-device:draft"],
     });
     const decoration = createGasDiffusionRangeDecoration();
-    const graphics = graphicsTestState.instances[0]!;
+    const graphics = graphicsTestState.instances[1]!;
 
     decoration.sync(ctx);
 
     expect(graphics.rect).not.toHaveBeenCalled();
     expect(graphics.clear).not.toHaveBeenCalled();
+  });
+
+  it("keeps placed and draft rectangles before simulation and while idle", () => {
+    let runningState: "stop" | "start" = "stop";
+    const ctx = createContext({
+      itemDefinitions: [],
+      getRanges: () => [],
+      getRunningState: () => runningState,
+      entities: [createEntity("placed", 0), createEntity("draft", 18)],
+    });
+    const decoration = createGasDiffusionRangeDecoration();
+    const preview = graphicsTestState.instances[0]!;
+    const active = graphicsTestState.instances[1]!;
+    const animation = animationTestState.instances[0]!;
+
+    decoration.sync(ctx);
+    expect(graphicsTestState.instances).toHaveLength(2);
+    expect(preview.rect).toHaveBeenCalledTimes(2);
+    expect(active.rect).not.toHaveBeenCalled();
+    expect(preview.fill).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+
+    runningState = "start";
+    decoration.sync(ctx);
+    expect(preview.rect).toHaveBeenCalledTimes(2);
+    expect(active.rect).not.toHaveBeenCalled();
+    expect(preview.fill).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+  });
+
+  it("switches each working device to animation and restores its rectangle when stopped", () => {
+    let runningState: "stop" | "start" = "stop";
+    let working = true;
+    animationTestState.ready = true;
+    const ctx = createContext({
+      itemDefinitions: [],
+      getRanges: () => working ? [createRange(0, 0, "device:working")] : [],
+      getRunningState: () => runningState,
+      entities: [createEntity("working", 0), createEntity("idle", 18)],
+    });
+    const decoration = createGasDiffusionRangeDecoration();
+    const preview = graphicsTestState.instances[0]!;
+    const fallback = graphicsTestState.instances[1]!;
+    const animation = animationTestState.instances[0]!;
+
+    decoration.sync(ctx);
+    expect(preview.rect).toHaveBeenCalledTimes(2);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+
+    runningState = "start";
+    decoration.sync(ctx);
+    expect(preview.clear).toHaveBeenCalledTimes(1);
+    expect(preview.rect).toHaveBeenCalledTimes(3);
+    expect(fallback.rect).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [createRange(0, 0, "device:working")]);
+
+    working = false;
+    decoration.sync(ctx);
+    expect(preview.clear).toHaveBeenCalledTimes(2);
+    expect(preview.rect).toHaveBeenCalledTimes(5);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+
+    working = true;
+    runningState = "stop";
+    decoration.sync(ctx);
+    expect(preview.rect).toHaveBeenCalledTimes(5);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+  });
+
+  it("uses the solid rectangle only while animation is unavailable", () => {
+    let supportsAnimation = true;
+    const activeRange = createRange(0, 0, "device:working");
+    const ctx = createContext({
+      itemDefinitions: [],
+      getRanges: () => [activeRange],
+      getSupportsAnimation: () => supportsAnimation,
+      entities: [createEntity("working", 0)],
+    });
+    const decoration = createGasDiffusionRangeDecoration();
+    const preview = graphicsTestState.instances[0]!;
+    const fallback = graphicsTestState.instances[1]!;
+    const animation = animationTestState.instances[0]!;
+
+    decoration.sync(ctx);
+    expect(preview.rect).not.toHaveBeenCalled();
+    expect(fallback.rect).toHaveBeenCalledTimes(1);
+    expect(fallback.fill).toHaveBeenCalledTimes(1);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [activeRange]);
+
+    animationTestState.ready = true;
+    decoration.sync(ctx);
+    expect(preview.rect).not.toHaveBeenCalled();
+    expect(fallback.clear).toHaveBeenCalledTimes(1);
+    expect(fallback.rect).toHaveBeenCalledTimes(1);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [activeRange]);
+
+    supportsAnimation = false;
+    decoration.sync(ctx);
+    expect(preview.rect).not.toHaveBeenCalled();
+    expect(fallback.rect).toHaveBeenCalledTimes(2);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+  });
+
+  it("hides only the moved machine and keeps other working animations", () => {
+    let moveKind: "ordinary" | "batch" = "ordinary";
+    const selected = createRange(0, 0, "device:selected");
+    const unselected = createRange(18, 0, "device:unselected");
+    const ctx = createContext({
+      itemDefinitions: [],
+      getRanges: () => [selected, unselected],
+      getMoveKind: () => moveKind,
+      getGhostIds: () => ["selected"],
+      getPreviewIds: () => ["selected:draft"],
+      entities: [createEntity("selected", 0), createEntity("unselected", 18)],
+    });
+    const decoration = createGasDiffusionRangeDecoration();
+    const preview = graphicsTestState.instances[0]!;
+    const animation = animationTestState.instances[0]!;
+
+    decoration.sync(ctx);
+    expect(preview.rect).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [selected, unselected]);
+
+    moveKind = "batch";
+    decoration.sync(ctx);
+    expect(preview.rect).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [unselected]);
   });
 });
 
@@ -174,6 +332,17 @@ function createRange(x: number, y: number, sourceDeviceId = "device:vaporizer") 
   };
 }
 
+function createEntity(id: string, x: number) {
+  return {
+    id,
+    definitionId: "vaporizer_1",
+    position: { x, y: 0 },
+    rotation: 0,
+    config: {},
+    tags: [],
+  };
+}
+
 function createContext(options: {
   itemDefinitions: readonly unknown[];
   getRanges: () => ReturnType<typeof createRange>[];
@@ -181,6 +350,9 @@ function createContext(options: {
   getMoveKind?: () => "ordinary" | "batch" | null;
   getGhostIds?: () => readonly string[];
   getPreviewIds?: () => readonly string[];
+  getRunningState?: () => "start" | "stop";
+  getSupportsAnimation?: () => boolean;
+  entities?: readonly ReturnType<typeof createEntity>[];
 }): DecorationSyncContext {
   return {
     viewportState: {
@@ -199,6 +371,9 @@ function createContext(options: {
       height: 600,
     },
     renderHost: {
+      textureManager: {
+        supportsLogisticsAnimation: () => options.getSupportsAnimation?.() ?? true,
+      },
       workspace: {
         app: {
           state: {
@@ -209,19 +384,30 @@ function createContext(options: {
         },
         registry: {
           itemDefinitions: options.itemDefinitions,
+          entityDefinitions: [{ id: "vaporizer_1", footprint: { width: 2, height: 2 } }],
+          recipeDefinitions: [{ machineId: "vaporizer_1", gasDiffusionOutput: { range: 13 } }],
           queries: {
             findItemDefinition: options.findItemDefinition ?? (() => null),
           },
         },
         simulation: {
+          state: {
+            get runningState() {
+              return options.getRunningState?.() ?? "start";
+            },
+          },
           queries: {
             getActiveGasDiffusionRanges: options.getRanges,
           },
         },
         editor: options.getGhostIds === undefined
           && options.getPreviewIds === undefined
+          && options.entities === undefined
           ? undefined
           : {
+              queries: {
+                listEntities: () => options.entities ?? [],
+              },
               state: {
                 collections: {
                   get [EntityCollectionType.ghost]() {

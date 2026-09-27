@@ -393,6 +393,24 @@ export const WORKBENCH_SETTINGS_GROUPS: readonly WorkbenchSettingsGroupDefinitio
     descriptionKey: "settingsGroup.displayDescription",
     items: [
       {
+        id: DEVICE_ANIMATIONS_SETTING_ID,
+        kind: "switch",
+        labelKey: "settingsField.game-play-device-animations",
+        descriptionKey: "settingsField.game-play-device-animationsDescription",
+        defaultValue: false,
+        editableWhen: {
+          settingId: SIMPLIFIED_DEVICE_ICONS_SETTING_ID,
+          equals: false,
+        },
+      },
+      {
+        id: "game-play-device-audio",
+        kind: "switch",
+        labelKey: "settingsField.game-play-device-audio",
+        descriptionKey: "settingsField.game-play-device-audioDescription",
+        defaultValue: false,
+      },
+      {
         id: "game-pipe-wall-reflection",
         kind: "switch",
         labelKey: "settingsField.game-pipe-wall-reflection",
@@ -911,31 +929,40 @@ export const WORKBENCH_SETTINGS_GROUPS: readonly WorkbenchSettingsGroupDefinitio
       //     equals: true,
       //   },
       // },
-      {
-        id: DEVICE_ANIMATIONS_SETTING_ID,
-        kind: "switch",
-        labelKey: "settingsField.game-play-device-animations",
-        descriptionKey: "settingsField.game-play-device-animationsDescription",
-        defaultValue: false,
-        editableWhen: [
-          {
-            settingId: EXPERIMENTAL_FEATURES_SETTING_ID,
-            equals: true,
-          },
-          {
-            settingId: SIMPLIFIED_DEVICE_ICONS_SETTING_ID,
-            equals: false,
-          },
-        ],
-      },
-      {
-        id: "game-play-device-audio",
-        kind: "switch",
-        labelKey: "settingsField.game-play-device-audio",
-        descriptionKey: "settingsField.game-play-device-audioDescription",
-        defaultValue: false,
-        editableWhen: { settingId: EXPERIMENTAL_FEATURES_SETTING_ID, equals: true },
-      },
+      // AI-REMOVED 2026-09-26:
+      // Reason: 设备动画与音效已移入常规显示设置，不再受实验总开关控制或重置。
+      // Trigger: 用户要求将两项移入“显示与性能”。
+      // Evidence: 实验分组统一决定准入与默认值重置，运行时直接读取现有设置字段。
+      // Replacement: WORKBENCH_SETTINGS_GROUPS 的 display 分组。
+      // Risk: Low；保留设置 ID、默认值与动画的蓝图样式互斥条件。
+      // Human Review: Required
+      //
+      // Original code:
+      // {
+      //   id: DEVICE_ANIMATIONS_SETTING_ID,
+      //   kind: "switch",
+      //   labelKey: "settingsField.game-play-device-animations",
+      //   descriptionKey: "settingsField.game-play-device-animationsDescription",
+      //   defaultValue: false,
+      //   editableWhen: [
+      //     {
+      //       settingId: EXPERIMENTAL_FEATURES_SETTING_ID,
+      //       equals: true,
+      //     },
+      //     {
+      //       settingId: SIMPLIFIED_DEVICE_ICONS_SETTING_ID,
+      //       equals: false,
+      //     },
+      //   ],
+      // },
+      // {
+      //   id: "game-play-device-audio",
+      //   kind: "switch",
+      //   labelKey: "settingsField.game-play-device-audio",
+      //   descriptionKey: "settingsField.game-play-device-audioDescription",
+      //   defaultValue: false,
+      //   editableWhen: { settingId: EXPERIMENTAL_FEATURES_SETTING_ID, equals: true },
+      // },
       {
         id: "sync-provider",
         kind: "select",

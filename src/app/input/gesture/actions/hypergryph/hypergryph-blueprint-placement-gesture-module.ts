@@ -12,6 +12,17 @@ import type { GridPoint } from "@/domain/shared/grid";
 import type { BlueprintLibraryRecord } from "@/shared/blueprints/blueprint-library";
 
 import type { GestureActionContext, GestureHandleResult, GestureMappingModule } from "../types";
+// AI-REMOVED 2026-09-27:
+// Reason: 复制、剪切和粘贴选区统一只在框选工具生效，不再需要全工具作用域常量。
+// Trigger: 用户要求 Ctrl+C、Ctrl+X、Ctrl+V 仅在批量选择模式生效。
+// Evidence: 下方三个临时蓝图 Shortcut Route 的 activeTools 均为 marquee。
+// Replacement: shortcutRoutes[temp-blueprint.copy/temp-blueprint.cut/temp-blueprint.paste] in this file
+// Risk: Low
+// Human Review: Required
+//
+// Original code:
+// import { ALL_SHORTCUT_ACTIVE_TOOLS } from "../shortcut-route-matching";
+// AI-CORRECTION 2026-09-27: 用户确认 Ctrl+V 必须覆盖全部画布工具；上方删除记录已失效，恢复该导入。
 import { ALL_SHORTCUT_ACTIVE_TOOLS } from "../shortcut-route-matching";
 // AI-REMOVED 2026-09-10:
 // Reason: 操作模式总开关已废弃，不再保留关闭分支
@@ -97,6 +108,59 @@ export function createHypergryphBlueprintPlacementGestureModule(): GestureMappin
         },
       },
       {
+        id: "temp-blueprint.cut",
+        actionId: SHORTCUT_KEY.CUT_SELECTION,
+        binding: { kind: "configurable", shortcutId: SHORTCUT_KEY.CUT_SELECTION },
+        scope: { inputLayers: ["canvas"], activeTools: ["marquee"] },
+        triggerPolicy: { kind: "exact" },
+        claimsBrowserDefault: true,
+        handle(_event, context) {
+          const editor = context.workspace.editor;
+          if (editor === null) return { status: "ignored" };
+
+          const selectionIds = [...editor.state.collections.selection];
+          const currentDocument = editor.document.getSnapshot();
+          if (
+            selectionIds.length === 0
+            || editor.actions.createBlueprintPlacementDraft === undefined
+            || selectionIds.some((entityId) => {
+              const entity = currentDocument.entities[entityId];
+              return entity === undefined
+                || context.workspace.registry.queries.isProtocolCore(entity.definitionId);
+            })
+          ) {
+            return { status: "ignored" };
+          }
+
+          const record = createTempBlueprintRecord(context);
+          const placementAnchor = resolveViewportCenterGridPoint(editor);
+          if (
+            record === null
+            || record.entityOrder.length !== selectionIds.length
+            || selectionIds.some((entityId) => record.entities[entityId] === undefined)
+            || !canPlaceBlueprintDocumentInCurrentBase(context.appHost, record)
+            || placementAnchor === null
+          ) {
+            return { status: "ignored" };
+          }
+
+          editor.actions.deleteCollection(EntityCollectionType.selection);
+          if (selectionIds.some((entityId) => editor.document.getSnapshot().entities[entityId] !== undefined)) {
+            return { status: "ignored" };
+          }
+
+          lastTempBlueprint = record;
+          return enterBlueprintPlacement({
+            appHost: context.appHost,
+            editor,
+            record,
+            source: "mouse",
+            initialMousePosition: lastMousePosition,
+            placementAnchor,
+          });
+        },
+      },
+      {
         id: "temp-blueprint.paste",
         actionId: SHORTCUT_KEY.PASTE_SELECTION,
         binding: { kind: "configurable", shortcutId: SHORTCUT_KEY.PASTE_SELECTION },
@@ -143,6 +207,7 @@ export function createHypergryphBlueprintPlacementGestureModule(): GestureMappin
       // Reason: 临时蓝图复制/粘贴快捷键已拆为带正式作用域的可执行 Route。
       // Trigger: ST2-RQ-020 输入层和 Action Route 统一。
       // Evidence: temp-blueprint.copy 仅覆盖 marquee；temp-blueprint.paste 覆盖画布全工具。
+      // AI-CORRECTION 2026-09-27: 用户明确 Ctrl+V 保持画布全工具生效；新增的 temp-blueprint.cut 仅覆盖 marquee。
       // Replacement: shortcutRoutes[temp-blueprint.copy/temp-blueprint.paste] in this module
       // Risk: Low
       // Human Review: Required

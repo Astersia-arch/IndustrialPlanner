@@ -177,6 +177,7 @@ describe("KeyboardShortcutManager", () => {
       [SHORTCUT_KEY.DELETE_DEVICE]: "F;Ctrl+F",
       [SHORTCUT_KEY.MOVE_SELECTION]: "M;Alt+M",
       [SHORTCUT_KEY.COPY_SELECTION]: "Ctrl+C;Meta+C",
+      [SHORTCUT_KEY.CUT_SELECTION]: "Ctrl+X;Meta+X",
       [SHORTCUT_KEY.PASTE_SELECTION]: "Ctrl+V;Meta+V",
       [SHORTCUT_KEY.UNDO]: "Ctrl+Z;Meta+Z",
       [SHORTCUT_KEY.REDO]: "Ctrl+Y;Meta+Y",
@@ -199,13 +200,13 @@ describe("KeyboardShortcutManager", () => {
 
     const manager = createManager();
 
-    expect(Object.values(SHORTCUT_KEY)).toHaveLength(28);
+    expect(Object.values(SHORTCUT_KEY)).toHaveLength(29);
     for (const shortcutId of Object.values(SHORTCUT_KEY)) {
       expect(manager.getKeyboardShortcutFor(shortcutId)).toBe(persistedShortcuts[shortcutId]);
     }
   });
 
-  it("resets all 28 actions from the unified action specs", () => {
+  it("resets all 29 actions from the unified action specs", () => {
     const manager = createManager();
     for (const shortcutId of Object.values(SHORTCUT_KEY)) {
       manager.setShortcutFor(shortcutId, `Ctrl+Alt+${shortcutId.at(-1) ?? "A"}`);
@@ -213,7 +214,7 @@ describe("KeyboardShortcutManager", () => {
 
     manager.resetAllShortcutsToDefaults();
 
-    expect(CONFIGURABLE_SHORTCUT_ACTION_SPECS).toHaveLength(28);
+    expect(CONFIGURABLE_SHORTCUT_ACTION_SPECS).toHaveLength(29);
     for (const spec of CONFIGURABLE_SHORTCUT_ACTION_SPECS) {
       expect(manager.getKeyboardShortcutFor(spec.id)).toBe(spec.defaultBindings.join(";"));
     }

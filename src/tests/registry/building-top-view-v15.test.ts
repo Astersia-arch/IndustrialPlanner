@@ -61,14 +61,26 @@ describe("v1.5 建筑素材发布", () => {
   });
 
   it.each([
-    ["filling_pd_mc_1_liquid", "liquid__0"],
-    ["shaper_1_gas", "gas__0"],
-  ])("$0 不借用新版素材未交付的管道变体", async (entityId, variantKey) => {
+    ["filling_pd_mc_1_liquid", "liquid__0", "filling_powder_mc_1/top-gasliquid", undefined],
+    ["shaper_1_gas", "gas__0", "shaper_1/top-gas", [{
+      role: "input",
+      index: 3,
+      position: [-1.5, 3, 0],
+      yaw: 0,
+      bindings: {
+        on: "v1.5/fx/P_interactive_large_pipeon_in_01",
+        off: "v1.5/fx/P_interactive_large_pipeoff_in_01",
+        activateOn: null,
+        activateOff: null,
+      },
+    }]],
+  ] as const)("%s 只使用对应素材视图中明确交付的管道变体", async (entityId, variantKey, expectedViewKey, expectedPorts) => {
     const manifest = JSON.parse(await readFile(path.resolve("public/3d-top-view/port-effects/manifest.json"), "utf8"));
     const viewKey = manifest.definitions[entityId];
     const ports = manifest.views[viewKey]?.variants[variantKey];
 
-    expect(ports).toBeUndefined();
+    expect(viewKey).toBe(expectedViewKey);
+    expect(ports).toEqual(expectedPorts);
   });
 
   it("启用液体灌装机现有动画资源", () => {

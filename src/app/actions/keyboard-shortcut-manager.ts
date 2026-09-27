@@ -34,6 +34,7 @@ export const SHORTCUT_KEY = {
   DELETE_DEVICE:       "shortcut-delete-device",
   MOVE_SELECTION:      "shortcut-move-selection",
   COPY_SELECTION:      "shortcut-copy-selection",
+  CUT_SELECTION:       "shortcut-cut-selection",
   PASTE_SELECTION:     "shortcut-paste-selection",
   UNDO:                "shortcut-undo",
   REDO:                "shortcut-redo",
@@ -129,6 +130,7 @@ export const CONFIGURABLE_SHORTCUT_ACTION_SPECS: readonly ConfigurableShortcutAc
   { id: SHORTCUT_KEY.DELETE_DEVICE, group: "operation", labelKey: "settingsField.shortcut-delete-device", defaultBindings: ["F"], configurable: true },
   { id: SHORTCUT_KEY.MOVE_SELECTION, group: "operation", labelKey: "settingsField.shortcut-move-selection", defaultBindings: ["M"], configurable: true },
   { id: SHORTCUT_KEY.COPY_SELECTION, group: "operation", labelKey: "settingsField.shortcut-copy-selection", defaultBindings: ["Ctrl+C"], configurable: true },
+  { id: SHORTCUT_KEY.CUT_SELECTION, group: "operation", labelKey: "settingsField.shortcut-cut-selection", defaultBindings: ["Ctrl+X"], configurable: true },
   { id: SHORTCUT_KEY.PASTE_SELECTION, group: "operation", labelKey: "settingsField.shortcut-paste-selection", defaultBindings: ["Ctrl+V"], configurable: true },
   { id: SHORTCUT_KEY.ROTATE_VIEWPORT, group: "viewport", labelKey: "settingsField.shortcut-rotate-viewport", defaultBindings: ["Ctrl+R"], configurable: true },
   { id: SHORTCUT_KEY.PAN_VIEWPORT_UP, group: "viewport", labelKey: "settingsField.shortcut-pan-viewport-up", defaultBindings: ["W", "ArrowUp"], configurable: true },
@@ -213,6 +215,7 @@ assertShortcutActionGroups(SHORTCUT_ACTION_GROUP_SPECS, CONFIGURABLE_SHORTCUT_AC
 // };
 // AI-CORRECTION 2026-08-31: 上述历史 Evidence 与 Replacement 中的 28 项来源现为
 // CONFIGURABLE_SHORTCUT_ACTION_SPECS；SHORTCUT_ACTION_SPECS 已扩展为可配置与固定 Action 的统一 registry。
+// AI-CORRECTION 2026-09-27: 上述归档说明中的 28 项已因新增剪切选区增加为 29 项。
 const SHORTCUT_DEFAULTS = Object.fromEntries(
   CONFIGURABLE_SHORTCUT_ACTION_SPECS.map((spec) => [spec.id, spec.defaultBindings.join(";")]),
 ) as Readonly<Record<ShortcutKeyId, string>>;

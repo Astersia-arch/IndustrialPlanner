@@ -739,6 +739,8 @@ export type UiKey =
   | "settingsField.shortcut-cheatDescription"
   | "settingsField.shortcut-copy-selection"
   | "settingsField.shortcut-copy-selectionDescription"
+  | "settingsField.shortcut-cut-selection"
+  | "settingsField.shortcut-cut-selectionDescription"
   | "settingsField.shortcut-delete-device"
   | "settingsField.shortcut-delete-deviceDescription"
   | "settingsField.shortcut-move-selection"
