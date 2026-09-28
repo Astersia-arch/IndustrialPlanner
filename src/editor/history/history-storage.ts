@@ -90,16 +90,80 @@ function normalizePersistedEditorHistoryState(
     Object.assign(context, record.delta.entities.added, record.delta.entities.removed);
     for (const [id, change] of Object.entries(record.delta.entities.updated)) context[id] = change.after;
   }
+  const sortedRecords = (value.records as Record<string, unknown>[])
+    .slice()
+    .sort((left, right) => (left.sequence as number) - (right.sequence as number));
+  const storedCursorSequence = value.cursorSequence;
+  const cursorIndex = sortedRecords.filter(record => (record.sequence as number) <= storedCursorSequence).length;
+  const migrationResults = sortedRecords.map((record) => {
+    try {
+      return {
+        record: normalizeEditorHistoryRecord(
+          sourceSchema < BLUEPRINT_SCHEMA_VERSION
+            ? migrateEditorHistoryRecordDeviceIds(record, sourceSchema, context, document?.baseId)
+            : record,
+        ),
+        error: null,
+      };
+    } catch (error) {
+      return { record: null, error };
+    }
+  });
+  const lastFailedUndoIndex = migrationResults
+    .slice(0, cursorIndex)
+    .findLastIndex(result => result.error !== null);
+  const firstFailedRedoOffset = migrationResults
+    .slice(cursorIndex)
+    .findIndex(result => result.error !== null);
+  const retainedStart = lastFailedUndoIndex + 1;
+  const retainedEnd = firstFailedRedoOffset < 0
+    ? migrationResults.length
+    : cursorIndex + firstFailedRedoOffset;
+  const retainedRecords = migrationResults
+    .slice(retainedStart, retainedEnd)
+    .map((result, index) => ({
+      ...result.record!,
+      sequence: index + 1,
+    }));
+  const failedResults = migrationResults.flatMap((result, index) => result.error === null ? [] : [{
+    sequence: sortedRecords[index]?.sequence,
+    error: String(result.error),
+  }]);
+  if (failedResults.length > 0) {
+    console.warn("Editor history migration truncated incompatible records.", {
+      documentKey: value.documentKey,
+      failedRecords: failedResults,
+      discardedBefore: retainedStart,
+      discardedAfter: migrationResults.length - retainedEnd,
+      retained: retainedRecords.length,
+    });
+  }
+  // AI-REMOVED 2026-09-28:
+  // Reason: 整批迁移会让单条不可恢复的旧历史阻断当前蓝图的全部撤销记录，并误报为本地存储故障。
+  // Trigger: v1.5.1-beta1 实际数据中的旧连接缺少两端实体，历史迁移拒绝加载。
+  // Evidence: 日志报错 Cannot migrate history links without their entities；逐条迁移可保留当前游标所在连续区间。
+  // Replacement: 上方 migrationResults、retainedStart、retainedEnd 与下方重新编号后的返回值。
+  // Risk: 无法跨越的历史断点及其外侧记录会被截断；当前文档正文不受影响。
+  // Human Review: Required
+  //
+  // Original code:
+  // return {
+  //   schemaVersion: EDITOR_HISTORY_STORAGE_SCHEMA_VERSION,
+  //   documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION,
+  //   documentKey: value.documentKey,
+  //   cursorSequence: Math.max(0, Math.floor(value.cursorSequence)),
+  //   records: value.records.map(record => normalizeEditorHistoryRecord(
+  //     sourceSchema < BLUEPRINT_SCHEMA_VERSION
+  //       ? migrateEditorHistoryRecordDeviceIds(record, sourceSchema, context, document?.baseId)
+  //       : record,
+  //   )),
+  // };
   return {
     schemaVersion: EDITOR_HISTORY_STORAGE_SCHEMA_VERSION,
     documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION,
     documentKey: value.documentKey,
-    cursorSequence: Math.max(0, Math.floor(value.cursorSequence)),
-    records: value.records.map(record => normalizeEditorHistoryRecord(
-      sourceSchema < BLUEPRINT_SCHEMA_VERSION
-        ? migrateEditorHistoryRecordDeviceIds(record, sourceSchema, context, document?.baseId)
-        : record,
-    )),
+    cursorSequence: Math.max(0, cursorIndex - retainedStart),
+    records: retainedRecords,
   };
 }
 
