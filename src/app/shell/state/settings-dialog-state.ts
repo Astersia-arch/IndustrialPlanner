@@ -624,6 +624,13 @@ export const WORKBENCH_SETTINGS_GROUPS: readonly WorkbenchSettingsGroupDefinitio
         defaultValue: false,
       },
       {
+        id: "game-blueprint-placement-default-continuous",
+        kind: "switch",
+        labelKey: "settingsField.game-blueprint-placement-default-continuous",
+        descriptionKey: "settingsField.game-blueprint-placement-default-continuousDescription",
+        defaultValue: true,
+      },
+      {
         id: "game-arknights-immediate-marquee",
         kind: "switch",
         labelKey: "settingsField.game-arknights-immediate-marquee",
@@ -1138,6 +1145,7 @@ export class WorkbenchSettingsDialogController {
     "game-arknights-immediate-move",
     "game-arknights-copy-while-moving",
     "game-arknights-immediate-marquee",
+    "game-blueprint-placement-default-continuous",
     "game-arknights-allow-empty-logistics-endpoints",
     "game-arknights-auto-create-splitters-and-convergers",
     // AI-REMOVED 2026-08-03:

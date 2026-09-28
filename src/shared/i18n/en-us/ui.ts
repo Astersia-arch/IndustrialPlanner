@@ -1,4 +1,11 @@
 const UI: Record<string, string> = {
+    "canvas.toast.beltStart": "Start a new belt from a device output or another belt",
+    "canvas.toast.pipeStart": "Start a new pipe from a device output or another pipe",
+    "canvas.alert.beltStart": "Start a belt from 【device and logistics outputs】 or 【another belt】",
+    "canvas.alert.beltStartWithEmpty": "Start a belt from 【device and logistics outputs】, 【empty ground】 or 【another belt】",
+    "canvas.alert.pipeStart": "Start a pipe from 【device and logistics outputs】 or 【another pipe】",
+    "canvas.alert.pipeStartWithEmpty": "Start a pipe from 【device and logistics outputs】, 【empty ground】 or 【another pipe】",
+
     "eda.title": "Automatic production layout",
     "eda.toolbar": "Plan",
     "eda.planThisLine": "Plan this production line",
@@ -412,6 +419,8 @@ const UI: Record<string, string> = {
     "settingsField.game-arknights-auto-create-splitters-and-convergersDescription": "Automatically create splitters and convergers when conveyors or pipes are drawn into junctions.",
     "settingsField.game-arknights-copy-while-moving": "Copy While Moving",
     "settingsField.game-arknights-copy-while-movingDescription": "When enabled, Ctrl-click while moving places a copy at the current position, and touch controls show a Copy button.",
+    "settingsField.game-blueprint-placement-default-continuous": "Continuous Blueprint Placement by Default",
+    "settingsField.game-blueprint-placement-default-continuousDescription": "Enable continuous placement when placing blueprints, including copy, cut, and paste.",
     "settingsField.game-arknights-immediate-marquee": "Immediate Marquee",
     "settingsField.game-arknights-immediate-marqueeDescription": "Mouse mode only: immediately start marquee selection when dragging from empty canvas without a long press.",
     "settingsField.game-arknights-immediate-move": "Immediate Move",

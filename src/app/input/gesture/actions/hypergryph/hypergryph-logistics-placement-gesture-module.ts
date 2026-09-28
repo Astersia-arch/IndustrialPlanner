@@ -1,3 +1,5 @@
+import { action, reaction } from "mobx";
+import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "@/app/host/app-host";
 import type { GesturePosition } from "@/app/input/gesture/adapter";
 import { SHORTCUT_KEY } from "@/app/actions/keyboard-shortcut-manager";
@@ -124,6 +126,31 @@ interface LogisticsPlacementBehaviorOptions {
   readonly autoCreateSplittersAndConvergers: boolean;
 }
 
+// 模式拥有提示策略；统一观察阶段与设置，悬停草稿不视为正式起笔。
+export function bindLogisticsPlacementAlert(appHost: AppHost): () => void {
+  return reaction(
+    (): UiKey | null => {
+      const runtime = appHost.internalState.runtime.logisticsPlacement;
+      if (appHost.internalState.activeTool !== "logistics-placement"
+        || runtime.kind === null || runtime.phase !== "idle") return null;
+      const allowEmpty = appHost.state.settings.hypergryphAllowEmptyLogisticsEndpoints;
+      if (runtime.kind === LOGISTICS_KIND.belt) {
+        return allowEmpty ? "canvas.alert.beltStartWithEmpty" : "canvas.alert.beltStart";
+      }
+      return allowEmpty ? "canvas.alert.pipeStartWithEmpty" : "canvas.alert.pipeStart";
+    },
+    (messageKey) => appHost.internalActions.setCanvasAlert(messageKey),
+    { fireImmediately: true },
+  );
+}
+
+function showEmptyLogisticsStartToast(appHost: AppHost): void {
+  appHost.internalActions.showCanvasToast(
+    appHost.internalState.runtime.logisticsPlacement.kind === LOGISTICS_KIND.belt
+      ? "canvas.toast.beltStart" : "canvas.toast.pipeStart",
+  );
+}
+
 export function createHypergryphLogisticsPlacementGestureModule(): GestureMappingModule<AppHost> {
   let activeTouchLogisticsDragGestureId: string | null = null;
 
@@ -149,7 +176,7 @@ export function createHypergryphLogisticsPlacementGestureModule(): GestureMappin
         binding: { kind: "configurable", shortcutId },
         scope: { inputLayers: ["canvas"], activeTools: ["select", "logistics-placement"] },
         triggerPolicy: { kind: "allow-any-additional-modifiers" },
-        handle(_event, context) {
+        handle: action<ShortcutActionRoute<AppHost>["handle"]>((_event, context) => {
           if (kind === LOGISTICS_KIND.pipe && !hasPlaceableEntityDefinitionInCurrentBase(context.appHost, "pipeLogistics")) {
             return { status: "ignored" };
           }
@@ -162,7 +189,7 @@ export function createHypergryphLogisticsPlacementGestureModule(): GestureMappin
             pointerMode: "mouse",
           });
           return { status: "handled" };
-        },
+        }),
       })),
       ...PLACEMENT_DEVICE_SHORTCUT_KEYS.map<ShortcutActionRoute<AppHost>>((shortcut, shortcutIndex) => ({
         id: `logistics-placement.device-${shortcutIndex}`,
@@ -170,11 +197,11 @@ export function createHypergryphLogisticsPlacementGestureModule(): GestureMappin
         binding: { kind: "fixed", value: shortcut },
         scope: { inputLayers: ["canvas"], activeTools: ["logistics-placement"] },
         triggerPolicy: { kind: "allow-any-additional-modifiers" },
-        handle: (_event, context) => handleLogisticsDeviceShortcutIndex({
+        handle: action<ShortcutActionRoute<AppHost>["handle"]>((_event, context) => handleLogisticsDeviceShortcutIndex({
           appHost: context.appHost,
           editor: context.workspace.editor,
           shortcutIndex,
-        }),
+        })),
       })),
       {
         id: "current-operation.flip-logistics-route",
@@ -183,15 +210,15 @@ export function createHypergryphLogisticsPlacementGestureModule(): GestureMappin
         scope: { inputLayers: ["canvas"], activeTools: ["logistics-placement"] },
         triggerPolicy: { kind: "allow-any-additional-modifiers" },
         claimsBrowserDefault: true,
-        handle(_event, context) {
+        handle: action<ShortcutActionRoute<AppHost>["handle"]>((_event, context) => {
           const editor = context.workspace.editor;
           if (editor === null) return { status: "ignored" };
           handleRouteOrderChange(context.appHost, editor);
           return { status: "handled" };
-        },
+        }),
       },
     ],
-    handle(event, context) {
+    handle: action<GestureMappingModule<AppHost>["handle"]>((event, context) => {
       if (event.type === "on-exit-active-tool") {
         if (event.from !== "logistics-placement" || event.to === "logistics-placement") {
           return { status: "ignored" };
@@ -489,7 +516,7 @@ export function createHypergryphLogisticsPlacementGestureModule(): GestureMappin
         default:
           return { status: "ignored" };
       }
-    },
+    }),
   };
 }
 
@@ -552,6 +579,12 @@ function handleTouchTap(options: {
 }): GestureHandleResult {
   const kind = options.appHost.internalState.runtime.logisticsPlacement.kind;
   const gridPoint = resolveGridPointFromGesturePosition(options.editor, options.position);
+  if (kind !== null && gridPoint !== null && options.pointerEntityId === null
+    && options.appHost.internalState.runtime.logisticsPlacement.phase === "idle"
+    && !resolveLogisticsPlacementBehaviorOptions(options.appHost).allowEmptySource) {
+    showEmptyLogisticsStartToast(options.appHost);
+    return { status: "handled" };
+  }
   if (kind === null || gridPoint === null || options.pointerEntityId === null) {
     return { status: "ignored" };
   }
@@ -699,6 +732,7 @@ function handleTouchDragStart(options: {
   });
   if (startEntity === null) {
     if (!resolveLogisticsPlacementBehaviorOptions(options.appHost).allowEmptySource) {
+      showEmptyLogisticsStartToast(options.appHost);
       console.warn("[LOGISTICS-DEBUG]","handleTouchDragStart-empty-rejected");
       return { status: "ignored" };
     }
@@ -1043,6 +1077,7 @@ function createMouseLogisticsStart(options: {
     });
   } else if (options.pointerEntityId === null) {
     if (!behavior.allowEmptySource) {
+      showEmptyLogisticsStartToast(options.appHost);
       logMouseLogisticsPlacementFailure("start", "empty-source-disallowed", {
         kind: options.kind,
         gridPoint: options.gridPoint,

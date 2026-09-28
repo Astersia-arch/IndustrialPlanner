@@ -2260,10 +2260,13 @@ describe("createAppHost", () => {
       shiftKey: false,
     });
 
-    expect(appHost.internalState.activeTool).toBe("select");
+    expect(appHost.internalState.activeTool).toBe("marquee");
+    expect(editorHost.state.collections.selection).toEqual(["dummy-entity-2"]);
     expect(appHost.internalState.runtime.blueprintPlacementContinuous).toBe(false);
-    expect(appHost.internalState.runtime.canvasTopLeftCornerToolbar.visible).toBe(false);
-    expect(appHost.internalState.runtime.canvasTopLeftCornerToolbar.buttonIds).toEqual([]);
+    expect(appHost.internalState.runtime.canvasTopLeftCornerToolbar.visible).toBe(true);
+    expect(appHost.internalState.runtime.canvasTopLeftCornerToolbar.buttonIds).not.toContain(
+      "canvas-top-left-corner-toolbar-button-toggle-continuous-placement",
+    );
   });
 
   it("pastes the last temporary blueprint from Ctrl+V without persistent storage", () => {
@@ -2448,6 +2451,9 @@ describe("createAppHost", () => {
     const editorHost = createEditorHost(workspace);
     editorHost.internalDocument.setSnapshot(createDummyWorldDocument());
     const appHost = createAppHost(workspace);
+    runInAction(() => {
+      appHost.internalState.settings.blueprintPlacementDefaultContinuous = false;
+    });
     const blueprintRecord = createTestBlueprintRecord();
     const initialEntityOrderLength = editorHost.document.getSnapshot().entityOrder.length;
 
@@ -2492,6 +2498,9 @@ describe("createAppHost", () => {
     const editorHost = createEditorHost(workspace);
     editorHost.internalDocument.setSnapshot(createDummyWorldDocument());
     const appHost = createAppHost(workspace);
+    runInAction(() => {
+      appHost.internalState.settings.blueprintPlacementDefaultContinuous = false;
+    });
     const blueprintRecord = createTestBlueprintRecord();
 
     appHost.blueprintPreview.open(blueprintRecord);
@@ -2549,6 +2558,9 @@ describe("createAppHost", () => {
     const editorHost = createEditorHost(workspace);
     editorHost.internalDocument.setSnapshot(createDummyWorldDocument());
     const appHost = createAppHost(workspace);
+    runInAction(() => {
+      appHost.internalState.settings.blueprintPlacementDefaultContinuous = false;
+    });
     const blueprintRecord = createTestBlueprintRecord();
 
     appHost.blueprintPreview.open(blueprintRecord);

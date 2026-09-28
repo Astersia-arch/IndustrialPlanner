@@ -1,3 +1,4 @@
+import type { UiKey } from "@/shared/i18n";
 import { makeAutoObservable } from "mobx";
 
 import type { ScreenProfile } from "@/domain/app/types/screen-profile";
@@ -85,6 +86,7 @@ export interface AppSettingsReadWrite extends Omit<AppSettings, "regionalMultiBa
   hypergryphImmediateMove: boolean;
   hypergryphCopyWhileMoving: boolean;
   hypergryphImmediateMarquee: boolean;
+  blueprintPlacementDefaultContinuous: boolean;
   hypergryphAllowEmptyLogisticsEndpoints: boolean;
   hypergryphAutoCreateSplittersAndConvergers: boolean;
   quickPlaceEnabled: boolean;
@@ -513,6 +515,8 @@ export interface CanvasTopLeftCornerToolbarStateReadWrite {
 }
 
 export interface RuntimeStateReadWrite {
+  canvasToastKey: UiKey | null;
+  canvasAlertKey: UiKey | null;
   activePanel: ActivePanel;
   quickPlace: QuickPlaceRuntimeStateReadWrite;
   moveAnchor: GridPoint | null;
@@ -523,6 +527,7 @@ export interface RuntimeStateReadWrite {
   blueprintPlacementPointerMode: "mouse" | "touch" | null;
   blueprintPlacementRotationSteps: number;
   blueprintPlacementContinuous: boolean;
+  blueprintPlacementFromCopy: boolean;
   singlePlacementDeviceId: string | null;
   singlePlacementPointerMode: "mouse" | "touch" | null;
   singlePlacementContinuous: boolean;
@@ -784,6 +789,8 @@ class LogisticsPlacementRuntimeStateReadWriteImpl implements LogisticsPlacementR
 }
 
 class RuntimeStateReadWriteImpl implements RuntimeStateReadWrite {
+  canvasToastKey: UiKey | null = null;
+  canvasAlertKey: UiKey | null = null;
   activePanel: ActivePanel = null;
   quickPlace: QuickPlaceRuntimeStateReadWrite = new QuickPlaceRuntimeStateReadWriteImpl();
   moveAnchor: GridPoint | null = null;
@@ -794,6 +801,7 @@ class RuntimeStateReadWriteImpl implements RuntimeStateReadWrite {
   blueprintPlacementPointerMode: "mouse" | "touch" | null = null;
   blueprintPlacementRotationSteps = 0;
   blueprintPlacementContinuous = false;
+  blueprintPlacementFromCopy = false;
   singlePlacementDeviceId: string | null = null;
   singlePlacementPointerMode: "mouse" | "touch" | null = null;
   singlePlacementContinuous = false;
@@ -836,6 +844,7 @@ export class UiStateReadWriteImpl implements UiStateReadWrite {
     hypergryphImmediateMove: true,
     hypergryphCopyWhileMoving: false,
     hypergryphImmediateMarquee: false,
+    blueprintPlacementDefaultContinuous: true,
     hypergryphAllowEmptyLogisticsEndpoints: false,
     hypergryphAutoCreateSplittersAndConvergers: true,
     quickPlaceEnabled: true,

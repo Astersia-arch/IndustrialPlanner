@@ -75,6 +75,7 @@ const DEFAULT_APP_SETTINGS_STORAGE = {
   hypergryphImmediateMove: true,
   hypergryphCopyWhileMoving: false,
   hypergryphImmediateMarquee: false,
+  blueprintPlacementDefaultContinuous: true,
   hypergryphAllowEmptyLogisticsEndpoints: false,
   hypergryphAutoCreateSplittersAndConvergers: true,
   quickPlaceEnabled: true,

@@ -22,6 +22,7 @@ import type { GestureMappingModule } from "../types";
 //
 // Original code:
 // import { isHypergryphGestureEnabled } from "./hypergryph-mode-guard";
+import { cancelBlueprintPlacement } from "./hypergryph-blueprint-placement-gesture-module";
 import { openOverlapEntityMenuIfNeeded } from "./overlap-entity-candidates";
 
 export function createHypergryphSelectGestureModule(): GestureMappingModule<AppHost> {
@@ -56,6 +57,10 @@ export function createHypergryphSelectGestureModule(): GestureMappingModule<AppH
       },
       triggerPolicy: { kind: "exact" },
       handle(_event, context) {
+        if (context.appHost.internalState.activeTool === "blueprint-placement" && context.workspace.editor !== null) {
+          cancelBlueprintPlacement(context.appHost, context.workspace.editor);
+          return { status: "handled" };
+        }
         context.appHost.internalActions.setActiveTool("select");
         return { status: "handled" };
       },

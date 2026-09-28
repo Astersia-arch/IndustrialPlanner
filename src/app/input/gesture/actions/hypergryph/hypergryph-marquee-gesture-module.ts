@@ -143,7 +143,9 @@ export function createHypergryphMarqueeGestureModule(): GestureMappingModule<App
             return { status: "ignored" };
           }
 
-          cleanupMarquee(context.appHost, editor, event.to === "move");
+          cleanupMarquee(context.appHost, editor, event.to === "move"
+            || (event.to === "blueprint-placement"
+              && context.appHost.internalState.runtime.blueprintPlacementFromCopy));
           if (event.to !== "logistics-placement") {
             context.appHost.internalActions.hideCanvasTopLeftCornerToolbar();
           }
@@ -453,7 +455,7 @@ function handleUiButtonTap(options: {
   }
 }
 
-function enterMarqueeMode(options: {
+export function enterMarqueeMode(options: {
   appHost: AppHost;
   editor: EditorContract | null;
   source: "mouse" | "touch";

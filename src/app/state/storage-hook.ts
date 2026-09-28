@@ -220,6 +220,10 @@ function normalizePersistedAppSettings(
     hypergryphImmediateMarquee: typeof persistedAppSettings.hypergryphImmediateMarquee === "boolean"
       ? persistedAppSettings.hypergryphImmediateMarquee
       : fallback.hypergryphImmediateMarquee,
+    blueprintPlacementDefaultContinuous:
+      typeof persistedAppSettings.blueprintPlacementDefaultContinuous === "boolean"
+        ? persistedAppSettings.blueprintPlacementDefaultContinuous
+        : fallback.blueprintPlacementDefaultContinuous,
     hypergryphAllowEmptyLogisticsEndpoints:
       typeof persistedAppSettings.hypergryphAllowEmptyLogisticsEndpoints === "boolean"
         ? persistedAppSettings.hypergryphAllowEmptyLogisticsEndpoints

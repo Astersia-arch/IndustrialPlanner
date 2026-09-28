@@ -1,3 +1,4 @@
+import { CanvasNotices } from "./canvas/canvas-notices";
 import { BlueprintPlannerDialog } from "./blueprint-planner-dialog";
 import { action, runInAction } from "mobx";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
@@ -336,6 +337,14 @@ export const WorkbenchApp = observer(function WorkbenchApp({
           }
 
           appHost.internalState.settings.hypergryphCopyWhileMoving = value;
+        }),
+      },
+      "game-blueprint-placement-default-continuous": {
+        readValue: () => appHost.state.settings.blueprintPlacementDefaultContinuous,
+        writeValue: action((value) => {
+          if (typeof value === "boolean") {
+            appHost.internalState.settings.blueprintPlacementDefaultContinuous = value;
+          }
         }),
       },
       "game-arknights-immediate-marquee": {
@@ -1306,6 +1315,11 @@ export const WorkbenchApp = observer(function WorkbenchApp({
             />
           ) : null}
         <CanvasPanel appHost={appHost} />
+        <CanvasNotices
+          state={appHost.internalState.runtime}
+          translate={appHost.actions.translate}
+          screenProfile={appHost.state.screenProfile}
+        />
         {/* AI-CORRECTION 2026-08-05: 折叠顶栏控件改为 CanvasPanel 的 sibling overlay，保持画布定位但隔离画布手势。 */}
         {showFloatingTopBarControls ? (
           <div className={cm(styles, "workbench-floating-top-bar-controls")}>

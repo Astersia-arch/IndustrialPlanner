@@ -1,3 +1,4 @@
+import type { UiKey } from "@/shared/i18n";
 import { action } from "mobx";
 
 import type { AppAction } from "@/domain/app/app-action";
@@ -107,6 +108,8 @@ function clampDialogOffset(
 }
 
 export interface AppInternalAction {
+  showCanvasToast: (messageKey: UiKey) => void;
+  setCanvasAlert: (messageKey: UiKey | null) => void;
   toggleLeftDock: () => void;
   setLeftDockSuppressed: (suppressed: boolean) => void;
   toggleRightDock: () => void;
@@ -180,6 +183,35 @@ export interface AppInternalAction {
 }
 
 export class AppActionImpl implements AppAction, AppInternalAction {
+  private canvasToastTimer: ReturnType<typeof setTimeout> | null = null;
+  private canvasToastRevision = 0;
+  private disposed = false;
+
+  public readonly showCanvasToast: AppInternalAction["showCanvasToast"] = action((messageKey) => {
+    if (this.disposed) return;
+    if (this.canvasToastTimer !== null) clearTimeout(this.canvasToastTimer);
+    const revision = ++this.canvasToastRevision;
+    this.internalState.runtime.canvasToastKey = messageKey;
+    this.canvasToastTimer = setTimeout(action(() => {
+      if (this.disposed || revision !== this.canvasToastRevision) return;
+      this.internalState.runtime.canvasToastKey = null;
+      this.canvasToastTimer = null;
+    }), 3000);
+  });
+
+  public readonly setCanvasAlert: AppInternalAction["setCanvasAlert"] = action((messageKey) => {
+    if (!this.disposed) this.internalState.runtime.canvasAlertKey = messageKey;
+  });
+
+  public readonly dispose = action(() => {
+    this.disposed = true;
+    ++this.canvasToastRevision;
+    if (this.canvasToastTimer !== null) clearTimeout(this.canvasToastTimer);
+    this.canvasToastTimer = null;
+    this.internalState.runtime.canvasToastKey = null;
+    this.internalState.runtime.canvasAlertKey = null;
+  });
+
   public constructor(
     private readonly internalState: UiStateReadWrite,
     private readonly workspace: WorkspaceContract,

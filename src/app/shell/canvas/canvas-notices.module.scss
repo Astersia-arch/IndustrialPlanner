@@ -1,0 +1,60 @@
+.notices {
+  position: absolute;
+  top: var(--top-bar-height, 48px);
+  bottom: var(--canvas-bottom-obstruction-height, 28px);
+  left: calc(var(--left-toolbar-width, 68px) + var(--left-dock-width, 0px));
+  right: var(--right-dock-width, 0px);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.toast,
+.alert {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
+  padding: 5px 22px;
+  color: #fff;
+  font-size: clamp(13px, 1.1vw, 18px);
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 2px #0008;
+}
+
+.toast {
+  top: clamp(50px, 10vh, 120px);
+  background: linear-gradient(90deg, #151b1580, #151b15cf 15%, #151b15cf 85%, #151b1580);
+}
+
+.alert {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+  background: linear-gradient(90deg, #ae6866eb, #8e3029f2 12%, #8e3029f2 88%, #ae6866eb);
+  border-radius: 2px;
+  border-inline: 4px solid #efd8d1;
+
+  strong {
+    color: #ffe000;
+    font-weight: 600;
+  }
+}
+
+// 横向触控布局沿用已有 Screen Profile，给左侧模式标题和底部工具按钮留位。
+.compact {
+  .toast,
+  .alert {
+    left: calc(50% + 104px);
+    max-width: calc(100% - 224px);
+  }
+
+  .toast {
+    top: 12px;
+  }
+
+  .alert {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  }
+}

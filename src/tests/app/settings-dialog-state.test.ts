@@ -28,6 +28,16 @@ describe("WorkbenchSettingsDialogController", () => {
     expect(new WorkbenchSettingsDialogController().getValue("game-play-device-audio")).toBe(true);
     expect(resolveGroupSettingIds("experimental")).not.toContain("game-play-device-audio");
   });
+  it("蓝图默认连续开启，关闭后持久化", () => {
+    const controller = new WorkbenchSettingsDialogController();
+    const key = "game-blueprint-placement-default-continuous";
+    expect(controller.getValue(key)).toBe(true);
+    controller.updateSwitchValue(key, false);
+    expect(new WorkbenchSettingsDialogController().getValue(key)).toBe(false);
+    controller.resetArknightsOperation();
+    expect(controller.getValue(key)).toBe(true);
+    expect(new WorkbenchSettingsDialogController().getValue(key)).toBe(true);
+  });
   afterEach(() => {
     localStorage.clear();
   });
@@ -130,6 +140,7 @@ describe("WorkbenchSettingsDialogController", () => {
         "game-arknights-immediate-move": true,
         "game-arknights-copy-while-moving": false,
         "game-arknights-immediate-marquee": false,
+        "game-blueprint-placement-default-continuous": true,
         "game-arknights-allow-empty-logistics-endpoints": false,
         "game-arknights-auto-create-splitters-and-convergers": true,
         "game-quick-place": true,
@@ -644,6 +655,7 @@ describe("WorkbenchSettingsDialogController", () => {
         "game-arknights-immediate-move": true,
         "game-arknights-copy-while-moving": false,
         "game-arknights-immediate-marquee": false,
+        "game-blueprint-placement-default-continuous": true,
         "game-arknights-allow-empty-logistics-endpoints": false,
         "game-arknights-auto-create-splitters-and-convergers": true,
         "game-quick-place": true,

@@ -1,4 +1,11 @@
 const UI: Record<string, string> = {
+    "canvas.toast.beltStart": "请从设备出口或其他传送带处开始连接新传送带",
+    "canvas.toast.pipeStart": "请从设备出口或其他管道处开始连接新管道",
+    "canvas.alert.beltStart": "传送带需从【设备与物流出口】或【其他传送带】处开始连接",
+    "canvas.alert.beltStartWithEmpty": "传送带可从【设备与物流出口】、【空地】或【其他传送带】处开始连接",
+    "canvas.alert.pipeStart": "管道需从【设备与物流出口】或【其他管道】处开始连接",
+    "canvas.alert.pipeStartWithEmpty": "管道可从【设备与物流出口】、【空地】或【其他管道】处开始连接",
+
     "eda.title": "自动规划产线",
     "eda.toolbar": "规划",
     "eda.planThisLine": "自动规划该产线",
@@ -405,6 +412,8 @@ const UI: Record<string, string> = {
     "settingsField.game-arknights-auto-create-splitters-and-convergersDescription": "传送带/管道绘制到交汇处时，自动创建分流器和汇流器。",
     "settingsField.game-arknights-copy-while-moving": "移动时复制",
     "settingsField.game-arknights-copy-while-movingDescription": "开启后，移动设备时按住 Ctrl 点击可在当前位置复制，触控工具栏也会显示复制按钮。",
+    "settingsField.game-blueprint-placement-default-continuous": "蓝图放置默认连续",
+    "settingsField.game-blueprint-placement-default-continuousDescription": "进入蓝图放置时默认开启连续放置，包括复制、剪切和粘贴。",
     "settingsField.game-arknights-immediate-marquee": "立即框选",
     "settingsField.game-arknights-immediate-marqueeDescription": "仅鼠标模式有效，从画布空白处开始拖动时，立即开始框选而不需要长按。",
     "settingsField.game-arknights-immediate-move": "立即移动",

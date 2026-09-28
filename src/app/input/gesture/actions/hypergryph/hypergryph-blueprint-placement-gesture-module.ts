@@ -34,6 +34,7 @@ import { ALL_SHORTCUT_ACTIVE_TOOLS } from "../shortcut-route-matching";
 //
 // Original code:
 // import { isHypergryphGestureEnabled } from "./hypergryph-mode-guard";
+import { enterMarqueeMode } from "./hypergryph-marquee-gesture-module";
 import { TOUCH_PREVIEW_HIT_SLOP_PX } from "./mobile-preview-bounds";
 import {
   closeCompactLeftDockOnPlacementEnter,
@@ -265,6 +266,9 @@ export function createHypergryphBlueprintPlacementGestureModule(): GestureMappin
           return { status: "ignored" };
         }
 
+        if (context.appHost.internalState.runtime.blueprintPlacementFromCopy && event.to !== "marquee") {
+          context.workspace.editor?.actions.clearCollection(EntityCollectionType.selection);
+        }
         cleanupBlueprintPlacement(context.appHost, context.workspace.editor);
         if (event.to === "select") {
           context.appHost.internalActions.setLeftDockSuppressed(false);
@@ -454,7 +458,8 @@ export function createHypergryphBlueprintPlacementGestureModule(): GestureMappin
 
           if (event.button === 0 && !event.longPress) {
             applyBlueprintPlacement(context.appHost, editor, lastMousePosition, {
-              continuous: event.modifiers.shift || event.modifiers.ctrl,
+              continuous: context.appHost.internalState.runtime.blueprintPlacementContinuous
+                || event.modifiers.shift || event.modifiers.ctrl,
             });
             return { status: "handled" };
           }
@@ -541,6 +546,7 @@ export function enterBlueprintPlacement(options: {
   source: "mouse" | "touch";
   initialMousePosition: GesturePosition | null;
   placementAnchor?: GridPoint;
+  fromCopy?: boolean;
 }): GestureHandleResult {
   const record = options.record ?? options.appHost.blueprintPreview.record;
 
@@ -555,11 +561,14 @@ export function enterBlueprintPlacement(options: {
   const previousTool = options.appHost.internalState.activeTool;
   const reenteringBlueprintPlacement = previousTool === "blueprint-placement";
 
-  if (!reenteringBlueprintPlacement && previousTool !== "select") {
+  if (!options.fromCopy && !reenteringBlueprintPlacement && previousTool !== "select") {
     options.appHost.internalActions.setActiveTool("select");
   }
 
   if (reenteringBlueprintPlacement) {
+    if (options.appHost.internalState.runtime.blueprintPlacementFromCopy) {
+      options.editor.actions.clearCollection(EntityCollectionType.selection);
+    }
     safelyCancelPlacementDraft(options.editor);
     clearBlueprintPlacementUi(options.appHost);
   }
@@ -576,7 +585,9 @@ export function enterBlueprintPlacement(options: {
     options.appHost.internalState.runtime.blueprintPlacementRecord = record;
     options.appHost.internalState.runtime.blueprintPlacementPointerMode = options.source;
     options.appHost.internalState.runtime.blueprintPlacementRotationSteps = 0;
-    options.appHost.internalState.runtime.blueprintPlacementContinuous = false;
+    options.appHost.internalState.runtime.blueprintPlacementContinuous =
+      options.appHost.state.settings.blueprintPlacementDefaultContinuous;
+    options.appHost.internalState.runtime.blueprintPlacementFromCopy = options.fromCopy === true;
     options.editor.actions.createBlueprintPlacementDraft(record, placementAnchor);
 
     const previewRect = options.editor.queries.findEntityCollectionGridRect(
@@ -742,18 +753,37 @@ function applyBlueprintPlacement(
   }
 
   // 非连续放置 或 异常 → 回到 select
-  clearBlueprintPlacementUi(appHost);
-  appHost.internalActions.setActiveTool("select");
-  appHost.internalActions.setActivePanel("placement");
+  // AI-CORRECTION 2026-09-27: 复制会话结束直接返回多选并保留原选区；其他入口返回 select。
+  // AI-REMOVED 2026-09-27:
+  // Reason: 蓝图结束行为统一到共享出口，复制需要直接返回多选。
+  // Trigger: 用户要求复制结束保留最初选区。
+  // Evidence: 原出口固定切换 select，丢失复制会话返回语义。
+  // Replacement: finishBlueprintPlacement in this file
+  // Risk: Low；其他蓝图入口仍返回 select。
+  // Human Review: Required
+  // Original code:
+  // clearBlueprintPlacementUi(appHost);
+  // appHost.internalActions.setActiveTool("select");
+  // appHost.internalActions.setActivePanel("placement");
+  finishBlueprintPlacement(appHost, editor);
 }
 
-function cancelBlueprintPlacement(appHost: AppHost, editor: EditorContract): void {
+export function cancelBlueprintPlacement(appHost: AppHost, editor: EditorContract): void {
   try {
     editor.actions.cancelPlacementDraft();
   } finally {
-    clearBlueprintPlacementUi(appHost);
-    appHost.internalActions.setActiveTool("select");
-    appHost.internalActions.setActivePanel("placement");
+    // AI-REMOVED 2026-09-27:
+    // Reason: 蓝图结束行为统一到共享出口，复制需要直接返回多选。
+    // Trigger: 用户要求复制结束保留最初选区。
+    // Evidence: 原出口固定切换 select，丢失复制会话返回语义。
+    // Replacement: finishBlueprintPlacement in this file
+    // Risk: Low；其他蓝图入口仍返回 select。
+    // Human Review: Required
+    // Original code:
+    // clearBlueprintPlacementUi(appHost);
+    // appHost.internalActions.setActiveTool("select");
+    // appHost.internalActions.setActivePanel("placement");
+    finishBlueprintPlacement(appHost, editor);
   }
 }
 
@@ -797,6 +827,7 @@ function clearBlueprintPlacementUi(appHost: AppHost): void {
   appHost.internalState.runtime.blueprintPlacementPointerMode = null;
   appHost.internalState.runtime.blueprintPlacementRotationSteps = 0;
   appHost.internalState.runtime.blueprintPlacementContinuous = false;
+  appHost.internalState.runtime.blueprintPlacementFromCopy = false;
   appHost.internalActions.hideCanvasFloatingToolbar();
   appHost.internalActions.hideCanvasTopLeftCornerToolbar();
   appHost.internalActions.hideCanvasRightDockToolbar();
@@ -804,8 +835,30 @@ function clearBlueprintPlacementUi(appHost: AppHost): void {
 
 function restoreFailedBlueprintPlacementEnter(appHost: AppHost, editor: EditorContract): void {
   safelyCancelPlacementDraft(editor);
+  // AI-REMOVED 2026-09-27:
+  // Reason: 蓝图结束行为统一到共享出口，复制需要直接返回多选。
+  // Trigger: 用户要求复制结束保留最初选区。
+  // Evidence: 原出口固定切换 select，丢失复制会话返回语义。
+  // Replacement: finishBlueprintPlacement in this file
+  // Risk: Low；其他蓝图入口仍返回 select。
+  // Human Review: Required
+  // Original code:
+  // clearBlueprintPlacementUi(appHost);
+  // appHost.internalActions.setActiveTool("select");
+  // appHost.internalActions.setActivePanel("placement");
+  finishBlueprintPlacement(appHost, editor);
+}
+
+function finishBlueprintPlacement(appHost: AppHost, editor: EditorContract): void {
+  const fromCopy = appHost.internalState.runtime.blueprintPlacementFromCopy
+    && appHost.internalState.runtime.blueprintPlacementRecord?.baseId === editor.document.getSnapshot().baseId;
+  const source = appHost.internalState.runtime.blueprintPlacementPointerMode ?? "mouse";
   clearBlueprintPlacementUi(appHost);
-  appHost.internalActions.setActiveTool("select");
+  if (fromCopy) {
+    enterMarqueeMode({ appHost, editor, source });
+  } else {
+    appHost.internalActions.setActiveTool("select");
+  }
   appHost.internalActions.setActivePanel("placement");
 }
 
@@ -886,6 +939,7 @@ function copySelectionAsTempBlueprint(options: {
     record,
     source: options.source,
     initialMousePosition: options.initialMousePosition,
+    fromCopy: true,
   });
 }
 

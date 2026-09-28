@@ -248,6 +248,8 @@ export function createAppHost(
 
   const actionImpl = new AppActionImpl(internalState, workspace, shortcutManager);
   const internalActions: AppInternalAction = {
+    showCanvasToast: actionImpl.showCanvasToast,
+    setCanvasAlert: actionImpl.setCanvasAlert,
     toggleLeftDock: actionImpl.toggleLeftDock,
     setLeftDockSuppressed: actionImpl.setLeftDockSuppressed,
     toggleRightDock: actionImpl.toggleRightDock,
@@ -310,6 +312,7 @@ export function createAppHost(
       overlapEntityMenu.dispose();
       encyclopediaPicker.dispose();
       recipePicker.dispose();
+      actionImpl.dispose();
       gestureActionRouter.dispose();
       gestureAdapter.dispose();
       while (disposers.length > 0) {

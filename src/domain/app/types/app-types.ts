@@ -21,6 +21,7 @@ export interface AppSettings {
   readonly hypergryphImmediateMove: boolean;
   readonly hypergryphCopyWhileMoving: boolean;
   readonly hypergryphImmediateMarquee: boolean;
+  readonly blueprintPlacementDefaultContinuous: boolean;
   readonly hypergryphAllowEmptyLogisticsEndpoints: boolean;
   readonly hypergryphAutoCreateSplittersAndConvergers: boolean;
   readonly hypergryphSelectionRightDockSync: boolean;

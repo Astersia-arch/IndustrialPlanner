@@ -38,7 +38,7 @@ describe("logistics placement debug logging", () => {
 
   it("logs that an empty pipe source is disabled when a left click cannot start placement", () => {
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
-    const { context, editor } = createContext({
+    const { context, editor, appHost } = createContext({
       allowEmptySource: false,
       kind: LOGISTICS_KIND.pipe,
       draftState: null,
@@ -47,6 +47,7 @@ describe("logistics placement debug logging", () => {
 
     expect(module.handle(mouseLeftTapEvent(), context)).toEqual({ status: "ignored" });
     expect(editor.actions.createLogisticsDraftStart).not.toHaveBeenCalled();
+    expect(appHost.internalActions.showCanvasToast).toHaveBeenCalledWith("canvas.toast.pipeStart");
     expect(debugSpy).toHaveBeenCalledWith(
       "[industrial-planner:logistics-placement] "
         + "mouse-left-tap 起笔失败: empty-source-disallowed",
@@ -244,6 +245,7 @@ function createContext(options: {
       },
     },
     internalActions: {
+      showCanvasToast: vi.fn(),
       hideCanvasFloatingToolbar: vi.fn(),
       hideCanvasRightDockToolbar: vi.fn(),
       showCanvasRightDockToolbar: vi.fn((items: readonly CanvasRightDockToolbarItemRequest[]) => {

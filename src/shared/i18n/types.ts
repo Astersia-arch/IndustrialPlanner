@@ -1,6 +1,12 @@
 import type { AppLocale } from "@/domain/app/types/app-types";
 
 export type UiKey =
+  | "canvas.toast.beltStart"
+  | "canvas.toast.pipeStart"
+  | "canvas.alert.beltStart"
+  | "canvas.alert.beltStartWithEmpty"
+  | "canvas.alert.pipeStart"
+  | "canvas.alert.pipeStartWithEmpty"
   | "canvas.regionalDarkPipe"
   | "canvas.regionalDarkPipeSaveFailed"
   | "eda.title"
@@ -574,6 +580,8 @@ export type UiKey =
   | "settingsField.game-arknights-auto-create-splitters-and-convergersDescription"
   | "settingsField.game-arknights-copy-while-moving"
   | "settingsField.game-arknights-copy-while-movingDescription"
+  | "settingsField.game-blueprint-placement-default-continuous"
+  | "settingsField.game-blueprint-placement-default-continuousDescription"
   | "settingsField.game-arknights-immediate-marquee"
   | "settingsField.game-arknights-immediate-marqueeDescription"
   | "settingsField.game-arknights-immediate-move"

@@ -17,6 +17,7 @@ import {
   createHypergryphEntityVariantSwitchGestureModule,
 } from "./hypergryph/hypergryph-entity-variant-switch-gesture-module";
 import {
+  bindLogisticsPlacementAlert,
   createHypergryphLogisticsPlacementGestureModule,
 } from "./hypergryph/hypergryph-logistics-placement-gesture-module";
 import {
@@ -60,6 +61,7 @@ export class AppGestureModuleRegistrar {
 
   public constructor(options: AppGestureModuleRegistrarOptions) {
     this.unregisterModules.push(
+      bindLogisticsPlacementAlert(options.appHost),
       options.router.registerModule(createHypergryphOverlapEntityMenuGuardModule()),
       options.router.registerModule(createHypergryphBlueprintPlacementGestureModule()),
       options.router.registerModule(createHypergryphLogisticsPlacementGestureModule()),
