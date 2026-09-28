@@ -15,6 +15,7 @@
     "test:eda": "node src/scripts/run-eda.mjs",
     "test:blueprint": "vitest run --project blueprint",
     "test:e2e": "playwright test",
+    "test:release": "node scripts/release-test/run.mjs",
     "test:watch": "vitest",
     "blueprint:convert": "tsx --tsconfig tsconfig.app.json src/scripts/convert-legacy-blueprint.ts",
     "draw-device-blueprint-svg": "tsx --tsconfig tsconfig.app.json src/scripts/draw-device-blueprint-svg.mjs",

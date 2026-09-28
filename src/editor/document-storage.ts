@@ -19,6 +19,7 @@ import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import type { SnapshotStoreReadWrite } from "@/shared/snapshot/snapshot-store";
 import { trySaveToIndexedDb } from "@/shared/storage/browser-storage";
 import { emitStorageChange } from "@/shared/storage/storage-change-event";
+import { reportStorageFailure } from "@/shared/storage/storage-failure";
 
 const logger = createLogger("document-storage");
 
@@ -57,7 +58,10 @@ export function createEditorDocumentRepository(options: {
       });
       return saved;
     },
-    reportError: (error) => logger.error("Editor document persistence failed.", { error: String(error) }),
+    reportError: (error) => {
+      logger.error("Editor document persistence failed.", { error: String(error) });
+      reportStorageFailure("world-document", error);
+    },
   });
 }
 
@@ -100,6 +104,7 @@ export function hookDocumentStorage(editorHost: EditorHost): () => void {
       if (!disposed && serial === scopeSerial) {
         scopeKey = "";
         logger.error("Failed to prepare regional documents.", { error: String(error) });
+        reportStorageFailure("regional-documents load", error);
       }
     });
   };
@@ -246,9 +251,11 @@ export async function readWorldDocument(
 ): Promise<WorldDocument | null> {
   const persistedDocument = await readFromIndexedDb<unknown>(
     createWordDocumentLocation(documentKey),
+    { strict: true },
   );
 
   const result = normalizeWorldDocument(persistedDocument);
+  if (persistedDocument !== null && result === null) throw new Error("Stored world document is unreadable; original retained.");
 
   logger.info("readWorldDocument", {
     documentKey,
@@ -273,12 +280,14 @@ export async function writeWorldDocument(
 export async function listWorldDocuments(): Promise<WorldDocument[]> {
   const persistedDocuments = await listFromIndexedDb<unknown>(
     WORLD_DOCUMENT_DATABASE_LOCATION,
+    { strict: true },
   );
 
   return persistedDocuments.flatMap((persistedDocument) => {
     const document = normalizeWorldDocument(persistedDocument);
 
-    return document === null ? [] : [document];
+    if (document === null) throw new Error("Stored world document is unreadable; original retained.");
+    return [document];
   });
 }
 

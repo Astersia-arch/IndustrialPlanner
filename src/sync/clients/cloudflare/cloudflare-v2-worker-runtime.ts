@@ -1,3 +1,4 @@
+import { withStorageGeneration } from "@/shared/storage/storage-generation";
 import { createUuid } from "@/domain/shared/uuid";
 import {
   createSha256CanonicalHash,
@@ -46,6 +47,14 @@ export class CloudflareV2WorkerRuntime {
     config: CfV2WorkerConfig,
     operation: CfV2WorkerOperation,
     reportActivity: CfV2WorkerActivityReporter = () => {},
+  ): Promise<unknown> {
+    return withStorageGeneration(() => this.executeOperation(config, operation, reportActivity));
+  }
+
+  private async executeOperation(
+    config: CfV2WorkerConfig,
+    operation: CfV2WorkerOperation,
+    reportActivity: CfV2WorkerActivityReporter,
   ): Promise<unknown> {
     const normalized = normalizeConfig(config);
     const state = this.getStateStore(normalized);
@@ -572,7 +581,7 @@ async function readAsset(
   const receivedHash = stripSha256Prefix(await createSha256Hash(bytes));
   const expectedHash = stripSha256Prefix(operation.asset.contentHash);
   if (receivedHash !== expectedHash) {
-    throw new Error(
+    throw new CfV2HttpError(502, "invalid_asset_content",
       `Downloaded content hash mismatch for ${operation.asset.assetType}/${operation.asset.assetId}: `
       + `expected ${expectedHash}, received ${receivedHash}.`,
     );
@@ -583,9 +592,8 @@ async function readAsset(
     value = JSON.parse(content) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
+    throw new CfV2HttpError(502, "invalid_asset_content",
       `Cloudflare asset ${operation.asset.assetType}/${operation.asset.assetId} contains invalid JSON: ${message}`,
-      { cause: error },
     );
   }
   return {

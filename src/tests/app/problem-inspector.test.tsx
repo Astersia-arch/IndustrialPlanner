@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
 import type { AppHost } from "@/app/host/app-host";
+import { DefaultPortPriorityController } from "@/app/port-priority";
+import { createRegistryContract } from "@/registry";
 import type { WorldEntity } from "@/domain/document/world-document";
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition";
 import type { SimulationDeviceRuntimeStatusReadModel } from "@/domain/simulation/types/simulation-types";
@@ -58,6 +60,7 @@ function createMockAppHost(options: {
   const poweredEntityIds = options.poweredEntityIds ?? ["test-entity-1"];
 
   return {
+    portPriorityDefaults: new DefaultPortPriorityController(createRegistryContract()),
     workspace: {
       editor: {
         queries: {

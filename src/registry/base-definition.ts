@@ -198,12 +198,20 @@ export const BASE_DEFINITIONS: BaseDefinition[] = [
     name: "草稿箱",
     placeableArea: { width: 320, height: 320 },
     outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
-    subAreas: [{
-      id: "draft_box_upper_left",
-      position: { x: -60, y: -60 },
-      placeableArea: { width: 0, height: 0 },
-      outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
-    }],
+    // AI-REMOVED 2026-09-28:
+    // Reason: 草稿箱取消左上角独立外环区。
+    // Trigger: 用户要求删除该区域并更新对应测试。
+    // Evidence: draft_box 改为仅保留主区域。
+    // Replacement: 本对象的 placeableArea 与 outerRing。
+    // Risk: 原独立区域内已有设备将判定为越界。
+    // Human Review: Required
+    // Original code:
+    // subAreas: [{
+    //   id: "draft_box_upper_left",
+    //   position: { x: -60, y: -60 },
+    //   placeableArea: { width: 0, height: 0 },
+    //   outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
+    // }],
     tag: "草稿箱",
     tags: [ALL_REGION_ENTITIES_BASE_TAG],
   },

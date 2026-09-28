@@ -9,7 +9,7 @@
 - [硬性限制](#硬性限制)
 - [完整检查步骤](#完整检查步骤)
 
-使用 `scripts/check/check-runner.sh` 对当前工作区执行完整检查。所有底层命令已经固化，禁止自行拼写 ESLint、TypeScript、Vitest、Build、E2E 或 Blueprint 命令。
+使用 `scripts/check/check-runner.sh` 对当前工作区执行完整检查。所有底层命令已经固化，禁止自行拼写 ESLint、TypeScript、Vitest、Build、E2E、发布版测试或 Blueprint 命令。
 
 ## 检查范围
 
@@ -21,7 +21,7 @@
 2. 终端工具支持 `login` 参数时必须设为 `false`；不支持时不得主动请求 login shell。检查不应加载 `.profile`、`.bash_profile` 或 `.bashrc`。
 3. `bash scripts/check/check-runner.sh ...` 只表示用 Bash 解释器运行项目脚本，不表示启动 login shell。
 4. 每次终端调用只能执行一条命令。
-5. `test`、`e2e`、`blueprint` 必须以前台命令启动，禁止添加 `&`。
+5. `test`、`e2e`、`release`、`blueprint` 必须以前台命令启动，禁止添加 `&`。
 6. 长任务返回 `session_id`、会话句柄或仍在运行状态时，必须续接同一进程等待完成，不得另开终端调用脚本的 `poll` 子命令。
 7. 每次等待或会话续接不得超过 60 秒；未完成时继续续接同一会话。
 8. 某一步失败后记录结果，并继续后续检查项。
@@ -144,7 +144,15 @@ bash scripts/check/check-runner.sh e2e "<RUN_DIR>"
 
 以前台方式执行，并续接同一终端会话直至完成。
 
-### 6. Blueprint
+### 6. 发布版测试
+
+```bash
+bash scripts/check/check-runner.sh release "<RUN_DIR>"
+```
+
+执行生产构建及串行浏览器验证，续接同一终端会话直至完成。失败、未执行或资源清理失败均不能报告 full-check 通过。
+
+### 7. Blueprint
 
 ```bash
 bash scripts/check/check-runner.sh blueprint "<RUN_DIR>"
@@ -152,7 +160,7 @@ bash scripts/check/check-runner.sh blueprint "<RUN_DIR>"
 
 以前台方式执行，并续接同一终端会话直至完成。
 
-### 7. 汇总
+### 8. 汇总
 
 ```bash
 bash scripts/check/check-runner.sh summary "<RUN_DIR>"

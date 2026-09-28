@@ -1,3 +1,5 @@
+import { BLUEPRINT_SCHEMA_VERSION } from "@/domain/document/blueprint-document";
+import { reportStorageFailure } from "@/shared/storage/storage-failure";
 import {
   runInAction,
 } from "mobx";
@@ -36,6 +38,7 @@ export class EditorHistoryRuntime {
   private writeQueue = Promise.resolve();
   private requestedDocumentKey: string | null = null;
   private readonly documents = new Map<string, PersistedEditorHistoryState>();
+  private readonly loadErrors = new Map<string, unknown>();
   private readonly loads = new Map<string, Promise<PersistedEditorHistoryState>>();
 
   public constructor(
@@ -73,7 +76,10 @@ export class EditorHistoryRuntime {
         this.state.lastRecordId = records.at(-1)?.id ?? null;
         this.state.isReady = true;
       });
-    })();
+    })().catch(error => {
+      this.loadErrors.set(documentKey, error);
+      reportStorageFailure("editor-history load; original records preserved", error);
+    });
   }
 
   /** 跨文档事务提交前准备出口历史，不改变当前历史面板。 */
@@ -96,6 +102,7 @@ export class EditorHistoryRuntime {
     action: EditorHistoryActionDescriptor;
     delta: EditorHistoryDocumentDelta;
   }): EditorHistoryRecord {
+    if (this.loadErrors.has(options.documentKey)) throw this.loadErrors.get(options.documentKey);
     this.requestedDocumentKey ??= options.documentKey;
     const isActive = this.requestedDocumentKey === options.documentKey;
     if (isActive) this.loadSerial += 1;
@@ -140,7 +147,7 @@ export class EditorHistoryRuntime {
     }
 
     this.enqueuePersistSnapshot({
-      schemaVersion: 3, documentKey: options.documentKey,
+      schemaVersion: 3, documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION, documentKey: options.documentKey,
       cursorSequence: nextSequence, records: trimmedRecords,
     });
 
@@ -218,6 +225,7 @@ export class EditorHistoryRuntime {
       // AI-CORRECTION 2026-08-20: 持久化包装升级为 schema 2；record 自身仍使用领域定义的 schema 1。
       // AI-CORRECTION 2026-09-09: 持久化包装升级为 schema 3；record schema 2 增加区域差量。
       schemaVersion: 3 as const,
+      documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION,
       documentKey,
       cursorSequence: this.state.cursorSequence,
       records: this.state.records.map((record) => record),
@@ -227,10 +235,12 @@ export class EditorHistoryRuntime {
   }
 
   private enqueuePersistSnapshot(snapshot: PersistedEditorHistoryState): void {
+    if (this.loadErrors.has(snapshot.documentKey)) throw this.loadErrors.get(snapshot.documentKey);
     this.documents.set(snapshot.documentKey, snapshot);
     this.writeQueue = this.writeQueue
       .catch(() => undefined)
       .then(() => writeEditorHistoryState(snapshot));
+    void this.writeQueue.catch(error => reportStorageFailure("editor-history", error));
   }
 
   private async readDocumentHistory(documentKey: string): Promise<PersistedEditorHistoryState> {
@@ -246,7 +256,7 @@ export class EditorHistoryRuntime {
       const records = normalizeRecordList(persisted?.records ?? [], documentKey);
       const head = resolveHeadSequence(records);
       const snapshot: PersistedEditorHistoryState = {
-        schemaVersion: 3, documentKey, records,
+        schemaVersion: 3, documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION, documentKey, records,
         cursorSequence: Math.min(head, Math.max(0, persisted?.cursorSequence ?? head)),
       };
       this.documents.set(documentKey, snapshot);

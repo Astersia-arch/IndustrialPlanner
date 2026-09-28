@@ -1,4 +1,5 @@
 import { reaction, runInAction } from "mobx";
+import { reportStorageFailure, runStorageEffect } from "@/shared/storage/storage-failure";
 
 import { isLegacyModuleBalancingId, createModuleBalancingId } from "../shell/module-balancing/module-balancing-model";
 import {
@@ -55,6 +56,17 @@ export const APP_SETTINGS_LOCAL_STORAGE_KEY = "v3-app-settings";
 export const WORKBENCH_STATE_LOCAL_STORAGE_KEY = "v3-workbench-state";
 
 export function hookLocalstorage(appHost: AppHost): () => void {
+  let disposed = false;
+  let moduleBalancingHydrated = false;
+  let moduleBalancingWriteQueue = Promise.resolve();
+  const persistModuleBalancing = (): void => {
+    if (disposed || !moduleBalancingHydrated) return;
+    // 排队前冻结数据，避免异步读取期间收到后续编辑，旧任务写入新的可变对象。
+    const snapshot = JSON.parse(JSON.stringify(appHost.internalState.workbench.toolbox.moduleBalancing)) as ModuleBalancingStateReadWrite;
+    moduleBalancingWriteQueue = moduleBalancingWriteQueue
+      .then(() => saveModuleBalancingState(snapshot))
+      .catch(error => reportStorageFailure("module-balancing", error));
+  };
   const persistedAppSettings = readFromLocalStorage<AppSettingsReadWrite>(
     APP_SETTINGS_LOCAL_STORAGE_KEY,
   );
@@ -100,9 +112,11 @@ export function hookLocalstorage(appHost: AppHost): () => void {
 
   const moduleBalancingHydrationBaseline = JSON.stringify(appHost.internalState.workbench.toolbox.moduleBalancing);
   void loadModuleBalancingState().then((persistedModuleBalancingState) => {
+    if (disposed) return;
+    moduleBalancingHydrated = true;
     const currentModuleBalancingState = appHost.internalState.workbench.toolbox.moduleBalancing;
     if (JSON.stringify(currentModuleBalancingState) !== moduleBalancingHydrationBaseline) {
-      void saveModuleBalancingState(currentModuleBalancingState);
+      persistModuleBalancing();
       return;
     }
 
@@ -113,7 +127,10 @@ export function hookLocalstorage(appHost: AppHost): () => void {
       return;
     }
 
-    void saveModuleBalancingState(appHost.internalState.workbench.toolbox.moduleBalancing);
+    persistModuleBalancing();
+  }).catch(error => {
+    moduleBalancingHydrated = false;
+    if (!disposed) reportStorageFailure("module-balancing load", error);
   });
 
   const disposeWorkbenchReaction = reaction(
@@ -123,19 +140,19 @@ export function hookLocalstorage(appHost: AppHost): () => void {
       console.debug(
         `[DialogOffset] persist workbench → toolbox: visible=${toolboxState.visible} maximized=${toolboxState.maximized} offset=(${toolboxState.offsetX}, ${toolboxState.offsetY}) size=(${toolboxState.width}, ${toolboxState.height})`,
       );
-      saveToLocalStorage<WorkbenchStateReadWrite>(
+      runStorageEffect("workbench", () => saveToLocalStorage<WorkbenchStateReadWrite>(
         WORKBENCH_STATE_LOCAL_STORAGE_KEY,
         appHost.internalState.workbench,
-      );
+      ));
     },
   );
   const disposeAppSettingsReaction = reaction(
     () => JSON.stringify(appHost.internalState.settings),
     () => {
-      saveToLocalStorage<AppSettingsReadWrite>(
+      runStorageEffect("app-settings", () => saveToLocalStorage<AppSettingsReadWrite>(
         APP_SETTINGS_LOCAL_STORAGE_KEY,
         appHost.internalState.settings,
-      );
+      ));
     },
   );
   const disposeForceFlattenBlueprintVersionReaction = reaction(
@@ -161,11 +178,12 @@ export function hookLocalstorage(appHost: AppHost): () => void {
   const disposeModuleBalancingReaction = reaction(
     () => JSON.stringify(appHost.internalState.workbench.toolbox.moduleBalancing),
     () => {
-      void saveModuleBalancingState(appHost.internalState.workbench.toolbox.moduleBalancing);
+      persistModuleBalancing();
     },
   );
 
   return () => {
+    disposed = true;
     disposeWorkbenchReaction();
     disposeAppSettingsReaction();
     disposeForceFlattenBlueprintVersionReaction();

@@ -7,7 +7,7 @@ description: 用户要求完整代码质量检查，或要求测试但未明确�
 
 ## 能做什么
 
-- 按 [完整检查执行规范](references/execution.md) 运行 eslint、tsc、test、build、e2e 和 test:blueprint。
+- 按 [完整检查执行规范](references/execution.md) 运行 eslint、tsc、test、build、e2e、发布版测试和 test:blueprint。
 - 按 [检查报告格式](references/report-format.md) 汇总结果和失败测试。
 
 ## 不能做什么

@@ -1,8 +1,9 @@
+import { BLUEPRINT_SCHEMA_VERSION } from "@/domain/document/blueprint-document";
 import type {
   EditorHistoryRecord,
 } from "@/domain/editor/editor-history";
-import type { WorldEntity } from "@/domain/document/world-document";
-import { migrateBlueprintEntityDeviceIds } from "@/shared/blueprint-device-id-migration";
+import type { WorldDocument, WorldEntity } from "@/domain/document/world-document";
+import { migrateBlueprintDocumentState, migrateBlueprintEntityDeviceIds } from "@/shared/blueprint-device-id-migration";
 import {
   readFromIndexedDb,
   saveToIndexedDb,
@@ -16,6 +17,7 @@ const EDITOR_HISTORY_STORAGE_SCHEMA_VERSION = 3;
 
 export interface PersistedEditorHistoryState {
   readonly schemaVersion: typeof EDITOR_HISTORY_STORAGE_SCHEMA_VERSION;
+  readonly documentSchemaVersion?: number;
   readonly documentKey: string;
   readonly cursorSequence: number;
   readonly records: readonly EditorHistoryRecord[];
@@ -26,13 +28,18 @@ export async function readEditorHistoryState(
 ): Promise<PersistedEditorHistoryState | null> {
   const persistedState = await readFromIndexedDb<unknown>(
     createEditorHistoryLocation(documentKey),
+    { strict: true },
   );
-  const normalizedState = normalizePersistedEditorHistoryState(persistedState, documentKey);
+  const document = persistedState === null ? null : await readFromIndexedDb<WorldDocument>({
+    databaseName: DOCUMENT_DATABASE_NAME, storeName: "worddocument", key: documentKey,
+  }, { strict: true });
+  const normalizedState = normalizePersistedEditorHistoryState(persistedState, documentKey, document);
+  if (persistedState !== null && normalizedState === null) throw new Error("Invalid editor history; original records were preserved.");
 
   if (
     normalizedState !== null
     && isRecord(persistedState)
-    && (persistedState.schemaVersion === 1 || persistedState.schemaVersion === 2)
+    && persistedState.documentSchemaVersion !== BLUEPRINT_SCHEMA_VERSION
   ) {
     await writeEditorHistoryState(normalizedState);
   }
@@ -45,7 +52,7 @@ export async function writeEditorHistoryState(
 ): Promise<void> {
   await saveToIndexedDb(
     createEditorHistoryLocation(historyState.documentKey),
-    historyState,
+    { ...historyState, documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION },
   );
 }
 
@@ -60,6 +67,7 @@ function createEditorHistoryLocation(documentKey: string) {
 function normalizePersistedEditorHistoryState(
   value: unknown,
   expectedDocumentKey: string,
+  document: WorldDocument | null,
 ): PersistedEditorHistoryState | null {
   if (
     !isRecord(value)
@@ -71,39 +79,56 @@ function normalizePersistedEditorHistoryState(
     return null;
   }
 
+  // 包装 schema 2 来自已发布的蓝图 schema 5；包装 schema 3 最早随蓝图 schema 6 引入。
+  const sourceSchema = typeof value.documentSchemaVersion === "number"
+    ? value.documentSchemaVersion : value.schemaVersion === 1 ? 1 : value.schemaVersion === 2 ? 5 : 6;
+  if (!Number.isInteger(sourceSchema) || sourceSchema < 1 || sourceSchema > BLUEPRINT_SCHEMA_VERSION
+    || !value.records.every(isEditorHistoryRecordLike)) return null;
+  const context = { ...document?.entities };
+  for (const item of value.records) {
+    const record = item as unknown as EditorHistoryRecord;
+    Object.assign(context, record.delta.entities.added, record.delta.entities.removed);
+    for (const [id, change] of Object.entries(record.delta.entities.updated)) context[id] = change.after;
+  }
   return {
     schemaVersion: EDITOR_HISTORY_STORAGE_SCHEMA_VERSION,
+    documentSchemaVersion: BLUEPRINT_SCHEMA_VERSION,
     documentKey: value.documentKey,
     cursorSequence: Math.max(0, Math.floor(value.cursorSequence)),
-    records: value.records
-      .filter(isEditorHistoryRecordLike)
-      .map((record) => normalizeEditorHistoryRecord(
-        value.schemaVersion === 1
-          ? migrateEditorHistoryRecordDeviceIds(record)
-          : record,
-      )),
+    records: value.records.map(record => normalizeEditorHistoryRecord(
+      sourceSchema < BLUEPRINT_SCHEMA_VERSION
+        ? migrateEditorHistoryRecordDeviceIds(record, sourceSchema, context, document?.baseId)
+        : record,
+    )),
   };
 }
 
-function migrateEditorHistoryRecordDeviceIds(record: Record<string, unknown>): Record<string, unknown> {
+function migrateEditorHistoryRecordDeviceIds(
+  record: Record<string, unknown>, sourceSchema: number,
+  context: Record<string, WorldEntity>, baseId?: string,
+): Record<string, unknown> {
   const typedRecord = record as unknown as EditorHistoryRecord;
   return {
     ...typedRecord,
     action: {
       ...typedRecord.action,
-      definitionIds: typedRecord.action.definitionIds?.map(migrateHistoryDefinitionId),
+      definitionIds: typedRecord.action.definitionIds?.map(id => migrateHistoryDefinitionId(id, sourceSchema)),
     },
     delta: {
       ...typedRecord.delta,
+      slotLinks: typedRecord.delta.slotLinks === null ? null : {
+        before: migrateHistoryLinks(typedRecord.delta.slotLinks.before, context, sourceSchema, baseId),
+        after: migrateHistoryLinks(typedRecord.delta.slotLinks.after, context, sourceSchema, baseId),
+      },
       entities: {
-        added: migrateHistoryEntityRecord(typedRecord.delta.entities.added),
-        removed: migrateHistoryEntityRecord(typedRecord.delta.entities.removed),
+        added: migrateHistoryEntityRecord(typedRecord.delta.entities.added, sourceSchema, baseId),
+        removed: migrateHistoryEntityRecord(typedRecord.delta.entities.removed, sourceSchema, baseId),
         updated: Object.fromEntries(
           Object.entries(typedRecord.delta.entities.updated).map(([entityId, change]) => [
             entityId,
             {
-              before: migrateHistoryEntity(change.before),
-              after: migrateHistoryEntity(change.after),
+              before: migrateHistoryEntity(change.before, sourceSchema, baseId),
+              after: migrateHistoryEntity(change.after, sourceSchema, baseId),
             },
           ]),
         ),
@@ -129,16 +154,20 @@ function normalizeEditorHistoryRecord(record: Record<string, unknown>): EditorHi
 }
 
 function migrateHistoryEntityRecord(
-  entities: Readonly<Record<string, WorldEntity>>,
+  entities: Readonly<Record<string, WorldEntity>>, sourceSchema: number, baseId?: string,
 ): Record<string, WorldEntity> {
-  return migrateBlueprintEntityDeviceIds({ ...entities }, 1)?.entities ?? { ...entities };
+  const migrated = migrateBlueprintDocumentState({
+    baseId, entities: { ...entities }, entityOrder: Object.keys(entities), slotLinks: [], regions: [],
+  }, sourceSchema);
+  if (migrated === null) throw new Error("Cannot migrate editor history entities.");
+  return migrated.entities;
 }
 
-function migrateHistoryEntity(entity: WorldEntity): WorldEntity {
-  return migrateHistoryEntityRecord({ entity }).entity ?? entity;
+function migrateHistoryEntity(entity: WorldEntity, sourceSchema: number, baseId?: string): WorldEntity {
+  return migrateHistoryEntityRecord({ entity }, sourceSchema, baseId).entity ?? entity;
 }
 
-function migrateHistoryDefinitionId(definitionId: string): string {
+function migrateHistoryDefinitionId(definitionId: string, sourceSchema: number): string {
   return migrateBlueprintEntityDeviceIds({
     entity: {
       id: "history-definition-id",
@@ -148,7 +177,7 @@ function migrateHistoryDefinitionId(definitionId: string): string {
       config: {},
       tags: [],
     },
-  }, 1, 4)?.entities.entity?.definitionId ?? definitionId;
+  }, sourceSchema, BLUEPRINT_SCHEMA_VERSION)?.entities.entity?.definitionId ?? definitionId;
 }
 
 function isEditorHistoryRecordLike(value: unknown): value is Record<string, unknown> {
@@ -166,4 +195,39 @@ function isEditorHistoryRecordLike(value: unknown): value is Record<string, unkn
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+// AI-REMOVED 2026-09-28:
+// Reason: 包装版本不能代替正文版本；过滤损坏记录会静默丢失历史。
+// Trigger: schema 2 历史重放把 schema 5 实体写回 schema 6 文档。
+// Evidence: 读取后撤销复现旧 ID 与旧朝向。
+// Replacement: normalizePersistedEditorHistoryState 的显式 documentSchemaVersion 和严格校验。
+// Risk: 无法读取时停止历史加载，保留原件。
+// Human Review: Required
+// Original code:
+//   return {
+//     schemaVersion: EDITOR_HISTORY_STORAGE_SCHEMA_VERSION,
+//     documentKey: value.documentKey,
+//     cursorSequence: Math.max(0, Math.floor(value.cursorSequence)),
+//     records: value.records
+//       .filter(isEditorHistoryRecordLike)
+//       .map((record) => normalizeEditorHistoryRecord(
+//         value.schemaVersion === 1
+//           ? migrateEditorHistoryRecordDeviceIds(record)
+//           : record,
+//       )),
+//   };
+// }
+
+function migrateHistoryLinks(
+  links: Readonly<WorldDocument["slotLinks"]>, context: Record<string, WorldEntity>, sourceSchema: number, baseId?: string,
+): Readonly<WorldDocument["slotLinks"]> {
+  if (links.some(link => context[link.source.entityId] === undefined || context[link.target.entityId] === undefined)) {
+    throw new Error("Cannot migrate history links without their entities; original history was preserved.");
+  }
+  const migrated = migrateBlueprintDocumentState({
+    baseId, entities: context, entityOrder: Object.keys(context), slotLinks: links, regions: [],
+  }, sourceSchema);
+  if (migrated === null) throw new Error("Cannot migrate editor history links.");
+  return migrated.slotLinks;
 }

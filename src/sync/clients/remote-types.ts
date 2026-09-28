@@ -153,6 +153,8 @@ export interface RemoteAssetPutParams {
   readonly contentHash: string;
   readonly baseRevision: number | null;
   readonly baseContentHash: string | null;
+  /** 显式修复不可用远端时写入完整正文，不复用损坏的增量链。 */
+  readonly replaceContent?: boolean;
 }
 
 export interface SyncContentHashRequest {
@@ -242,4 +244,9 @@ export function isRemoteSyncStaleError(error: unknown): boolean {
 export interface SyncMaintenanceTaskRequest {
   readonly kind: SyncTaskKind;
   readonly collections: readonly SyncRemoteCollection[];
+}
+
+/** 正文损坏与网络故障分开：前者可由用户用本地数据修复。 */
+export class RemoteAssetUnavailableError extends Error {
+  constructor(message: string) { super(message); this.name = "RemoteAssetUnavailableError"; }
 }

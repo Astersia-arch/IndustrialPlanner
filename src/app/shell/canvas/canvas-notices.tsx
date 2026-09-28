@@ -1,5 +1,7 @@
 import { isTouchLandscapeScreenProfile } from "@/shared/browser/screen-profile";
 import { observer } from "mobx-react-lite";
+import { useSyncExternalStore } from "react";
+import { hasStorageFailure, subscribeToStorageFailures } from "@/shared/storage/storage-failure";
 import type { ScreenProfile } from "@/domain/app/types/screen-profile";
 import type { UiKey } from "@/shared/i18n";
 // AI-REMOVED 2026-09-27:
@@ -20,9 +22,15 @@ export const CanvasNotices = observer(function CanvasNotices({ state, translate,
 }) {
   const { canvasToastKey, canvasAlertKey } = state;
   const t = translate;
+  const storageFailed = useSyncExternalStore(subscribeToStorageFailures, hasStorageFailure);
 
   return (
     <div className={`${styles.notices} ${isTouchLandscapeScreenProfile(screenProfile) ? styles.compact : ""}`}>
+      {storageFailed ? (
+        <div className={styles.storageFailure} role="alert">
+          {t("canvas.storageFailure")}
+        </div>
+      ) : null}
       {canvasToastKey !== null ? (
         <div className={`canvas-toast ${styles.toast}`} role="status" aria-live="polite" aria-atomic="true">
           {t(canvasToastKey)}

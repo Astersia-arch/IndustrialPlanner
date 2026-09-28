@@ -85,7 +85,7 @@ describe("createRegistryContract", () => {
     }
   });
 
-  it("registers one 320×320 draft base with a 20-cell outer ring", () => {
+  it("registers one 320×320 draft base with a 20-cell outer ring and no subareas", () => {
     const draftBases = BASE_DEFINITIONS.filter((definition) => definition.tag === "草稿箱");
     expect(draftBases).toHaveLength(1);
     expect(draftBases[0]).toMatchObject({
@@ -94,13 +94,22 @@ describe("createRegistryContract", () => {
       placeableArea: { width: 320, height: 320 },
       outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
       tags: ["allRegionEntities"],
-      subAreas: [{
-        id: "draft_box_upper_left",
-        position: { x: -60, y: -60 },
-        placeableArea: { width: 0, height: 0 },
-        outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
-      }],
+      // AI-REMOVED 2026-09-28:
+      // Reason: 草稿箱取消左上角独立外环区。
+      // Trigger: 用户要求删除该区域并更新对应测试。
+      // Evidence: draft_box 改为仅保留主区域。
+      // Replacement: 下方无子区域断言。
+      // Risk: 原独立区域内已有设备将判定为越界。
+      // Human Review: Required
+      // Original code:
+      // subAreas: [{
+      //   id: "draft_box_upper_left",
+      //   position: { x: -60, y: -60 },
+      //   placeableArea: { width: 0, height: 0 },
+      //   outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
+      // }],
     });
+    expect(draftBases[0]?.subAreas ?? []).toEqual([]);
   });
 
   it("classifies dedicated and general logistics devices by definition id", () => {

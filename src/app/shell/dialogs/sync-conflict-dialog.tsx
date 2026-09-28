@@ -56,7 +56,7 @@ export const SyncConflictDialog = observer(function SyncConflictDialog({
   );
   const conflict = sync.state.pendingConflict;
   const itemKey = conflict?.items.map(
-    (item) => createConflictItemKey(item.adapterId, item.assetId),
+    (item) => `${createConflictItemKey(item.adapterId, item.assetId)}:${item.remoteUnavailableReason ?? ""}`,
   ).join("\u0001") ?? "";
   const nameLookupItems = useMemo(
     () => conflict?.items.map((item) => ({
@@ -100,6 +100,7 @@ export const SyncConflictDialog = observer(function SyncConflictDialog({
   const allDecisionsSelected = conflict.items.length > 0
     && conflict.items.every((item) =>
       decisions.has(createConflictItemKey(item.adapterId, item.assetId))
+      && !(item.remoteUnavailableReason !== undefined && decisions.get(createConflictItemKey(item.adapterId, item.assetId)) === "use-remote")
     );
   const submitDecisions = (): void => {
     if (!allDecisionsSelected) {
@@ -117,7 +118,7 @@ export const SyncConflictDialog = observer(function SyncConflictDialog({
   const selectAll = (
     resolution: "use-local" | "use-remote",
   ): void => {
-    setDecisions(new Map(conflict.items.map((item) => [
+    setDecisions(new Map(conflict.items.filter(item => resolution !== "use-remote" || item.remoteUnavailableReason === undefined).map((item) => [
       createConflictItemKey(item.adapterId, item.assetId),
       resolution,
     ])));
@@ -224,10 +225,15 @@ export const SyncConflictDialog = observer(function SyncConflictDialog({
                       )}
                     </p>
                   ) : null}
+                  {item.remoteUnavailableReason !== undefined ? (
+                    <p>{t(item.remoteUnavailableReason === "unsupported-schema"
+                      ? "syncConflict.unsupportedSchema" : "syncConflict.invalidContent")}</p>
+                  ) : null}
                   <div className={cm(styles, "sync-conflict-options")}>
                     {CONFLICT_RESOLUTIONS.map((resolution) => (
                       <label key={resolution}>
                         <input
+                          disabled={resolution === "use-remote" && item.remoteUnavailableReason !== undefined}
                           checked={selectedResolution === resolution}
                           name={`sync-conflict-${key}`}
                           onChange={() => {
@@ -260,6 +266,7 @@ export const SyncConflictDialog = observer(function SyncConflictDialog({
             </button>
             <button
               className={cm(styles, "sync-conflict-batch-action")}
+              disabled={conflict.items.every(item => item.remoteUnavailableReason !== undefined)}
               onClick={() => selectAll("use-remote")}
               type="button"
             >

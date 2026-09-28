@@ -906,6 +906,12 @@ export const WorkbenchApp = observer(function WorkbenchApp({
     migrationController.initialize();
   }, [migrationController]);
 
+  useEffect(() => {
+    const editor = appHost.workspace.editor;
+    if (editor === null) return;
+    return appHost.portPriorityDefaults.bind(editor);
+  }, [appHost]);
+
 // AI-REMOVED 2026-09-25:
 // Reason: 停用期间配置覆盖由文档管理边界维护，不再修改 App 关系表。
 // Trigger: REQ-038 文档权威与 Editor 统一生命周期。

@@ -28,6 +28,7 @@ export type {
 
 export {
   RemoteDownloadStaleError,
+  RemoteAssetUnavailableError,
   RemoteWriteConflictError,
   isRemoteSyncStaleError,
 } from "./remote-types";

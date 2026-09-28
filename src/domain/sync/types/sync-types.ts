@@ -149,6 +149,7 @@ export interface SyncConflictItem {
   /** 条目类型：上传（默认用我的）、下载（默认用远端）或双向冲突。 */
   readonly kind: SyncConflictItemKind;
   readonly remoteUpdatedAt: string | null;
+  readonly remoteUnavailableReason?: "unsupported-schema" | "invalid-content";
 }
 
 export interface SyncConflictDecision {

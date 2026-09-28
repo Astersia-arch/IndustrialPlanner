@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { runInAction } from "mobx";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createFakeIndexedDbFactory } from "../shared/fake-indexed-db";
 
 import { createAppHost, type AppHost } from "@/app/host/app-host";
 import type {
@@ -44,6 +45,7 @@ describe("物流布设模式完全测试集", () => {
   let nextPointerId: number;
 
   beforeEach(async () => {
+    vi.stubGlobal("indexedDB", createFakeIndexedDbFactory());
     const workspace = createWorkspace();
     editorHost = createEditorHost(workspace);
     const initialDocumentKey = editorHost.internalDocument.getSnapshot().documentKey;
@@ -90,10 +92,16 @@ describe("物流布设模式完全测试集", () => {
     });
   });
 
-  afterEach(() => {
-    appHost.dispose();
-    editorHost.dispose();
-    localStorage.clear();
+  afterEach(async () => {
+    try {
+      await editorHost.internalHistory.flush();
+      await editorHost.internalDocuments.flush();
+    } finally {
+      appHost.dispose();
+      editorHost.dispose();
+      localStorage.clear();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("从 6,3 布设到 2,5 后生成两个顺时针弯道", async () => {

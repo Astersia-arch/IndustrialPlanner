@@ -1,3 +1,4 @@
+import { startCloudflareTestBackend } from "../helpers/cloudflare-test-backend";
 /**
  * CF Worker 同步 e2e：无本地改动时远端更新自动下载覆盖
  *
@@ -36,7 +37,16 @@ import {
   type CfV2PrepareResponse,
 } from "../../sync/clients/cloudflare/cloudflare-v2-types";
 
-const BACKEND_API_BASE_URL = "https://endfield-api.richetriotour.net";
+// AI-CORRECTION 2026-09-28: 冲突、迁移与自动下载改用逐用例隔离的本地协议后端。
+let BACKEND_API_BASE_URL: string;
+let localBackend: Awaited<ReturnType<typeof startCloudflareTestBackend>>;
+test.beforeEach(async () => {
+  localBackend = await startCloudflareTestBackend();
+  BACKEND_API_BASE_URL = localBackend.origin;
+});
+test.afterEach(async () => {
+  await localBackend?.close();
+});
 const TEST_WORLD_DOCUMENT_ASSET_TYPE = "world-document";
 
 interface BrowserWorldDocument {
@@ -823,6 +833,9 @@ async function runAutoDownloadScenario(options: {
   };
   const remoteContent = JSON.stringify(remoteDocumentWithoutFurnace);
 
+  const downloadGate = localBackend.holdNext(({ method, path }) =>
+    method === "GET" && path.endsWith(`/assets/world-document/${encodeURIComponent(remoteAssetId)}/content`),
+  );
   const pushedRevision = await pushRemoteWorldDocument(
     request,
     spaceId,
@@ -863,7 +876,9 @@ async function runAutoDownloadScenario(options: {
 
   // 浏览器内高频观察：phase 一旦进入 downloading，立即检查画布锁定遮罩是否可见
   // AI-CORRECTION 2026-08-25: 保留高频观察机制，但期望值改为 unlocked。
-  const lockObservation = await page.evaluate(() =>
+  // AI-CORRECTION 2026-09-28: 覆盖 60 秒检查周期及准备阶段；正文可能在 downloading 前读取。
+  await downloadGate.waitForArrival(90_000);
+  const lockObservationTask = page.evaluate(() =>
     new Promise<"locked" | "unlocked" | "no-downloading-observed">((resolve) => {
       const sync = (window as unknown as BrowserTestWindow)
         .__industrialPlannerAppHost?.workspace?.sync;
@@ -871,6 +886,7 @@ async function runAutoDownloadScenario(options: {
         resolve("no-downloading-observed");
         return;
       }
+      Reflect.set(window, "__cfDownloadObservationReady", true);
       const startedAt = Date.now();
       let previousTimerAt = startedAt;
       let maxTimerGapMs = 0;
@@ -919,6 +935,9 @@ async function runAutoDownloadScenario(options: {
       }, 10);
     })
   );
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, "__cfDownloadObservationReady"))).toBe(true);
+  downloadGate.release();
+  const lockObservation = await lockObservationTask;
   console.log(`[TEST] Lock observation during downloading: ${lockObservation}`);
   expect(["locked", "unlocked"]).toContain(lockObservation);
 

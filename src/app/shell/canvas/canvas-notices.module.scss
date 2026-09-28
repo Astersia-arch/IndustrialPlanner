@@ -9,7 +9,8 @@
 }
 
 .toast,
-.alert {
+.alert,
+.storageFailure {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
@@ -23,6 +24,13 @@
   text-align: center;
   overflow-wrap: anywhere;
   text-shadow: 0 1px 2px #0008;
+}
+
+.storageFailure {
+  top: 8px;
+  background: #8e3029f2;
+  border: 1px solid #efd8d1;
+  border-radius: 2px;
 }
 
 .toast {

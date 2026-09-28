@@ -1,6 +1,7 @@
 import { makeAutoObservable, observable, toJS } from "mobx";
 import type { BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
+import { runStorageEffect } from "@/shared/storage/storage-failure";
 import { createDefaultDialogStateForKey } from "../state";
 
 const ENABLED_KEY = "industrial-planner.experimental.eda";
@@ -37,7 +38,7 @@ export class BlueprintPlannerDialogController {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    saveToLocalStorage(ENABLED_KEY, enabled);
+    runStorageEffect("planner-enabled", () => saveToLocalStorage(ENABLED_KEY, enabled));
     if (!enabled) this.close();
   }
 
@@ -55,7 +56,7 @@ export class BlueprintPlannerDialogController {
 
   updateOptions(options: Partial<BlueprintPlannerOptions>): void {
     this.options = { ...this.options, ...options };
-    saveToLocalStorage(OPTIONS_KEY, toJS(this.options));
+    runStorageEffect("planner-options", () => saveToLocalStorage(OPTIONS_KEY, toJS(this.options)));
   }
 
   getRequest(): BlueprintPlannerRequest {

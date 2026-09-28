@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppHost } from "@/app/host/app-host";
+import { DefaultPortPriorityController } from "@/app/port-priority";
 import { PortPriorityGroupInspector } from "@/app/shell/inspector/port-priority-group-inspector";
 import { WorkbenchEncyclopediaPickerController } from "@/app/shell/state/encyclopedia-picker-state";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
@@ -180,6 +181,7 @@ function buildAppHost(
       },
     },
     encyclopediaPicker: picker,
+    portPriorityDefaults: new DefaultPortPriorityController(workspace.registry),
     actions: { translate: (key: string) => key },
   } as unknown as AppHost;
 }

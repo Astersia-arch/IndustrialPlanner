@@ -1503,3 +1503,72 @@ describe("sync-adapters", () => {
       .toBe("2026-07-29T11:03:00.000Z");
   });
 });
+
+describe("rollback remote conflicts", () => {
+  afterEach(() => { localStorage.clear(); });
+  it.each(["full", "patch"] as const)("offers use-local for an unsupported %s asset and rejects remote selection", async (mode) => {
+    type Value = { schemaVersion: number; title: string };
+    const client = new MemoryStorageClient();
+    const createAdapter = (entries: { id: string; value: Value; deletedAt: null }[], recover = false) => {
+      const options = {
+        id: "rollback-documents", indexPath: "rollback/index.json", listLocal: async () => entries,
+        writeLocal: async () => { throw new Error("Must not download incompatible content"); },
+        recoverUnavailableRemote: recover,
+        isRemoteVersionUnsupported: recover ? (value: unknown) => (value as Value).schemaVersion > 6 : undefined,
+      };
+      return mode === "full"
+        ? createFullWithRevisionAdapter<Value>({ ...options, entryPath: id => `rollback/${id}.json` })
+        : createPatchCollectionWithRevisionAdapter<Value>({ ...options, directoryPath: id => `rollback/${id}` });
+    };
+    await syncAdapter(createAdapter([{ id: "a", value: { schemaVersion: 7, title: "升级数据" }, deletedAt: null }]), client);
+    localStorage.clear();
+    const adapter = createAdapter([{ id: "a", value: { schemaVersion: 6, title: "恢复数据" }, deletedAt: null }], true);
+    const run = await createAdapterRun(adapter, client);
+    expect(run.outcome.result.status).toBe("conflict");
+    expect(run.outcome.items).toHaveLength(1);
+    const item = run.outcome.items[0]!;
+    expect(item.remoteUnavailableReason).toBe("unsupported-schema");
+    await expect(item.applyDownload()).rejects.toThrow("Unavailable");
+    await item.applyUpload();
+    await run.outcome.finalize();
+    const next = await createAdapterRun(adapter, client);
+    expect(next.outcome.result.status).toBe("idle");
+    expect(next.outcome.items).toHaveLength(0);
+  });
+
+  it("can delete an unsupported remote-only asset by choosing use-local", async () => {
+    const client = new MemoryStorageClient();
+    const common = { id: "orphan", indexPath: "orphan/index.json", entryPath: (id: string) => `orphan/${id}.json`, writeLocal: async () => {} };
+    await syncAdapter(createFullWithRevisionAdapter({ ...common, listLocal: async () => [{ id: "a", value: { schemaVersion: 7 }, deletedAt: null }] }), client);
+    localStorage.clear();
+    const adapter = createFullWithRevisionAdapter({ ...common, listLocal: async () => [], recoverUnavailableRemote: true, isRemoteVersionUnsupported: () => true });
+    const run = await createAdapterRun(adapter, client);
+    expect(run.outcome.items[0]?.remoteUnavailableReason).toBe("unsupported-schema");
+    await run.outcome.items[0]!.applyUpload();
+    await run.outcome.finalize();
+    expect(JSON.parse(client.files.get("orphan/index.json")!).entries.a.deletedAt).toEqual(expect.any(String));
+  });
+
+  it("replaces damaged patch JSON with a full local document", async () => {
+    const client = new MemoryStorageClient();
+    let value = { schemaVersion: 6, title: "remote" };
+    const adapter = createPatchCollectionWithRevisionAdapter({
+      id: "damaged", indexPath: "damaged/index.json", directoryPath: id => `damaged/${id}`,
+      listLocal: async () => [{ id: "a", value, deletedAt: null }], writeLocal: async () => {}, recoverUnavailableRemote: true,
+    });
+    await syncAdapter(adapter, client);
+    const path = Array.from(client.files.keys()).find(key => key.includes("/full-"))!;
+    expect(path).toBeDefined();
+    client.files.set(path, "{broken");
+    localStorage.clear();
+    value = { schemaVersion: 6, title: "local" };
+    const run = await createAdapterRun(adapter, client);
+    expect(run.outcome.items[0]?.remoteUnavailableReason).toBe("invalid-content");
+    await run.outcome.items[0]!.applyUpload();
+    await run.outcome.finalize();
+    const meta = JSON.parse(client.files.get("damaged/a/meta.json")!);
+    expect(meta.deltaChain).toEqual([]);
+    expect(meta.revision).toBe(2);
+    expect((await createAdapterRun(adapter, client)).outcome.result.status).toBe("idle");
+  });
+});

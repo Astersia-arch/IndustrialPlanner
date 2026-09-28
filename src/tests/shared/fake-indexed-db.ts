@@ -48,7 +48,7 @@ export function createFakeIndexedDbFactory(): IDBFactory {
           shouldUpgrade = true;
         }
 
-        assignRequestResult(request, createDatabaseHandle(databaseState));
+        assignRequestResult(request, createDatabaseHandle(databaseState, databaseName));
 
         if (shouldUpgrade) {
           request.onupgradeneeded?.(
@@ -73,8 +73,9 @@ export function createFakeIdbKeyRangeFactory(): typeof IDBKeyRange {
   } as typeof IDBKeyRange;
 }
 
-function createDatabaseHandle(databaseState: FakeDatabaseState): IDBDatabase {
+function createDatabaseHandle(databaseState: FakeDatabaseState, databaseName: string): IDBDatabase {
   return {
+    name: databaseName,
     get version() {
       return databaseState.version;
     },
@@ -148,6 +149,12 @@ function createTransactionHandle(
     },
   };
 
+  // 原生 IndexedDB 的空事务也会自动完成；请求一旦加入，仍由请求计数决定完成时机。
+  queueMicrotask(() => {
+    if (transactionState.pendingRequestCount === 0) {
+      finishFakeTransactionRequest(transactionState, transaction as unknown as IDBTransaction);
+    }
+  });
   return transaction as unknown as IDBTransaction;
 }
 
@@ -405,6 +412,7 @@ function finishFakeTransactionRequest(
 
 function createDomStringList(databaseState: FakeDatabaseState): DOMStringList {
   return {
+    [Symbol.iterator]: () => databaseState.stores.keys(),
     get length() {
       return databaseState.stores.size;
     },

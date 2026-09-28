@@ -36,6 +36,8 @@ import type { BlueprintDocument } from "@/domain/document/blueprint-document";
 import { createBlueprintDocument } from "@/domain/document/blueprint-document";
 import type { WorldDocument, WorldEntity } from "@/domain/document/world-document";
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition";
+import type { DefaultPortPriority } from "@/domain/registry/types/default-port-priority";
+import type { GridEdge } from "@/domain/shared/grid";
 import { INSPECTOR_TYPE } from "@/domain/registry/types/entity-inspector";
 import type { BlueprintPreviewHandle } from "@/domain/renderer";
 import { resolveRotatedPortGeometry } from "@/shared/geometry/port";
@@ -109,6 +111,7 @@ export const InspectorNeighborhoodPreview = observer(function InspectorNeighborh
       : createInspectorNeighborhoodBlueprintDocument(previewModel, documentSnapshot?.baseId ?? "wuling_protocol_core"),
     [previewModel, documentSnapshot?.baseId],
   );
+  const defaultPortPriorities = selectedEntityId === null ? null : appHost.portPriorityDefaults.get(selectedEntityId);
   const portOutputCallouts = useMemo(
     () => previewModel === null || hostSize === null
       ? []
@@ -118,9 +121,10 @@ export const InspectorNeighborhoodPreview = observer(function InspectorNeighborh
         entityDefinitionMap,
         height: hostSize.height,
         selectedEntityId,
+        defaultPortPriorities,
         width: hostSize.width,
       }),
-    [documentSnapshot, entityDefinitionMap, hostSize, previewModel, selectedEntityId],
+    [documentSnapshot, entityDefinitionMap, hostSize, previewModel, selectedEntityId, defaultPortPriorities],
   );
 
   useLayoutEffect(() => {
@@ -359,6 +363,7 @@ function createInspectorNeighborhoodBlueprintDocument(
 }
 
 export function resolveInspectorPortOutputCallouts(options: {
+  readonly defaultPortPriorities?: readonly DefaultPortPriority[] | null;
   readonly bounds: {
     readonly left: number;
     readonly top: number;
@@ -407,10 +412,10 @@ export function resolveInspectorPortOutputCallouts(options: {
   */
   const cellWidth = options.width / options.bounds.width;
   const cellHeight = options.height / options.bounds.height;
-  const priorityRows = resolvePortPriorityCalloutRows(definition, entity);
+  const priorityRows = resolvePortPriorityCalloutRows(definition, entity, options.defaultPortPriorities);
 
   if (priorityRows.length > 0) {
-    return priorityRows.flatMap((row) => {
+    const callouts = priorityRows.flatMap((row) => {
       const rowModel = resolveCalloutPortModel({
         definition,
         entity,
@@ -440,6 +445,7 @@ export function resolveInspectorPortOutputCallouts(options: {
 
       return [{
         id: row.portKey,
+        edge: rowModel.edge,
         label: row.portLabel,
         portKind: row.portKind,
         isPipe: row.isPipe,
@@ -460,6 +466,7 @@ export function resolveInspectorPortOutputCallouts(options: {
         }],
       }];
     });
+    return spreadPriorityCalloutLabels(callouts, options.width, options.height);
   }
 
   if (!shouldRenderOutputPortCallouts(definition)) {
@@ -529,6 +536,7 @@ function resolveCalloutPortModel(options: {
   readonly entity: WorldEntity;
   readonly row: PortPriorityGroupPortRow;
 }): {
+  readonly edge: GridEdge;
   readonly target: { readonly x: number; readonly y: number };
   readonly label: { readonly x: number; readonly y: number };
   readonly markerPoint: { readonly x: number; readonly y: number };
@@ -544,6 +552,7 @@ function resolveCalloutPortModel(options: {
   };
 
   return {
+    edge: geometry.edge,
     target: markerPoint,
     label: {
       x: markerPoint.x + geometry.delta.x * 1.35,
@@ -551,6 +560,38 @@ function resolveCalloutPortModel(options: {
     },
     markerPoint,
   };
+}
+
+/** 同一边缘的逐端口标签沿边排开，连线仍指向各自的真实端口。 */
+function spreadPriorityCalloutLabels(
+  callouts: readonly (InspectorPortOutputCallout & { readonly edge: GridEdge })[],
+  width: number,
+  height: number,
+): InspectorPortOutputCallout[] {
+  const positions = new Map<string, { readonly labelX: number; readonly labelY: number }>();
+  for (const edge of ["NORTH", "SOUTH", "EAST", "WEST"] as const) {
+    const horizontal = edge === "NORTH" || edge === "SOUTH";
+    const entries = callouts.filter((callout) => callout.edge === edge)
+      .sort((left, right) => horizontal ? left.targetX - right.targetX : left.targetY - right.targetY);
+    if (entries.length < 2) continue;
+    const extent = (entry: InspectorPortOutputCallout) => horizontal ? entry.labelWidth : 22;
+    const available = horizontal ? width : height;
+    const labelSpan = entries.reduce((sum, entry) => sum + extent(entry), 0);
+    const gap = Math.min(4, Math.max(0, (available - 4 - labelSpan) / (entries.length - 1)));
+    const span = labelSpan + (entries.length - 1) * gap;
+    if (span > available - 4) continue;
+    const center = average(entries.map((entry) => horizontal ? entry.labelX : entry.labelY));
+    let offset = clamp(center - span / 2, 2, available - span - 2);
+    for (const entry of entries) {
+      const position = offset + extent(entry) / 2;
+      positions.set(entry.id, {
+        labelX: horizontal ? position : entry.labelX,
+        labelY: horizontal ? entry.labelY : position,
+      });
+      offset += extent(entry) + gap;
+    }
+  }
+  return callouts.map((callout) => ({ ...callout, ...positions.get(callout.id) }));
 }
 
 function shouldRenderOutputPortCallouts(definition: EntityDefinition): boolean {

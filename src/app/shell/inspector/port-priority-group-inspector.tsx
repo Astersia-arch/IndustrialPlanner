@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { observer } from "mobx-react-lite";
 
 import type { AppHost } from "@/app/host/app-host";
 import type { WorldEntity } from "@/domain/document/world-document";
@@ -23,7 +24,7 @@ const PRIORITY_GROUP_VALUES = Array.from(
   (_, index) => PORT_PRIORITY_GROUP_MIN + index,
 );
 
-export function PortPriorityGroupInspector({
+export const PortPriorityGroupInspector = observer(function PortPriorityGroupInspector({
   appHost,
   entity,
   definition,
@@ -34,7 +35,8 @@ export function PortPriorityGroupInspector({
 }) {
   const [openPortKey, setOpenPortKey] = useState<string | null>(null);
   const customEnabled = isCustomPortPriorityGroupsEnabled(entity.config);
-  const rows = resolvePortPriorityGroupRows(definition, entity);
+  const defaults = appHost.portPriorityDefaults.get(entity.id);
+  const rows = resolvePortPriorityGroupRows(definition, entity, defaults);
   const deviceClass = appHost.state?.screenProfile?.deviceClass ?? "desktop";
 
   const patchEntityConfig = (patch: Record<string, unknown>) => {
@@ -63,12 +65,12 @@ export function PortPriorityGroupInspector({
 
   return (
     <InspectorCollapsiblePanel
-      key={`port-priority-group-${customEnabled}`}
+      key={`port-priority-group-${customEnabled}-${defaults !== null}`}
       bodyClassName="port-priority-panel-body"
       className="port-priority-group-inspector"
       data-device-class={deviceClass}
       dataInspectorKey="port-priority-group"
-      defaultExpanded={customEnabled}
+      defaultExpanded={customEnabled || defaults !== null}
       headerActions={(
         <label className={cm(styles, "port-priority-custom-switch")}>
           <input
@@ -149,4 +151,4 @@ export function PortPriorityGroupInspector({
       </div>
     </InspectorCollapsiblePanel>
   );
-}
+});

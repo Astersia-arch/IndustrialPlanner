@@ -167,6 +167,8 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") {
     return;
   }
+  // 2026-09-28: 回滚后的发布验证必须直连网络，禁止用离线 HTML 证明旧代码仍是当前发布。
+  if (request.headers.get("X-IndustrialPlanner-Network-Only") === "1") return;
 
   const requestUrl = new URL(request.url);
   if (requestUrl.origin !== self.location.origin) {

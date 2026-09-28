@@ -1,6 +1,7 @@
+import { RemoteAssetUnavailableError } from "../clients";
 import { createStableJsonHash } from "@/shared/storage/hash-utils";
 import { createLogger } from "@/shared/logging/logger";
-import type { SyncConflictItemKind } from "@/domain/sync";
+import type { SyncConflictItem, SyncConflictItemKind } from "@/domain/sync";
 import type {
   RemoteAssetMeta,
   RemoteAssetPutParams,
@@ -57,6 +58,7 @@ export interface SyncAdapterConflict<TValue> {
   readonly remoteHash: string | null;
   readonly remoteDeletedAt: string | null;
   readonly remoteUpdatedAt: string | null;
+  readonly remoteUnavailableReason?: SyncConflictItem["remoteUnavailableReason"];
 }
 
 export interface SyncAdapterConflictDecision {
@@ -101,6 +103,7 @@ export interface SyncPlanItem {
    * 使该资产若日后重新编辑，可再次按“远端从未存在”上传新增。
    */
   readonly applyDiscardLocal: () => Promise<void>;
+  readonly remoteUnavailableReason?: SyncConflictItem["remoteUnavailableReason"];
 }
 
 export interface SyncPlanUpload {
@@ -237,6 +240,7 @@ export interface FullWithRevisionAdapterOptions<TValue> {
   readonly isRemoteVersionUnsupported?: (value: unknown) => boolean;
   readonly normalizeRemote?: (value: unknown) => TValue | null;
   readonly resolveConflict?: (conflict: SyncAdapterConflict<TValue>) => Promise<SyncAdapterConflictResolution> | SyncAdapterConflictResolution;
+  readonly recoverUnavailableRemote?: boolean;
 }
 
 export interface PatchWithRevisionAdapterOptions<TValue> {
@@ -284,6 +288,8 @@ export interface PatchCollectionWithRevisionAdapterOptions<TValue> {
   readonly normalizeRemote?: (value: unknown) => TValue | null;
   readonly deltaThreshold?: number;
   readonly resolveConflict?: (conflict: SyncAdapterConflict<TValue>) => Promise<SyncAdapterConflictResolution> | SyncAdapterConflictResolution;
+  readonly recoverUnavailableRemote?: boolean;
+  readonly isRemoteVersionUnsupported?: (value: unknown) => boolean;
 }
 
 interface RemoteIndexFile {
@@ -375,9 +381,17 @@ async function readRemoteAssetValue<TValue>(
   normalizeRemote: ((value: unknown) => TValue | null) | undefined,
   isRemoteVersionUnsupported?: (value: unknown) => boolean,
   onUnsupportedRemoteVersion?: () => void,
+  onUnavailable?: (reason: NonNullable<SyncConflictItem["remoteUnavailableReason"]>) => Promise<void>,
 ): Promise<NormalizedRemoteAsset<TValue> | null> {
-  const asset = await session.readAsset({ collection, assetId });
+  const asset = await session.readAsset({ collection, assetId }).catch(async (error: unknown) => {
+    if (onUnavailable !== undefined && error instanceof RemoteAssetUnavailableError) {
+      await onUnavailable("invalid-content");
+      return null;
+    }
+    throw error;
+  });
   if (asset === null) {
+    if (onUnavailable !== undefined) await onUnavailable("invalid-content");
     return null;
   }
 
@@ -413,16 +427,22 @@ async function readRemoteAssetValue<TValue>(
   // AI-CORRECTION 2026-08-12: JSON 解析已下沉到 provider 边界；适配器只消费结构化值。
   const parsed = asset.value;
   if (isRemoteVersionUnsupported?.(parsed) === true) {
+    if (onUnavailable !== undefined) { await onUnavailable("unsupported-schema"); return null; }
     logger.info(
       `Remote asset ${collection.adapterId}/${assetId} uses a newer schema version → skipping`,
     );
     onUnsupportedRemoteVersion?.();
     return null;
   }
-  const value = normalizeRemote === undefined
-    ? parsed as TValue
-    : normalizeRemote(parsed);
+  let value: TValue | null;
+  try { value = normalizeRemote === undefined ? parsed as TValue : normalizeRemote(parsed); }
+  catch (error) {
+    if (onUnavailable === undefined) throw error;
+    await onUnavailable("invalid-content");
+    return null;
+  }
   if (value === null) {
+    if (onUnavailable !== undefined) { await onUnavailable("invalid-content"); return null; }
     throw new Error(
       `Remote asset ${collection.adapterId}/${assetId} failed schema normalization.`,
     );
@@ -1663,6 +1683,7 @@ async function syncFullWithRevision<TValue>(
   // }
   const remoteIndexState = await session.readIndex(collection);
   const changedAssetIds: string[] = [];
+  const unavailableAssetIds = new Set<string>();
   let status: SyncAdapterStatus = "idle";
   let remoteStateIncomplete = false;
   const unsupportedRemoteAssetIds = new Set<string>();
@@ -1677,6 +1698,7 @@ async function syncFullWithRevision<TValue>(
         remoteStateIncomplete = true;
         unsupportedRemoteAssetIds.add(assetId);
       },
+      onUnavailable(assetId),
     );
   const localHashStatesById = await resolveLocalHashStates({
     session,
@@ -1700,6 +1722,23 @@ async function syncFullWithRevision<TValue>(
     localHashStatesById,
     ([assetId, state]) => [assetId, state.contentHash] as const,
   ));
+
+  const onUnavailable = (assetId: string) => options.recoverUnavailableRemote !== true
+    || remoteIndexState.entries[assetId] === undefined
+    || remoteIndexState.entries[assetId]?.deletedAt !== null ? undefined
+    : async (reason: NonNullable<SyncConflictItem["remoteUnavailableReason"]>) => {
+      if (unavailableAssetIds.has(assetId)) return;
+      const meta = remoteIndexState.entries[assetId];
+      if (meta === undefined) throw new Error("Cannot repair remote content without its index identity.");
+      unavailableAssetIds.add(assetId);
+      changedAssetIds.push(assetId);
+      transaction.recordItem(createUnavailableRemoteItem({
+        session, collection, transaction, assetId, reason, meta,
+        local: localEntryById.get(assetId) ?? null,
+        localHash: localContentHashesById.get(assetId) ?? null,
+      }));
+    };
+
   const remoteValuesByLocalId = new Map(await Promise.all(localEntries.flatMap((entry) => {
     const remoteEntry = remoteIndexState.entries[entry.id];
     if (
@@ -1775,6 +1814,7 @@ async function syncFullWithRevision<TValue>(
   };
 
   for (const localEntry of localEntries) {
+    if (unavailableAssetIds.has(localEntry.id)) continue;
     const remoteEntry = remoteIndexState.entries[localEntry.id] ?? null;
     const assetKey = createSyncAssetKey(collection, localEntry.id);
     const localContentHash = localContentHashesById.get(localEntry.id)
@@ -2104,7 +2144,7 @@ async function syncFullWithRevision<TValue>(
   return {
     adapterId: options.id,
     mode: "full-with-revision",
-    status: status === "idle" && remoteStateIncomplete ? "skipped" : status,
+    status: unavailableAssetIds.size > 0 ? "conflict" : status === "idle" && remoteStateIncomplete ? "skipped" : status,
     changedAssetIds: Array.from(new Set(changedAssetIds)),
     remoteStateIncomplete,
     ...(remoteStateIncomplete
@@ -2252,6 +2292,7 @@ async function syncPatchCollectionWithRevision<TValue>(
   const remoteIndexState = await session.readIndex(collection);
   reportSyncProgress(scope, 35);
   const changedAssetIds: string[] = [];
+  const unavailableAssetIds = new Set<string>();
   let status: SyncAdapterStatus = "idle";
   const localHashStatesById = await resolveLocalHashStates({
     session,
@@ -2275,6 +2316,23 @@ async function syncPatchCollectionWithRevision<TValue>(
     localHashStatesById,
     ([assetId, state]) => [assetId, state.contentHash] as const,
   ));
+
+  const onUnavailable = (assetId: string) => options.recoverUnavailableRemote !== true
+    || remoteIndexState.entries[assetId] === undefined
+    || remoteIndexState.entries[assetId]?.deletedAt !== null ? undefined
+    : async (reason: NonNullable<SyncConflictItem["remoteUnavailableReason"]>) => {
+      if (unavailableAssetIds.has(assetId)) return;
+      const meta = remoteIndexState.entries[assetId];
+      if (meta === undefined) throw new Error("Cannot repair remote content without its index identity.");
+      unavailableAssetIds.add(assetId);
+      changedAssetIds.push(assetId);
+      transaction.recordItem(createUnavailableRemoteItem({
+        session, collection, transaction, assetId, reason, meta,
+        local: localEntryById.get(assetId) ?? null,
+        localHash: localContentHashesById.get(assetId) ?? null,
+      }));
+    };
+
   const remoteStatesByLocalId = new Map(await Promise.all(localEntries.flatMap((entry) => {
     const remoteEntry = remoteIndexState.entries[entry.id];
     if (
@@ -2296,6 +2354,7 @@ async function syncPatchCollectionWithRevision<TValue>(
       collection,
       entry.id,
       options.normalizeRemote,
+      options.isRemoteVersionUnsupported, undefined, onUnavailable(entry.id),
     ).then((value) => [entry.id, value] as const)];
   })));
   reportSyncProgress(scope, 55);
@@ -2361,6 +2420,7 @@ async function syncPatchCollectionWithRevision<TValue>(
       scope,
       interpolateProgress(55, 75, localEntryIndex, localEntries.length),
     );
+    if (unavailableAssetIds.has(localEntry.id)) continue;
     const remoteEntry = remoteIndexState.entries[localEntry.id] ?? null;
     const assetKey = createSyncAssetKey(collection, localEntry.id);
     const localContentHash = localContentHashesById.get(localEntry.id)
@@ -2710,6 +2770,7 @@ async function syncPatchCollectionWithRevision<TValue>(
           collection,
           entryId,
           options.normalizeRemote,
+          options.isRemoteVersionUnsupported, undefined, onUnavailable(entryId),
         ).then((state) => ({ entryId, state }))]
       : []
     ),
@@ -2794,7 +2855,7 @@ async function syncPatchCollectionWithRevision<TValue>(
   return {
     adapterId: options.id,
     mode: "patch-with-revision",
-    status,
+    status: unavailableAssetIds.size > 0 ? "conflict" : status,
     changedAssetIds: Array.from(new Set(changedAssetIds)),
     collectionRevision: remoteIndexState.revision,
     collectionEtag: remoteIndexState.etag ?? null,
@@ -3886,4 +3947,35 @@ function normalizeRemoteTimestamp(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function createUnavailableRemoteItem<TValue>(options: {
+  session: SyncRemoteSession; collection: SyncRemoteCollection; transaction: SyncEngineTransaction;
+  assetId: string; reason: NonNullable<SyncConflictItem["remoteUnavailableReason"]>; meta: RemoteAssetMeta;
+  local: { value: TValue; deletedAt: string | null } | null; localHash: string | null;
+}): SyncPlanItem {
+  const { session, collection, transaction, assetId, meta, local } = options;
+  const refuseRemote = async () => { throw new Error("Unavailable remote content cannot be selected."); };
+  return {
+    adapterId: collection.adapterId, assetId, kind: "conflict", remoteUnavailableReason: options.reason,
+    localValue: local?.value ?? null, localHash: options.localHash, remoteValue: null,
+    remoteHash: meta.contentHash, remoteDeletedAt: meta.deletedAt, remoteUpdatedAt: meta.committedAt,
+    applyDownload: refuseRemote, applyDiscardLocal: refuseRemote, applyLocalRestore: async () => {},
+    applyUpload: async () => {
+      const base = { collection, assetId, baseRevision: meta.revision, baseContentHash: resolveRemoteBaseContentHash(meta) };
+      if (local === null || local.deletedAt !== null) {
+        transaction.recordUpload({ adapterId: collection.adapterId, assetId, params: {
+          ...base, deletedAt: local?.deletedAt ?? new Date().toISOString(),
+          targetContentHash: await createSyncContentHash(session, collection, null),
+        } });
+        transaction.stageTouch(createSyncAssetKey(collection, assetId), local === null ? null : options.localHash);
+      } else {
+        const contentHash = options.localHash ?? await createSyncContentHash(session, collection, local.value);
+        transaction.recordUpload({ adapterId: collection.adapterId, assetId, params: {
+          ...base, value: local.value, contentHash, replaceContent: true,
+        } });
+        transaction.stageTouch(createSyncAssetKey(collection, assetId), contentHash);
+      }
+    },
+  };
 }

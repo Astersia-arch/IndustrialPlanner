@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createFakeIndexedDbFactory } from "../shared/fake-indexed-db";
 
 import { createWorldDocument } from "@/domain/document/world-document";
 import {
@@ -9,6 +10,8 @@ import { createSnapshotStore } from "@/shared/snapshot/snapshot-store";
 import { createEditorStateReadWrite } from "@/editor/state-impl";
 
 describe("editor document writer origin", () => {
+  beforeEach(() => { vi.stubGlobal("indexedDB", createFakeIndexedDbFactory()); });
+  afterEach(() => { vi.unstubAllGlobals(); });
   it("notifies new successful local edits without replaying loaded, silent, remote or replay snapshots", async () => {
     const initial = createWorldDocument();
     const document = createSnapshotStore(initial);

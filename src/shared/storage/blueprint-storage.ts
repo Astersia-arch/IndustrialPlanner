@@ -368,9 +368,11 @@ export async function listBlueprintDirectory(
 
 export async function listBlueprintStorageEntries(): Promise<BlueprintStorageEntry[]> {
   const entries = await listFromIndexedDb<unknown>(BLUEPRINT_STORE_LOCATION);
-  return entries
-    .map((entry) => normalizeBlueprintStorageEntry(entry))
-    .filter((entry): entry is BlueprintStorageEntry => entry !== null);
+  return entries.map((entry) => {
+    const normalized = normalizeBlueprintStorageEntry(entry);
+    if (normalized === null) throw new Error("Stored blueprint entry is unreadable; original retained.");
+    return normalized;
+  });
 }
 
 export async function listBlueprintSyncEntries<
@@ -427,7 +429,13 @@ export async function applyBlueprintSyncEntry<TValue extends BlueprintStorageEnt
     return;
   }
 
-  await writeBlueprintEntry(key, entry.value, options);
+  const normalized = normalizeBlueprintStorageEntry(entry.value);
+  if (normalized === null || entry.value.schemaVersion > BLUEPRINT_SCHEMA_VERSION) {
+    throw new Error("Cannot apply an invalid or unsupported blueprint entry.");
+  }
+  if (await writeBlueprintEntry(key, normalized, options) === null) {
+    throw new Error("Failed to persist synchronized blueprint.");
+  }
 }
 
 // AI-REMOVED 2026-08-08:
@@ -457,7 +465,9 @@ async function readBlueprintEntry(
     key,
   });
 
-  return normalizeBlueprintStorageEntry(rawEntry);
+  const normalized = normalizeBlueprintStorageEntry(rawEntry);
+  if (rawEntry !== null && normalized === null) throw new Error("Stored blueprint entry is unreadable; original retained.");
+  return normalized;
 }
 
 async function writeBlueprintEntry<TEntry extends BlueprintStorageEntry>(
@@ -598,7 +608,7 @@ function collectBlueprintFolderTreeIds(
   return folderTreeIds;
 }
 
-function normalizeBlueprintStorageEntry(
+export function normalizeBlueprintStorageEntry(
   value: unknown,
 ): BlueprintStorageEntry | null {
   if (!isRecord(value) || value.kind === undefined) {
@@ -652,6 +662,7 @@ function normalizeBlueprintFolderRecord(
 
   if (
     typeof value.schemaVersion !== "number" ||
+    !Number.isInteger(value.schemaVersion) || value.schemaVersion < 1 || value.schemaVersion > BLUEPRINT_SCHEMA_VERSION ||
     value.kind !== "folder" ||
     !isNonEmptyString(value.folderId) ||
     name === null ||
@@ -803,3 +814,15 @@ function isStringArray(value: unknown): value is string[] {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+// AI-REMOVED 2026-09-28:
+// Reason: 过滤损坏条目会把读取错误当成空列表。
+// Trigger: 本地迁移恢复要求任何不可读原件都不能被静默覆盖。
+// Evidence: 审查复现高 schema 蓝图被覆盖后从业务列表消失。
+// Replacement: listBlueprintStorageEntries 的显式错误。
+// Risk: 损坏条目会阻止蓝图库加载，原始内容保持可恢复。
+// Human Review: Required
+// Original code:
+// return entries
+//   .map((entry) => normalizeBlueprintStorageEntry(entry))
+//   .filter((entry): entry is BlueprintStorageEntry => entry !== null);

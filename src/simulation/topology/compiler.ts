@@ -36,6 +36,8 @@ import {
 } from "@/shared/water-purifier-node";
 
 import { hashStable } from "./deterministic";
+import { applyDefaultPortPriorities } from "./default-port-priorities";
+import { findDirectPortConnections } from "@/shared/port-connections";
 import {
   RECIPE_PHASE_DURATION_SECONDS,
   STANDARD_TICK_RATE_PER_SECOND,
@@ -326,6 +328,15 @@ export function compileSimulationTopology(
       }
     }
   }
+
+  applyDefaultPortPriorities({
+    document: options.document,
+    registry: options.registry,
+    deviceOrder,
+    devices,
+    ports,
+    connections: physicalConnectionOrder.map((id) => physicalConnections[id]!),
+  });
 
   const { transportComponents, transportComponentIdByDeviceId } = compileTransportComponents(
     devices,
@@ -1705,51 +1716,78 @@ function compilePhysicalConnections(
   devices: Record<string, CompiledSimulationDevice>,
   isGeneralLogisticsDevice: (definitionId: string) => boolean,
 ): CompiledSimulationPhysicalConnection[] {
-  const sourcePorts = maybePorts.filter((port): port is CompiledSimulationPort =>
-    port !== undefined && port.direction === "output",
-  );
-  const targetPorts = maybePorts.filter((port): port is CompiledSimulationPort =>
-    port !== undefined && port.direction === "input",
-  );
-  const connections: CompiledSimulationPhysicalConnection[] = [];
-
-  for (const sourcePort of sourcePorts) {
-    for (const targetPort of targetPorts) {
-      if (sourcePort.isPipe !== targetPort.isPipe || sourcePort.deviceId === targetPort.deviceId) {
-        continue;
-      }
-      if (
-        areGridPointsEqual(sourcePort.outsideGridPoint, targetPort.insideGridPoint)
-        && areGridPointsEqual(sourcePort.insideGridPoint, targetPort.outsideGridPoint)
-      ) {
-        // 设备间不可直接相连：两端均非通用物流设备时，跳过不建立连接。
-        // AI-CORRECTION 2026-07-27: 此处“通用物流设备”指完整传送带族或管道设备族；
-        // 传送带物流设备不包括传送带节，管道物流设备不包括管道节。
-        // 允许设备紧贴摆放，但端口不生效。
-        const sourceDevice = devices[sourcePort.deviceId];
-        const targetDevice = devices[targetPort.deviceId];
-        if (
-          sourceDevice !== undefined
-          && targetDevice !== undefined
-          && !isGeneralLogisticsDevice(sourceDevice.definitionId)
-          && !isGeneralLogisticsDevice(targetDevice.definitionId)
-        ) {
-          continue;
-        }
-
-        connections.push({
-          id: `connection:${sourcePort.id}->${targetPort.id}`,
-          sourcePortId: sourcePort.id,
-          targetPortId: targetPort.id,
-          sourceInsideGridPoint: sourcePort.insideGridPoint,
-          targetInsideGridPoint: targetPort.insideGridPoint,
-        });
-      }
-    }
-  }
-
-  return connections;
+  const ports = maybePorts.filter((port): port is CompiledSimulationPort => port !== undefined);
+  return findDirectPortConnections(ports, (deviceId) => {
+    const device = devices[deviceId];
+    return device !== undefined && isGeneralLogisticsDevice(device.definitionId);
+  }).map(({ sourcePort, targetPort }) => ({
+    id: `connection:${sourcePort.id}->${targetPort.id}`,
+    sourcePortId: sourcePort.id,
+    targetPortId: targetPort.id,
+    sourceInsideGridPoint: sourcePort.insideGridPoint,
+    targetInsideGridPoint: targetPort.insideGridPoint,
+  }));
 }
+
+// AI-REMOVED 2026-09-28:
+// Reason: 编辑态与拓扑编译需要共用实际端口连接判定，避免默认优先级不一致。
+// Trigger: Registry 默认端口组合规则及 Inspector 展示需求。
+// Evidence: 原实现按内外坐标、运输类型和物流族判定连接。
+// Replacement: src/shared/port-connections.ts::findDirectPortConnections。
+// Risk: 保持连接遍历顺序；需验证旋转、物流族限制和异类端口隔离。
+// Human Review: Required
+//
+// Original code:
+// function compilePhysicalConnections(
+//   maybePorts: readonly (CompiledSimulationPort | undefined)[],
+//   devices: Record<string, CompiledSimulationDevice>,
+//   isGeneralLogisticsDevice: (definitionId: string) => boolean,
+// ): CompiledSimulationPhysicalConnection[] {
+//   const sourcePorts = maybePorts.filter((port): port is CompiledSimulationPort =>
+//     port !== undefined && port.direction === "output",
+//   );
+//   const targetPorts = maybePorts.filter((port): port is CompiledSimulationPort =>
+//     port !== undefined && port.direction === "input",
+//   );
+//   const connections: CompiledSimulationPhysicalConnection[] = [];
+//
+//   for (const sourcePort of sourcePorts) {
+//     for (const targetPort of targetPorts) {
+//       if (sourcePort.isPipe !== targetPort.isPipe || sourcePort.deviceId === targetPort.deviceId) {
+//         continue;
+//       }
+//       if (
+//         areGridPointsEqual(sourcePort.outsideGridPoint, targetPort.insideGridPoint)
+//         && areGridPointsEqual(sourcePort.insideGridPoint, targetPort.outsideGridPoint)
+//       ) {
+//         // 设备间不可直接相连：两端均非通用物流设备时，跳过不建立连接。
+//         // AI-CORRECTION 2026-07-27: 此处“通用物流设备”指完整传送带族或管道设备族；
+//         // 传送带物流设备不包括传送带节，管道物流设备不包括管道节。
+//         // 允许设备紧贴摆放，但端口不生效。
+//         const sourceDevice = devices[sourcePort.deviceId];
+//         const targetDevice = devices[targetPort.deviceId];
+//         if (
+//           sourceDevice !== undefined
+//           && targetDevice !== undefined
+//           && !isGeneralLogisticsDevice(sourceDevice.definitionId)
+//           && !isGeneralLogisticsDevice(targetDevice.definitionId)
+//         ) {
+//           continue;
+//         }
+//
+//         connections.push({
+//           id: `connection:${sourcePort.id}->${targetPort.id}`,
+//           sourcePortId: sourcePort.id,
+//           targetPortId: targetPort.id,
+//           sourceInsideGridPoint: sourcePort.insideGridPoint,
+//           targetInsideGridPoint: targetPort.insideGridPoint,
+//         });
+//       }
+//     }
+//   }
+//
+//   return connections;
+// }
 
 function getOrderedEntityIds(document: WorldDocument): string[] {
   const ordered = document.entityOrder.filter((entityId, index, array) =>
@@ -2214,9 +2252,17 @@ function resolveEdgeDelta(edge: GridEdge): GridPoint {
   }
 }
 
-function areGridPointsEqual(left: GridPoint, right: GridPoint): boolean {
-  return left.x === right.x && left.y === right.y;
-}
+// AI-REMOVED 2026-09-28:
+// Reason: 端口连接匹配已由共用坐标索引实现，此私有比较函数不再使用。
+// Trigger: 默认端口优先级的编辑态与编译态连接判定统一。
+// Evidence: 唯一调用者为已替换的 compilePhysicalConnections 原实现。
+// Replacement: src/shared/port-connections.ts::findDirectPortConnections。
+// Risk: Low
+// Human Review: Required
+// Original code:
+// function areGridPointsEqual(left: GridPoint, right: GridPoint): boolean {
+//   return left.x === right.x && left.y === right.y;
+// }
 
 // AI-REMOVED 2026-08-02:
 // Reason: Registry recipe 不再编译进 topology，compiler 已无秒到 tick 的配方换算职责。

@@ -44,7 +44,11 @@ import { EntityCollectionType } from "@/domain/editor/types/editor-types";
 //
 // Original code:
 // import { SIMULATION_MODE } from "@/domain/shared/simulation-mode";
-import { isCustomPortPriorityGroupsEnabled } from "@/shared/port-priority-groups";
+import {
+  isCustomPortPriorityGroupsEnabled,
+  DEFAULT_PORT_PRIORITY_PROBLEM_TITLE,
+  DEFAULT_PORT_PRIORITY_PROBLEM_DESCRIPTION,
+} from "@/shared/port-priority-groups";
 import { resolveBaseMaxPipeLogistics } from "@/shared/base-tags";
 import {
   collectUnknownWorldEntityDefinitionIssues,
@@ -145,7 +149,7 @@ export const BasePanel = observer(function BasePanel({ appHost, active = true }:
 
   interface BaseProblem {
     readonly message: string;
-    readonly severity: "error" | "warning";
+    readonly severity: "error" | "warning" | "info";
     readonly tooltip: string;
     /** 关联的设备 ID，用于点击聚焦 */
     readonly entityId?: string;
@@ -299,6 +303,7 @@ export const BasePanel = observer(function BasePanel({ appHost, active = true }:
     editor?.state.collections[EntityCollectionType.invalidPlacement]
       .filter((id) => currentDocument?.entities[id] !== undefined) ?? [],
   );
+  const defaultPortPriorities = appHost.portPriorityDefaults.getAll();
   const baseProblems = useMemo<BaseProblem[]>(() => {
     const problems: BaseProblem[] = [];
     if (currentDocument === null || editor === null) return problems;
@@ -352,6 +357,14 @@ export const BasePanel = observer(function BasePanel({ appHost, active = true }:
 
     // ③ 端口优先级组
     for (const entity of entities) {
+      if (defaultPortPriorities.has(entity.id)) {
+        problems.push({
+          message: DEFAULT_PORT_PRIORITY_PROBLEM_TITLE,
+          severity: "info",
+          tooltip: DEFAULT_PORT_PRIORITY_PROBLEM_DESCRIPTION,
+          entityId: entity.id,
+        });
+      }
       if (isCustomPortPriorityGroupsEnabled(entity.config)) {
         const deviceName = resolveDeviceName(entity.definitionId);
         const msg = `设备「${deviceName}」配置了端口优先级组`;
@@ -379,6 +392,7 @@ export const BasePanel = observer(function BasePanel({ appHost, active = true }:
     currentBase,
     currentUnknownEntityProblems,
     deviceStats.pipeLogisticsDevices,
+    defaultPortPriorities,
     editor,
     multiBaseEnabled,
     resolveDeviceName,

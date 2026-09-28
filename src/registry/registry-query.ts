@@ -6,6 +6,7 @@ import { ItemDomainFlag } from "@/domain/shared/item-domain-flags"
 import { LOGISTICS_KIND } from "@/domain/shared/logistics"
 import type { ItemDomain } from "@/domain/registry/types/entity-definition"
 import { isProtocolCoreDefinitionId } from "@/shared/protocol-core"
+import { resolveDefaultPortPriorityGroups } from "./default-port-priority"
 import {
     LOGISTICS_DEFINITION_ID_BY_KIND_AND_SHAPE,
     isLogisticsEquipmentDefinitionId,
@@ -119,6 +120,9 @@ export const createRegistryQuery = (options: CreateRegistryQueryOptions): Regist
     )
 
     return {
+        resolveDefaultPortPriorityGroups(context) {
+            return resolveDefaultPortPriorityGroups(entityDefinitionById.get(context.definitionId), context)
+        },
         findEntityDefinition(definitionId) {
             return entityDefinitionById.get(definitionId) ?? null
         },

@@ -120,7 +120,7 @@ case "$CMD" in
     echo "RUN_DIR: $RUN_DIR"
     echo ""
     echo "各步骤状态:"
-    for STEP in eslint tsc test build e2e blueprint; do
+    for STEP in eslint tsc test build e2e release blueprint; do
       if [ -f "$RUN_DIR/$STEP.exit" ]; then
         EC=$(cat "$RUN_DIR/$STEP.exit")
         echo "  $STEP: $(pass_fail "$EC") (退出码: $EC)"
@@ -178,6 +178,16 @@ case "$CMD" in
     print_fail_summary "$RUN_DIR/e2e.log"
     ;;
 
+  release)
+    RUN_DIR=$(get_run_dir "$RUN_DIR_ARG")
+    run_step "发布版测试" \
+      "npm run test:release" \
+      "$RUN_DIR/release.log" \
+      "$RUN_DIR/release.exit"
+    print_fail_summary "$RUN_DIR/release.log"
+    exit "$(cat "$RUN_DIR/release.exit")"
+    ;;
+
   blueprint)
     RUN_DIR=$(get_run_dir "$RUN_DIR_ARG")
     run_step "Blueprint" \
@@ -201,7 +211,7 @@ case "$CMD" in
     if [ -f "$EXIT_FILE" ]; then
       EC=$(cat "$EXIT_FILE")
       echo "==== [$POLL_STEP] 已完成，退出码: $EC ===="
-      if [ "$POLL_STEP" = "test" ] || [ "$POLL_STEP" = "e2e" ] || [ "$POLL_STEP" = "blueprint" ]; then
+      if [ "$POLL_STEP" = "test" ] || [ "$POLL_STEP" = "e2e" ] || [ "$POLL_STEP" = "release" ] || [ "$POLL_STEP" = "blueprint" ]; then
         print_fail_summary "$LOG_FILE"
       fi
     elif [ -f "$LOG_FILE" ]; then
@@ -235,6 +245,7 @@ case "$CMD" in
     TEST_EXIT=$(cat "$RUN_DIR/test.exit" 2>/dev/null || echo "?")
     BUILD_EXIT=$(cat "$RUN_DIR/build.exit" 2>/dev/null || echo "?")
     E2E_EXIT=$(cat "$RUN_DIR/e2e.exit" 2>/dev/null || echo "?")
+    RELEASE_EXIT=$(cat "$RUN_DIR/release.exit" 2>/dev/null || echo "?")
     BLUEPRINT_EXIT=$(cat "$RUN_DIR/blueprint.exit" 2>/dev/null || echo "?")
 
     echo ""
@@ -255,12 +266,13 @@ case "$CMD" in
     echo "| Vitest 常规测试 | npm run test | $(pass_fail "$TEST_EXIT") | $TEST_EXIT |"
     echo "| Build | npm run build | $(pass_fail "$BUILD_EXIT") | $BUILD_EXIT |"
     echo "| E2E 测试 | npm run test:e2e | $(pass_fail "$E2E_EXIT") | $E2E_EXIT |"
+    echo "| 发布版测试 | npm run test:release | $(pass_fail "$RELEASE_EXIT") | $RELEASE_EXIT |"
     echo "| Blueprint 测试 | npm run test:blueprint | $(pass_fail "$BLUEPRINT_EXIT") | $BLUEPRINT_EXIT |"
     echo ""
 
     echo "未通过的测试"
     FAIL_FOUND=0
-    for LOG in "$RUN_DIR/test.log" "$RUN_DIR/e2e.log" "$RUN_DIR/blueprint.log"; do
+    for LOG in "$RUN_DIR/test.log" "$RUN_DIR/e2e.log" "$RUN_DIR/release.log" "$RUN_DIR/blueprint.log"; do
       if [ -f "$LOG" ]; then
         grep -nE "^(FAIL|✗|×)\b|AssertionError|Expected |Received " "$LOG" 2>/dev/null | head -n 50 || true
         if grep -qE "^(FAIL|✗|×)\b" "$LOG" 2>/dev/null; then
@@ -269,7 +281,7 @@ case "$CMD" in
       fi
     done
     if [ "$FAIL_FOUND" = "0" ]; then
-      echo "未发现失败测试。"
+      echo "日志中未匹配到失败用例；是否完成及通过以各阶段退出码为准。"
     fi
     echo ""
 
@@ -277,8 +289,9 @@ case "$CMD" in
     ls -la "$RUN_DIR/"*.log "$RUN_DIR/"*.exit 2>/dev/null || true
 
     OVERALL_EXIT=0
-    for EC in "$ESLINT_EXIT" "$TSC_EXIT" "$TEST_EXIT" "$BUILD_EXIT" "$E2E_EXIT" "$BLUEPRINT_EXIT"; do
-      if [ "$EC" != "0" ] && [ "$EC" != "?" ]; then
+    for EC in "$ESLINT_EXIT" "$TSC_EXIT" "$TEST_EXIT" "$BUILD_EXIT" "$E2E_EXIT" "$RELEASE_EXIT" "$BLUEPRINT_EXIT"; do
+      # AI-CORRECTION 2026-09-28: 未执行项也必须阻止 full-check 成功。
+      if [ "$EC" != "0" ]; then
         OVERALL_EXIT=1
       fi
     done
@@ -322,6 +335,12 @@ case "$CMD" in
       "$RUN_DIR/e2e.exit"
     print_fail_summary "$RUN_DIR/e2e.log"
 
+    run_step "发布版测试" \
+      "npm run test:release" \
+      "$RUN_DIR/release.log" \
+      "$RUN_DIR/release.exit"
+    print_fail_summary "$RUN_DIR/release.log"
+
     run_step "Blueprint" \
       "npm run test:blueprint" \
       "$RUN_DIR/blueprint.log" \
@@ -341,6 +360,7 @@ case "$CMD" in
     echo "  test       仅执行 Vitest 常规测试（耗时长，建议后台启动）"
     echo "  build      仅执行 Build"
     echo "  e2e        仅执行 E2E 测试（耗时长，建议后台启动）"
+    echo "  release    仅执行发布版测试（生产构建 + 串行浏览器）"
     echo "  blueprint  仅执行 Blueprint 测试（耗时长，建议后台启动）"
     echo "  poll <step> 查询 test/blueprint 等长时间步骤的进度"
     echo "  summary    输出汇总报告"

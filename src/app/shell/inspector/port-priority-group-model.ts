@@ -1,5 +1,6 @@
 import type { WorldEntity } from "@/domain/document/world-document";
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition";
+import type { DefaultPortPriority } from "@/domain/registry/types/default-port-priority";
 import {
   DEFAULT_PORT_PRIORITY_GROUP,
   isCustomPortPriorityGroupsEnabled,
@@ -35,6 +36,7 @@ export function canConfigurePortPriorityGroups(definition: EntityDefinition): bo
 export function resolvePortPriorityGroupRows(
   definition: EntityDefinition,
   entity: WorldEntity,
+  defaults: readonly DefaultPortPriority[] | null = null,
 ): PortPriorityGroupPortRow[] {
   const customEnabled = isCustomPortPriorityGroupsEnabled(entity.config);
   const overrides = readPortPriorityGroupOverrides(entity.config);
@@ -48,7 +50,11 @@ export function resolvePortPriorityGroupRows(
       const portKey = resolvePortPriorityGroupOverrideKey(portGroup.id, port.id);
       const priorityGroup = customEnabled
         ? normalizePortPriorityGroup(overrides[portKey])
-        : normalizePortPriorityGroup(port.priorityGroup);
+        : normalizePortPriorityGroup(
+          entity.config[`portGroups[${portGroupIndex}].ports[${portIndex}].priorityGroup`]
+          ?? defaults?.find((entry) => entry.portGroupId === portGroup.id && entry.portId === port.id)?.priorityGroup
+          ?? port.priorityGroup,
+        );
 
       rows.push({
         portGroup,
@@ -72,15 +78,16 @@ export function resolvePortPriorityGroupRows(
 export function resolvePortPriorityCalloutRows(
   definition: EntityDefinition,
   entity: WorldEntity,
+  defaults: readonly DefaultPortPriority[] | null = null,
 ): PortPriorityGroupPortRow[] {
   if (
     !canConfigurePortPriorityGroups(definition)
-    || !isCustomPortPriorityGroupsEnabled(entity.config)
+    || (!isCustomPortPriorityGroupsEnabled(entity.config) && defaults === null)
   ) {
     return [];
   }
 
-  return resolvePortPriorityGroupRows(definition, entity).map((row) => ({
+  return resolvePortPriorityGroupRows(definition, entity, defaults).map((row) => ({
     ...row,
     portLabel: `${row.portLabel}-G${row.priorityGroup}`,
   }));

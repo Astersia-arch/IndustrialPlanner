@@ -1,4 +1,9 @@
+import { assertIndexedDbGeneration, assertLocalStorageGeneration, guardedStoreNames, hasStorageGeneration, RECOVERY_DATABASE } from "./storage-generation";
+import { reportStorageFailure } from "./storage-failure";
+
 export interface JsonStorageCodec<TValue> {
+  /** 关键业务读取禁止把 I/O 或解析错误伪装成缺席。 */
+  strict?: boolean;
   serialize?: (value: TValue) => string;
   deserialize?: (rawValue: string) => TValue;
 }
@@ -44,9 +49,7 @@ export async function readRawFromIndexedDb<TValue>(
 ): Promise<TValue | null> {
   const database = await openIndexedDb(location);
 
-  if (database === null) {
-    return null;
-  }
+  if (database === null) throw new Error("Local raw storage is unavailable.");
 
   try {
     const request = database
@@ -56,8 +59,6 @@ export async function readRawFromIndexedDb<TValue>(
     const value = await waitForRequest<unknown>(request);
 
     return value === undefined ? null : value as TValue;
-  } catch {
-    return null;
   } finally {
     database.close();
   }
@@ -83,10 +84,15 @@ export async function applyRawIndexedDbTransactionMutations<TValue>(
     return false;
   }
 
+  let transaction: IDBTransaction | null = null;
+  let completion: Promise<void> | null = null;
   try {
-    const storeNames = Array.from(new Set(activeBatches.map((batch) => batch.storeName)));
-    const transaction = database.transaction(storeNames, "readwrite");
-    const completion = waitForTransaction(transaction);
+    assertLocalStorageGeneration();
+    const storeNames = guardedStoreNames(database, activeBatches.map((batch) => batch.storeName));
+    transaction = database.transaction(storeNames, "readwrite");
+    completion = waitForTransaction(transaction);
+    void completion.catch(() => undefined);
+    await assertIndexedDbGeneration(transaction, database);
 
     for (const batch of activeBatches) {
       const objectStore = transaction.objectStore(batch.storeName);
@@ -104,6 +110,8 @@ export async function applyRawIndexedDbTransactionMutations<TValue>(
     await completion;
     return true;
   } catch {
+    try { transaction?.abort(); } catch { /* 事务已结束。 */ }
+    await completion?.catch(() => undefined);
     return false;
   } finally {
     database.close();
@@ -117,6 +125,7 @@ export function readFromLocalStorage<TValue>(
   const storage = getLocalStorage();
 
   if (storage === null) {
+    if (codec.strict || hasStorageGeneration()) throw new Error("Local storage is unavailable.");
     return null;
   }
 
@@ -128,7 +137,8 @@ export function readFromLocalStorage<TValue>(
     }
 
     return getCodec(codec).deserialize(rawValue);
-  } catch {
+  } catch (error) {
+    if (codec.strict || hasStorageGeneration()) throw error;
     return null;
   }
 }
@@ -138,7 +148,11 @@ export function saveToLocalStorage<TValue>(
   value: TValue,
   codec: JsonStorageCodec<TValue> = {},
 ): TValue {
-  trySaveToLocalStorage(key, value, codec);
+  if (!trySaveToLocalStorage(key, value, codec)) {
+    const error = new Error(`Failed to save local storage "${key}".`);
+    reportStorageFailure(key, error);
+    throw error;
+  }
 
   return value;
 }
@@ -155,6 +169,7 @@ export function trySaveToLocalStorage<TValue>(
   }
 
   try {
+    assertLocalStorageGeneration();
     storage.setItem(key, getCodec(codec).serialize(value));
   } catch {
     return false;
@@ -171,6 +186,7 @@ export function deleteFromLocalStorage(key: string): boolean {
   }
 
   try {
+    assertLocalStorageGeneration();
     storage.removeItem(key);
     return true;
   } catch {
@@ -185,6 +201,7 @@ export async function readFromIndexedDb<TValue>(
   const database = await openIndexedDb(location);
 
   if (database === null) {
+    if (codec.strict || (hasStorageGeneration() && location.databaseName === RECOVERY_DATABASE)) throw new Error("Local storage is unavailable.");
     return null;
   }
 
@@ -195,12 +212,15 @@ export async function readFromIndexedDb<TValue>(
       .get(location.key);
     const rawValue = await waitForRequest<unknown>(request);
 
+    if (rawValue === undefined) return null;
     if (typeof rawValue !== "string") {
+      if (codec.strict || hasStorageGeneration()) throw new Error("Invalid stored JSON value.");
       return null;
     }
 
     return getCodec(codec).deserialize(rawValue);
-  } catch {
+  } catch (error) {
+    if (codec.strict || (hasStorageGeneration() && location.databaseName === RECOVERY_DATABASE)) throw error;
     return null;
   } finally {
     database.close();
@@ -214,6 +234,7 @@ export async function listFromIndexedDb<TValue>(
   const database = await openIndexedDb(location);
 
   if (database === null) {
+    if (codec.strict || (hasStorageGeneration() && location.databaseName === RECOVERY_DATABASE)) throw new Error("Local storage is unavailable.");
     return [];
   }
 
@@ -227,16 +248,19 @@ export async function listFromIndexedDb<TValue>(
 
     return rawValues.flatMap((rawValue) => {
       if (typeof rawValue !== "string") {
+        if (codec.strict || hasStorageGeneration()) throw new Error("Invalid stored JSON value.");
         return [];
       }
 
       try {
         return [deserialize(rawValue)];
-      } catch {
+      } catch (error) {
+        if (codec.strict || hasStorageGeneration()) throw error;
         return [];
       }
     });
-  } catch {
+  } catch (error) {
+    if (codec.strict || (hasStorageGeneration() && location.databaseName === RECOVERY_DATABASE)) throw error;
     return [];
   } finally {
     database.close();
@@ -248,7 +272,11 @@ export async function saveToIndexedDb<TValue>(
   value: TValue,
   codec: JsonStorageCodec<TValue> = {},
 ): Promise<TValue> {
-  await trySaveToIndexedDb(location, value, codec);
+  if (!await trySaveToIndexedDb(location, value, codec)) {
+    const error = new Error(`Failed to save IndexedDB "${location.storeName}".`);
+    reportStorageFailure(location.storeName, error);
+    throw error;
+  }
 
   return value;
 }
@@ -311,14 +339,16 @@ export async function applyIndexedDbTransactionMutations<TValue>(
   };
   try {
     if (options.signal?.aborted) return false;
+    assertLocalStorageGeneration();
     transaction = database.transaction(
-      storeNames,
+      guardedStoreNames(database, storeNames),
       "readwrite",
     );
     completion = waitForTransaction(transaction);
     // 请求与事务可能先后失败，立即接住事务拒绝，仍由下方等待最终结果。
     void completion.catch(() => undefined);
     options.signal?.addEventListener("abort", abort, { once: true });
+    await assertIndexedDbGeneration(transaction, database);
     const serialize = getCodec(codec).serialize;
 
     for (const expected of options.expectedValues ?? []) {
@@ -388,9 +418,14 @@ export async function clearIndexedDbStores(
     return false;
   }
 
+  let transaction: IDBTransaction | null = null;
+  let completion: Promise<void> | null = null;
   try {
-    const transaction = database.transaction(activeStoreNames, "readwrite");
-    const completion = waitForTransaction(transaction);
+    assertLocalStorageGeneration();
+    transaction = database.transaction(guardedStoreNames(database, activeStoreNames), "readwrite");
+    completion = waitForTransaction(transaction);
+    void completion.catch(() => undefined);
+    await assertIndexedDbGeneration(transaction, database);
 
     for (const storeName of activeStoreNames) {
       await waitForRequest(transaction.objectStore(storeName).clear());
@@ -400,6 +435,8 @@ export async function clearIndexedDbStores(
 
     return true;
   } catch {
+    try { transaction?.abort(); } catch { /* 事务已结束。 */ }
+    await completion?.catch(() => undefined);
     return false;
   } finally {
     database.close();
@@ -443,7 +480,7 @@ async function openIndexedDb(
   return await openIndexedDbStores(location, [location.storeName]);
 }
 
-async function openIndexedDbStores(
+export async function openIndexedDbStores(
   location: IndexedDbDatabaseLocation,
   storeNames: readonly string[],
 ): Promise<IDBDatabase | null> {
@@ -530,7 +567,7 @@ function openDatabase(
   });
 }
 
-function waitForRequest<TResult>(request: IDBRequest<TResult>): Promise<TResult> {
+export function waitForRequest<TResult>(request: IDBRequest<TResult>): Promise<TResult> {
   return new Promise((resolve, reject) => {
     request.onerror = () => {
       reject(request.error ?? new Error("IndexedDB request failed."));
@@ -542,7 +579,7 @@ function waitForRequest<TResult>(request: IDBRequest<TResult>): Promise<TResult>
   });
 }
 
-function waitForTransaction(transaction: IDBTransaction): Promise<void> {
+export function waitForTransaction(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => {
       resolve();

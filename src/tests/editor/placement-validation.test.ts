@@ -206,7 +206,7 @@ describe("placement validation", () => {
     expect(editorHost.document.getSnapshot().entityOrder).toHaveLength(1);
   });
 
-  it("accepts the detached draft box outer area and blocks the gap", () => {
+  it("rejects pipes in the removed draft box area and former gap", () => {
     const workspace = createWorkspace();
     const editorHost = createEditorHost(workspace);
     editorHost.internalDocument.setSnapshot(createDocumentWithEntities([
@@ -214,13 +214,15 @@ describe("placement validation", () => {
       createEntity("gap-pipe", "pipe_straight_1x1", -30, -30),
     ], "draft_box"));
 
-    expect(editorHost.queries.getEntityPlacementValidation("subarea-pipe").canPlace).toBe(true);
+    expect(editorHost.queries.getEntityPlacementValidation("subarea-pipe").reasons.map((reason) =>
+      reason.code,
+    )).toContain("outside-base");
     expect(editorHost.queries.getEntityPlacementValidation("gap-pipe").reasons.map((reason) =>
       reason.code,
     )).toContain("outside-base");
   });
 
-  it("keeps core-only buildings out of the detached zero-core area", () => {
+  it("keeps core-only buildings out of the removed area", () => {
     const workspace = createWorkspace();
     const editorHost = createEditorHost(workspace);
     editorHost.internalDocument.setSnapshot(createDocumentWithEntities([
@@ -234,11 +236,24 @@ describe("placement validation", () => {
 
   it("restricts a tagged building to its named subarea", () => {
     const workspace = createWorkspace();
+    workspace.registry.baseDefinitions = workspace.registry.baseDefinitions.map((definition) =>
+      definition.id === "draft_box"
+        ? {
+          ...definition,
+          subAreas: [{
+            id: "test_upper_left",
+            position: { x: -60, y: -60 },
+            placeableArea: { width: 0, height: 0 },
+            outerRing: { top: 20, right: 20, bottom: 20, left: 20 },
+          }],
+        }
+        : definition
+    );
     workspace.registry.entityDefinitions = workspace.registry.entityDefinitions.map((definition) =>
       definition.id === "pipe_straight_1x1"
         ? {
           ...definition,
-          tags: [...definition.tags, `${BASE_AREA_ONLY_TAG_PREFIX}draft_box_upper_left`],
+          tags: [...definition.tags, `${BASE_AREA_ONLY_TAG_PREFIX}test_upper_left`],
         }
         : definition
     );

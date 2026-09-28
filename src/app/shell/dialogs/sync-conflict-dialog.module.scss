@@ -188,3 +188,8 @@
     transform: rotate(360deg);
   }
 }
+
+.sync-conflict-options label:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -324,3 +324,9 @@ EDA（`blueprint-planner`）后续开发若不涉及 UI 调整，不需要浏览
 ## 临时目录的使用
 
 `.temp/.trash` 才是真正的临时目录。当需要生成一次性脚本、在磁盘上放置一次性临时文件时，请放置到 `.temp/.trash` 下的某个位置。
+
+## 发布版测试（2026-09-28）
+
+【用户明确要求】发布版测试是 full-check 的必跑类型，入口 `npm run test:release`，检查调度命令为 `release`。用于验证生产构建后的 PWA、版本切换、迁移和恢复；首例为 ABAC。它不属于 Vitest normal，不加入 simple-check。用户明确指定发布版测试时，可单独运行。
+
+实现与用例规范见 `.docs/common/测试/发布版测试.md`。浏览器执行使用 Playwright CLI，遵守串行和逐轮资源清理规则；产物和证据写入 `.temp/playwright-test/release/`。构建变体只在测试构建内注入，不写回源码、不修改真实 Schema、不操作 Git。测试变体不可部署。full-check 的发布版测试失败、未执行或清理失败均不得算通过。

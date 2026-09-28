@@ -1,4 +1,5 @@
 const UI: Record<string, string> = {
+    "canvas.storageFailure": "Local storage failed. Some changes may be unsaved. Export important blueprints before leaving; do not clear browser data.",
     "canvas.toast.beltStart": "Start a new belt from a device output or another belt",
     "canvas.toast.pipeStart": "Start a new pipe from a device output or another pipe",
     "canvas.alert.beltStart": "Start a belt from 【device and logistics outputs】 or 【another belt】",
@@ -179,6 +180,8 @@ const UI: Record<string, string> = {
     "syncConflict.unknownTime": "Unknown",
     "syncConflict.useLocalDeleteUnknownBase": "Use Mine (delete remote base if no local copy existed)",
     "syncConflict.apply": "Apply All Choices",
+    "syncConflict.unsupportedSchema": "Remote data requires a newer version. Use Mine will replace or remove the corresponding remote content.",
+    "syncConflict.invalidContent": "Remote data is damaged. Use Mine will replace or remove the corresponding remote content.",
     "syncConflict.batchUseLocal": "Use Mine for All",
     "syncConflict.batchUseRemote": "Use Remote for All",
     "syncConflict.stopSync": "Keep Both Local and Remote Data, and Turn Off Sync",

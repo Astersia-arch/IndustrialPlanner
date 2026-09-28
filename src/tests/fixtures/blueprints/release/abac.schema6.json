@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 6,
+  "blueprintId": "release-abac",
+  "version": "fixture-v1",
+  "name": "Release ABAC",
+  "description": "",
+  "baseId": "wuling_protocol_core",
+  "initialGridPoint": {
+    "x": 20,
+    "y": 20
+  },
+  "entities": {
+    "source-storage": {
+      "id": "source-storage",
+      "definitionId": "storager_1",
+      "position": {
+        "x": 20,
+        "y": 20
+      },
+      "rotation": 180,
+      "config": {
+        "storageSlotGroups[0].slots[0].initialItemType": "item_iron_ore",
+        "storageSlotGroups[0].slots[0].initialCount": 20
+      },
+      "tags": []
+    },
+    "belt": {
+      "id": "belt",
+      "definitionId": "belt_straight_1x1",
+      "position": {
+        "x": 20,
+        "y": 19
+      },
+      "rotation": 270,
+      "config": {},
+      "tags": []
+    },
+    "sink-storage": {
+      "id": "sink-storage",
+      "definitionId": "storager_1",
+      "position": {
+        "x": 20,
+        "y": 16
+      },
+      "rotation": 180,
+      "config": {},
+      "tags": []
+    }
+  },
+  "entityOrder": [
+    "source-storage",
+    "belt",
+    "sink-storage"
+  ],
+  "slotLinks": [],
+  "regions": [],
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "updatedAt": "1970-01-01T00:00:00.000Z"
+}

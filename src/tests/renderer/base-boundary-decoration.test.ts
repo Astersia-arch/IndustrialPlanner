@@ -136,18 +136,35 @@ describe("BaseBoundaryDecoration", () => {
     })
   })
 
-  it("draws the detached zero-core draft area using its outer boundary", () => {
+  it("draws only the draft box main boundaries", () => {
     const draftBox = createRegistryContract().baseDefinitions.find(
       (definition) => definition.id === "draft_box",
     )!
     // 当前零核心分区以 (-60, -60) 为原点，四侧各扩展 20 格；与 Registry 和 base-areas 契约一致。
+    // AI-CORRECTION 2026-09-28: 用户要求移除该分区，现在仅绘制主区域及其外环。
     expect(resolveBaseBoundaryGridRects(draftBox)).toEqual([
       { x: 0, y: 0, width: 320, height: 320 },
-      { x: -80, y: -80, width: 40, height: 40 },
+      // AI-REMOVED 2026-09-28:
+      // Reason: 草稿箱取消左上角独立外环区。
+      // Trigger: 用户要求删除该区域并更新对应测试。
+      // Evidence: draft_box 改为仅保留主区域。
+      // Replacement: 当前数组仅保留主区域矩形。
+      // Risk: 原独立区域内已有设备将判定为越界。
+      // Human Review: Required
+      // Original code:
+      // { x: -80, y: -80, width: 40, height: 40 },
     ])
     expect(resolveBaseOuterGridRects(draftBox)).toEqual([
       { x: -20, y: -20, width: 360, height: 360 },
-      { x: -80, y: -80, width: 40, height: 40 },
+      // AI-REMOVED 2026-09-28:
+      // Reason: 草稿箱取消左上角独立外环区。
+      // Trigger: 用户要求删除该区域并更新对应测试。
+      // Evidence: draft_box 改为仅保留主区域。
+      // Replacement: 当前数组仅保留主区域矩形。
+      // Risk: 原独立区域内已有设备将判定为越界。
+      // Human Review: Required
+      // Original code:
+      // { x: -80, y: -80, width: 40, height: 40 },
     ])
   })
 

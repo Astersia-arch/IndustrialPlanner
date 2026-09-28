@@ -1,3 +1,4 @@
+import { RemoteAssetUnavailableError } from "../remote-types";
 // AI-CORRECTION 2026-08-12:
 // cf-sync-v2 的网络、JSON/UTF-8、哈希和两阶段提交已迁入 Dedicated Worker。
 // 本文件只保留 SyncRemote 值语义适配、assetId codec 以及业务同步状态编排。
@@ -323,6 +324,9 @@ class CloudflareV2SyncRemoteSession implements SyncRemoteSession {
       planRevision: plan.revision,
       planServerTime: plan.serverTime,
     }).catch((error: unknown) => {
+      if (error instanceof CfV2HttpError && error.code === "invalid_asset_content") {
+        throw new RemoteAssetUnavailableError(error.message);
+      }
       // AI-CORRECTION 2026-08-13: 下载 409 与写 409 同语义，转换为引擎可识别的整轮重启信号。
       if (error instanceof CfV2HttpError && error.status === 409) {
         // 定位埋点：把后端 error code 带进重启日志，区分 409 的具体语义。

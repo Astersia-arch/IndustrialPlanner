@@ -1,3 +1,4 @@
+import { assertLocalStorageGeneration } from "@/shared/storage/storage-generation";
 import { createLogger } from "@/shared/logging/logger";
 import { type SyncConnectionSettings } from "../storage";
 import type {
@@ -1242,6 +1243,10 @@ export function createSyncService(options: SyncServiceOptions): SyncService {
     decisions: readonly SyncAdapterConflictDecision[],
   ): Promise<void> => {
     for (const decision of decisions) {
+      if (decision.resolution === "use-remote" && items.some(item =>
+        item.adapterId === decision.adapterId && item.assetId === decision.assetId && item.remoteUnavailableReason !== undefined)) {
+        throw new Error("Unavailable remote content cannot be selected.");
+      }
       if (decision.resolution === "pause") {
         continue;
       }
@@ -1305,6 +1310,7 @@ export function createSyncService(options: SyncServiceOptions): SyncService {
         );
       }
     }
+    assertLocalStorageGeneration();
     return await transaction.writeBatch.commit();
   };
 
@@ -2189,6 +2195,7 @@ function toConflictShape(item: SyncPlanItem): SyncAdapterConflict<unknown> {
     remoteHash: item.remoteHash,
     remoteDeletedAt: item.remoteDeletedAt,
     remoteUpdatedAt: item.remoteUpdatedAt,
+    remoteUnavailableReason: item.remoteUnavailableReason,
   };
 }
 

@@ -60,7 +60,9 @@ export class CloudflareV2UploadJournal {
       storeName: CF_UPLOAD_JOURNAL_STORE,
       key: this.scopeKey,
     });
-    return normalizeJournal(value, this.scopeKey);
+    const journal = normalizeJournal(value, this.scopeKey);
+    if (value !== null && journal === null) throw new Error("Invalid upload journal; original data was preserved.");
+    return journal;
   }
 
   public async seal(options: {

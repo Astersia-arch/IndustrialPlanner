@@ -1,3 +1,4 @@
+import { runStorageEffect } from "@/shared/storage/storage-failure";
 import type { AppHost } from "@/app/host/app-host";
 import { makeAutoObservable, reaction } from "mobx";
 import {
@@ -294,11 +295,11 @@ export class KeyboardShortcutManager {
     this.disposeReaction = reaction(
       () => JSON.stringify(this.shortcuts),
       () => {
-        saveToLocalStorageWithVersion(
+        runStorageEffect("shortcuts", () => saveToLocalStorageWithVersion(
           APP_SHORTCUTS_LOCAL_STORAGE_KEY,
           APP_SHORTCUTS_STORAGE_VERSION,
           this.shortcuts,
-        );
+        ));
       },
     );
 

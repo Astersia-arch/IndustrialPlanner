@@ -30,6 +30,7 @@ import { WorkbenchSaveBlueprintDialogController } from "../shell/state/save-blue
 import { cleanupDiscardableV2LocalStorageBeforeV3Boot } from "../migration";
 import { WorkbenchOverlapEntityMenuController } from "../shell/state/overlap-entity-menu-state";
 import { RegionalSettingsController } from "../regional-settings";
+import { DefaultPortPriorityController } from "../port-priority";
 // AI-REMOVED 2026-09-26:
 // Reason: 音效运行时提取为独立 Audio 模块，App 仅保留 UI 与真实手势入口。
 // Trigger: 用户授权模块重构并逐项确认 AudioAction、AudioContract 和 WorkspaceContract.audio。
@@ -85,6 +86,7 @@ export interface AppHost extends AppContract {
   recipePicker: WorkbenchRecipePickerController;
   overlapEntityMenu: WorkbenchOverlapEntityMenuController;
   regionalSettings: RegionalSettingsController;
+  portPriorityDefaults: DefaultPortPriorityController;
   // AI-REMOVED 2026-07-29:
   // Reason: 同步状态不再是 AppHost 的内部对象。
   // Trigger: 独立顶层 sync 模块通过 WorkspaceContract.sync 发布状态。
@@ -104,6 +106,7 @@ export function createAppHost(
 ): AppHost {
   const disposers: Array<() => void> = [];
   const internalState = createUiStateReadWrite();
+  const portPriorityDefaults = new DefaultPortPriorityController(workspace.registry);
   // AI-REMOVED 2026-09-26:
   // Reason: 音效运行时提取为独立 Audio 模块，App 仅保留 UI 与真实手势入口。
   // Trigger: 用户授权模块重构并逐项确认 AudioAction、AudioContract 和 WorkspaceContract.audio。
@@ -229,6 +232,7 @@ export function createAppHost(
     saveBlueprintDialog,
     overlapEntityMenu,
     regionalSettings,
+    portPriorityDefaults,
     // AI-REMOVED 2026-09-26:
     // Reason: 音效运行时提取为独立 Audio 模块，App 仅保留 UI 与真实手势入口。
     // Trigger: 用户授权模块重构并逐项确认 AudioAction、AudioContract 和 WorkspaceContract.audio。
@@ -310,6 +314,7 @@ export function createAppHost(
       blueprintPreview.close();
       saveBlueprintDialog.close();
       overlapEntityMenu.dispose();
+      portPriorityDefaults.dispose();
       encyclopediaPicker.dispose();
       recipePicker.dispose();
       actionImpl.dispose();

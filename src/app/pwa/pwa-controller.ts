@@ -2,6 +2,7 @@ import { makeAutoObservable, reaction, runInAction } from "mobx";
 
 import { isRootPublicAssetBaseUrl } from "@/shared/browser/public-asset-url";
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
+import { runStorageEffect } from "@/shared/storage/storage-failure";
 
 const PWA_PREFERENCE_LOCAL_STORAGE_KEY = "industrial-planner-pwa-preference";
 const UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000;
@@ -954,11 +955,11 @@ export class PwaController {
   }
 
   private persistPreference(): void {
-    saveToLocalStorage<PersistedPwaPreference>(PWA_PREFERENCE_LOCAL_STORAGE_KEY, {
+    runStorageEffect("pwa-preference", () => saveToLocalStorage<PersistedPwaPreference>(PWA_PREFERENCE_LOCAL_STORAGE_KEY, {
       desktopInstallPromptDismissed: this.desktopInstallPromptDismissed,
       deviceAnimationsRequested: this.deviceAnimationsRequested,
       offlineMode: this.offlinePreference,
-    });
+    }));
   }
 }
 

@@ -1,3 +1,4 @@
+import { hasStorageGeneration } from "./storage-generation";
 import type { IndexedDbStorageLocation } from "./browser-storage";
 import {
   readFromIndexedDb,
@@ -116,7 +117,10 @@ export function readFromLocalStorageWithMigration<T, TContext = void>(
     return null;
   }
 
-  return applyMigrations(raw, currentVersion, migrations, context);
+  const migrated = applyMigrations(raw, currentVersion, migrations, context);
+  // 2026-09-28: 安全启动后的应用禁止把不可迁移数据解释为空白默认值，再自动保存覆盖原件。
+  if (migrated === null && hasStorageGeneration()) throw new Error("Stored data cannot be migrated; original data was preserved.");
+  return migrated;
 }
 
 /**
@@ -155,7 +159,10 @@ export async function readFromIndexedDbWithMigration<T, TContext = void>(
     return null;
   }
 
-  return applyMigrations(raw, currentVersion, migrations, context);
+  const migrated = applyMigrations(raw, currentVersion, migrations, context);
+  // 2026-09-28: 安全启动后的应用禁止把不可迁移数据解释为空白默认值，再自动保存覆盖原件。
+  if (migrated === null && hasStorageGeneration()) throw new Error("Stored data cannot be migrated; original data was preserved.");
+  return migrated;
 }
 
 /**

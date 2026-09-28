@@ -111,6 +111,7 @@ export class SyncStateImpl implements SyncState {
         assetId: conflict.assetId,
         kind: conflict.kind ?? "conflict",
         remoteUpdatedAt: conflict.remoteUpdatedAt,
+        remoteUnavailableReason: conflict.remoteUnavailableReason,
       })),
     };
 
@@ -128,6 +129,10 @@ export class SyncStateImpl implements SyncState {
     ) {
       return;
     }
+
+    if (decisions.some(decision => decision.resolution === "use-remote"
+      && this.pendingConflict?.items.some(item => item.adapterId === decision.adapterId
+        && item.assetId === decision.assetId && item.remoteUnavailableReason !== undefined))) return;
 
     this.pendingConflict = {
       ...this.pendingConflict,

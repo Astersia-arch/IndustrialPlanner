@@ -12,12 +12,17 @@ import {
 import { InspectorCollapsiblePanel } from "@/app/shell/inspector/inspector-collapsible-panel";
 import styles from "@/app/shell/app-shell.module.scss";
 import { cm } from "@/app/shell/shared/css-module-class";
+import {
+  DEFAULT_PORT_PRIORITY_PROBLEM_TITLE,
+  DEFAULT_PORT_PRIORITY_PROBLEM_DESCRIPTION,
+} from "@/shared/port-priority-groups";
 
 export const PROBLEM_INSPECTOR_KEY = "problem-inspector";
 
 interface DeviceProblem {
   readonly message: string;
-  readonly severity: "error" | "warning";
+  readonly severity: "error" | "warning" | "info";
+  readonly description?: string;
 }
 
 function collectPlacementProblems(
@@ -170,12 +175,18 @@ export const ProblemInspector = observer(function ProblemInspector({
   const powerProblems = collectPowerProblems(appHost, entity, definition, runtimeStatus, runtimeSample);
   const recipeProblems = collectRecipeProblems(runtimeStatus);
   const manualActivityRecipeProblems = collectManualActivityRecipeProblems(appHost, entity, definition);
+  const defaultPriorityProblems: DeviceProblem[] = appHost.portPriorityDefaults.get(entity.id) === null ? [] : [{
+    message: DEFAULT_PORT_PRIORITY_PROBLEM_TITLE,
+    severity: "info",
+    description: DEFAULT_PORT_PRIORITY_PROBLEM_DESCRIPTION,
+  }];
 
   const allProblems = [
     ...placementProblems,
     ...powerProblems,
     ...recipeProblems,
     ...manualActivityRecipeProblems,
+    ...defaultPriorityProblems,
   ];
 
   if (allProblems.length === 0) {
@@ -212,7 +223,7 @@ export const ProblemInspector = observer(function ProblemInspector({
       */}
       {allProblems.map((problem, index) => (
         <div
-          aria-label={`${problem.severity === "error" ? "错误" : "警告"}：${problem.message}`}
+          aria-label={`${problem.severity === "error" ? "错误" : problem.severity === "warning" ? "警告" : "提示"}：${problem.message}`}
           className={cm(styles, "problem-row")}
           data-problem-row
           data-problem-severity={problem.severity}
@@ -220,6 +231,7 @@ export const ProblemInspector = observer(function ProblemInspector({
           role="listitem"
         >
           <p>{problem.message}</p>
+          {problem.description !== undefined ? <p>{problem.description}</p> : null}
         </div>
       ))}
     </InspectorCollapsiblePanel>

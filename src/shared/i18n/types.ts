@@ -1,6 +1,7 @@
 import type { AppLocale } from "@/domain/app/types/app-types";
 
 export type UiKey =
+  | "canvas.storageFailure"
   | "canvas.toast.beltStart"
   | "canvas.toast.pipeStart"
   | "canvas.alert.beltStart"
@@ -180,6 +181,8 @@ export type UiKey =
   | "syncConflict.unknownTime"
   | "syncConflict.useLocalDeleteUnknownBase"
   | "syncConflict.apply"
+  | "syncConflict.unsupportedSchema"
+  | "syncConflict.invalidContent"
   | "syncConflict.batchUseLocal"
   | "syncConflict.batchUseRemote"
   | "syncConflict.stopSync"

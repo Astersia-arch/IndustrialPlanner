@@ -1,4 +1,5 @@
 const UI: Record<string, string> = {
+    "canvas.storageFailure": "本地数据读写失败，部分更改可能尚未保存。请先导出重要蓝图，勿清理浏览器数据。",
     "canvas.toast.beltStart": "请从设备出口或其他传送带处开始连接新传送带",
     "canvas.toast.pipeStart": "请从设备出口或其他管道处开始连接新管道",
     "canvas.alert.beltStart": "传送带需从【设备与物流出口】或【其他传送带】处开始连接",
@@ -179,6 +180,8 @@ const UI: Record<string, string> = {
     "syncConflict.unknownTime": "未知",
     "syncConflict.useLocalDeleteUnknownBase": "使用我的（本机原无此基地时，删除远端）",
     "syncConflict.apply": "应用全部选择",
+    "syncConflict.unsupportedSchema": "远端数据由更新版本保存，当前版本无法使用。使用我的数据将覆盖或清理对应远端内容。",
+    "syncConflict.invalidContent": "远端数据已损坏，无法使用。使用我的数据将覆盖或清理对应远端内容。",
     "syncConflict.batchUseLocal": "全部使用我的",
     "syncConflict.batchUseRemote": "全部使用远端",
     "syncConflict.stopSync": "保留本地与远端数据，并关闭同步",

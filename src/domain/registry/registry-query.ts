@@ -8,6 +8,7 @@ import type { ItemDomain } from "./types/entity-definition";
 import type { EntityDefinition } from "./types/entity-definition";
 import type { ItemDefinition } from "./types/item-definition";
 import type { RecipeDefinition } from "./types/recipe-definition";
+import type { DefaultPortPriority, DefaultPortPriorityContext } from "./types/default-port-priority";
 // AI-REMOVED 2026-08-19:
 // Reason: RegistryQuery 不再解析按 SimulationMode 声明的设备覆盖配置。
 // Trigger: 用户要求删除 simulationModeConfigs 及对应基础设施。
@@ -21,6 +22,8 @@ import type { RecipeDefinition } from "./types/recipe-definition";
 // import type { SimulationMode } from "../shared/simulation-mode";
 
 export interface RegistryQuery {
+	/** 推导当前直接连接组合的特殊默认优先级；未命中时返回 null，不应用用户覆盖。 */
+	resolveDefaultPortPriorityGroups(context: DefaultPortPriorityContext): readonly DefaultPortPriority[] | null;
 	/** 按 ID 精确查找实体定义；未注册时返回 null。 */
 	findEntityDefinition(definitionId: string): EntityDefinition | null;
 	/** 按 ID 精确查找物品定义；未注册时返回 null。 */

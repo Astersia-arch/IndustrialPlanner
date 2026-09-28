@@ -24,9 +24,12 @@ export async function readWorldDocument(
 ): Promise<WorldDocument | null> {
   const persistedDocument = await readFromIndexedDb<unknown>(
     createWordDocumentLocation(documentKey),
+    { strict: true },
   );
 
-  return normalizeWorldDocument(persistedDocument);
+  const document = normalizeWorldDocument(persistedDocument);
+  if (persistedDocument !== null && document === null) throw new Error("Stored world document is unreadable; original retained.");
+  return document;
 }
 
 export async function writeWorldDocument(document: WorldDocument): Promise<void> {
@@ -68,12 +71,14 @@ export async function replaceWorldDocuments(
 export async function listWorldDocuments(): Promise<WorldDocument[]> {
   const persistedDocuments = await listFromIndexedDb<unknown>(
     WORLD_DOCUMENT_DATABASE_LOCATION,
+    { strict: true },
   );
 
   return persistedDocuments.flatMap((persistedDocument) => {
     const document = normalizeWorldDocument(persistedDocument);
 
-    return document === null ? [] : [document];
+    if (document === null) throw new Error("Stored world document is unreadable; original retained.");
+    return [document];
   });
 }
 

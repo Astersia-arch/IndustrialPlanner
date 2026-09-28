@@ -1,4 +1,5 @@
 import { reaction, runInAction } from "mobx";
+import { runStorageEffect } from "@/shared/storage/storage-failure";
 
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
 
@@ -28,10 +29,10 @@ export function hookLocalstorage(editorHost: EditorHost): () => void {
   return reaction(
     () => JSON.stringify(editorHost.internalState.internalPersistState),
     () => {
-      saveToLocalStorage<EditorInternalPersistStateReadWrite>(
+      runStorageEffect("editor-pointer", () => saveToLocalStorage<EditorInternalPersistStateReadWrite>(
         EDITOR_PERSIST_STATE_LOCAL_STORAGE_KEY,
         editorHost.internalState.internalPersistState,
-      );
+      ));
     },
   );
 }

@@ -1,3 +1,4 @@
+import { reportStorageFailure } from "@/shared/storage/storage-failure";
 import { makeAutoObservable, runInAction } from "mobx";
 
 import type { RegistryContract } from "@/domain/registry/registry-contract";
@@ -501,5 +502,6 @@ export class RegionalSettingsController {
       .then(async () => {
         await saveRegionalSettingsAsset(snapshot, { origin: "local" });
       });
+    void this.persistenceQueue.catch(error => reportStorageFailure("regional-settings", error));
   }
 }

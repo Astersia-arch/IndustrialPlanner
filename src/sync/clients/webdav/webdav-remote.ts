@@ -1,3 +1,5 @@
+import { withStorageGeneration } from "@/shared/storage/storage-generation";
+import { RemoteAssetUnavailableError, RemoteWriteConflictError } from "../remote-types";
 import {
   createSha256CanonicalHash,
   createStableJsonHash,
@@ -115,9 +117,11 @@ export class WebDavSyncRemote implements SyncRemote {
   }
 
   public async resetRemote(): Promise<void> {
-    await this.client.deleteResource("");
-    clearSyncMetadata();
-    await clearActiveSyncTombstoneScope();
+    await withStorageGeneration(async () => {
+      await this.client.deleteResource("");
+      clearSyncMetadata();
+      await clearActiveSyncTombstoneScope();
+    });
   }
 
   public dispose(): void {
@@ -408,6 +412,10 @@ class WebDavSyncRemoteWriteBatch implements SyncRemoteWriteBatch {
   }
 
   public async commit(): Promise<RemoteWriteBatchResult> {
+    return withStorageGeneration(() => this.commitMutations());
+  }
+
+  private async commitMutations(): Promise<RemoteWriteBatchResult> {
     const writes: RemoteWriteResult[] = [];
     const mutationsByAdapter = new Map<string, WebDavWriteMutation[]>();
     for (const mutation of this.mutations) {
@@ -487,7 +495,16 @@ class WebDavSyncRemoteWriteBatch implements SyncRemoteWriteBatch {
     mutations: readonly WebDavWriteMutation[],
   ): Promise<RemoteWriteResult[]> {
     const client = this.session.getClient();
-    const indexState = await this.session.readWebDavIndexState(collection);
+    const plannedIndex = await this.session.readWebDavIndexState(collection);
+    const indexState = await readRemoteIndexState(client, binding.indexPath);
+    if (indexState.index.revision !== plannedIndex.index.revision
+      || createStableJsonHash(indexState.index) !== createStableJsonHash(plannedIndex.index)) {
+      throw new RemoteWriteConflictError(mutations.map(mutation => ({
+        assetType: collection.assetType, assetId: mutation.params.assetId, reason: "revision-mismatch",
+        expectedRevision: plannedIndex.index.revision, actualRevision: indexState.index.revision,
+        expectedHash: mutation.params.baseContentHash, actualHash: indexState.index.entries[mutation.params.assetId]?.contentHash ?? null,
+      })));
+    }
     let nextIndex = indexState.index;
     const writes: RemoteWriteResult[] = [];
 
@@ -565,23 +582,38 @@ class WebDavSyncRemoteWriteBatch implements SyncRemoteWriteBatch {
     mutations: readonly WebDavWriteMutation[],
   ): Promise<RemoteWriteResult[]> {
     const client = this.session.getClient();
-    const indexState = await this.session.readWebDavIndexState(collection);
+    const plannedIndex = await this.session.readWebDavIndexState(collection);
+    const indexState = await readRemoteIndexState(client, binding.indexPath);
+    if (indexState.index.revision !== plannedIndex.index.revision
+      || createStableJsonHash(indexState.index) !== createStableJsonHash(plannedIndex.index)) {
+      throw new RemoteWriteConflictError(mutations.map(mutation => ({
+        assetType: collection.assetType, assetId: mutation.params.assetId, reason: "revision-mismatch",
+        expectedRevision: plannedIndex.index.revision, actualRevision: indexState.index.revision,
+        expectedHash: mutation.params.baseContentHash, actualHash: indexState.index.entries[mutation.params.assetId]?.contentHash ?? null,
+      })));
+    }
     let nextIndex = indexState.index;
     const writes: RemoteWriteResult[] = [];
     const pendingMetaWrites: Promise<void>[] = [];
 
     for (const mutation of mutations) {
       if (mutation.type === "put") {
-        const previousState = await this.session.readWebDavPatchState(
-          collection,
-          mutation.params.assetId,
-        );
+        const repairMeta = mutation.params.replaceContent
+          ? await readRemotePatchMetaState(client, binding.directoryPath(mutation.params.assetId))
+          : null;
+        if (mutation.params.replaceContent && repairMeta === null) {
+          throw new Error("Cannot replace an asset without valid revision metadata.");
+        }
+        const previousState = repairMeta === null
+          ? await this.session.readWebDavPatchState(collection, mutation.params.assetId)
+          : { ...repairMeta, value: null, remoteUpdatedAt: repairMeta.meta.committedAt };
         const { nextMeta, metaWriteOptions } = await writeRemotePatchContent({
           client,
           directoryPath: binding.directoryPath(mutation.params.assetId),
           value: mutation.params.value,
           previousState,
           deltaThreshold: binding.deltaThreshold ?? 50,
+          replaceContent: mutation.params.replaceContent,
         });
         nextIndex = upsertRemoteIndexEntry(nextIndex, mutation.params.assetId, {
           contentHash: mutation.params.contentHash,
@@ -723,9 +755,7 @@ function parseJsonContent(content: string, remotePath: string): unknown {
     return JSON.parse(content);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Remote file "${remotePath}" contains invalid JSON: ${message}`, {
-      cause: error,
-    });
+    throw new RemoteAssetUnavailableError(`Remote file "${remotePath}" contains invalid JSON: ${message}`);
   }
 }
 
@@ -916,12 +946,16 @@ async function readRemotePatchState(
     })),
   ]);
   if (fullValue === null || patches.some((patch) => patch === null)) {
-    return null;
+    throw new RemoteAssetUnavailableError(`Remote patch content is missing: ${directoryPath}`);
   }
 
   let value = fullValue;
   for (const patch of patches) {
-    value = applyJsonPatch(value, patch!);
+    try { value = applyJsonPatch(value, patch!); }
+    catch { throw new RemoteAssetUnavailableError(`Remote patch content is invalid: ${directoryPath}`); }
+  }
+  if (createStableJsonHash(value) !== resolvePatchLatestHash(meta)) {
+    throw new RemoteAssetUnavailableError(`Remote patch content hash mismatch: ${directoryPath}`);
   }
 
   return {
@@ -1025,6 +1059,7 @@ async function writeRemotePatchContent(options: {
   readonly value: unknown;
   readonly previousState: RemotePatchState<unknown> | null;
   readonly deltaThreshold: number;
+  readonly replaceContent?: boolean;
 }): Promise<WriteRemotePatchContentResult> {
   await options.client.makeDirectory(options.directoryPath);
   const nextHash = createStableJsonHash(options.value);
@@ -1047,7 +1082,7 @@ async function writeRemotePatchContent(options: {
   const nextDeltaChain = [...options.previousState.meta.deltaChain, nextHash];
   const nextRevision = options.previousState.meta.revision + 1;
 
-  if (nextDeltaChain.length >= options.previousState.meta.deltaThreshold) {
+  if (options.replaceContent || nextDeltaChain.length >= options.previousState.meta.deltaThreshold) {
     await options.client.writeTextFile(resolvePatchFullPath(options.directoryPath, nextHash), JSON.stringify(options.value));
     return {
       nextMeta: {
@@ -1171,10 +1206,22 @@ async function writeRevisionJournalState<TValue extends { readonly revision: num
     `rev-${value.revision.toString().padStart(12, "0")}.json`,
   );
 
-  await Promise.all([
-    client.writeTextFile(revisionPath, serializedValue, writeOptions),
-    client.writeTextFile(canonicalPath, serializedValue),
-  ]);
+  // 2026-09-28: 必须先确认修订占位成功，再更新 canonical；并行写会让失败竞争者覆盖胜者索引。
+  const reserved = await client.writeTextFile(revisionPath, serializedValue, writeOptions);
+  if (!reserved) throw new RemoteWriteConflictError([]);
+  if (!await client.writeTextFile(canonicalPath, serializedValue)) throw new Error("Failed to publish WebDAV revision metadata.");
+  // AI-REMOVED 2026-09-28:
+  // Reason: canonical 更新先于条件写结果会丢失其他客户端已提交的索引。
+  // Trigger: 回滚后的“使用我的”必须尊重远端并发版本。
+  // Evidence: Promise.all 同时发送有条件修订写和无条件 canonical 写。
+  // Replacement: 上方顺序提交并检查 writeTextFile 结果。
+  // Risk: Low；保留协议与路径。
+  // Human Review: Required
+  // Original code:
+  // await Promise.all([
+  //   client.writeTextFile(revisionPath, serializedValue, writeOptions),
+  //   client.writeTextFile(canonicalPath, serializedValue),
+  // ]);
 }
 
 function addWebDavBindingDirectoryPaths(

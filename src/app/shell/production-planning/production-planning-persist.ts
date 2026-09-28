@@ -1,4 +1,5 @@
 import { reaction, runInAction } from "mobx";
+import { reportStorageFailure } from "@/shared/storage/storage-failure";
 import {
   loadPlannerState,
   normalizePlannerSessionState,
@@ -23,10 +24,16 @@ import type {
 export function hookPlannerIndexedDbPersistence(
   store: ProductionPlanningInputStore,
 ): () => void {
+  let disposed = false;
+  let loaded = false;
+  let writeQueue = Promise.resolve();
+  const baseline = JSON.stringify(toPersistedState(store));
+  runInAction(() => { store.hydrated = false; });
   // Step 1: 异步加载持久化状态
   void loadPlannerState().then((persisted) => {
+    if (disposed) return;
     runInAction(() => {
-      if (persisted !== null) {
+      if (persisted !== null && JSON.stringify(toPersistedState(store)) === baseline) {
         const targets = normalizePorts(persisted.targets);
         const supplies = normalizePorts(persisted.supplies);
         const sourceConfig: ProductionPlanningSourceConfig = {
@@ -48,16 +55,20 @@ export function hookPlannerIndexedDbPersistence(
         store.sourceConfig = sourceConfig;
         store.session = normalizePlannerSessionState(persisted.session);
       }
+      loaded = true;
       store.hydrated = true;
     });
+  }).catch(error => {
+    if (!disposed) reportStorageFailure("production-planning load", error);
   });
 
   // Step 2: reaction — 仅 hydration 完成后才开始写入
   const dispose = reaction(
-    () => toPersistedState(store),
-    (state) => {
-      if (!store.hydrated) return;
-      void savePlannerState(state);
+    () => ({ state: toPersistedState(store), hydrated: store.hydrated }),
+    ({ state }) => {
+      if (disposed || !loaded || !store.hydrated) return;
+      writeQueue = writeQueue.then(() => savePlannerState(state))
+        .catch(error => reportStorageFailure("production-planning", error));
     },
     { fireImmediately: false },
   );
@@ -86,6 +97,7 @@ export function hookPlannerIndexedDbPersistence(
   // );
 
   return () => {
+    disposed = true;
     dispose();
   };
 }

@@ -42,7 +42,7 @@
 npx vitest run --project normal
 ```
 
-`normal` project 不包含 `src/tests/e2e/**` 下的 Playwright E2E 测试，也不包含 Blueprint 与 Blueprint Slow project。
+`normal` project 不包含 `src/tests/e2e/**` 下的 Playwright E2E 测试，也不包含 `src/tests/release/**`、Blueprint 与 Blueprint Slow project。
 
 预制蓝图 JSON 大规模串行回归测试：
 
@@ -59,3 +59,11 @@ Simulation 层测试使用在测试代码中动态构造的最小蓝图，属于
 - App / Editor：Playwright E2E + 双重验证，使用真实浏览器事件。
 - Renderer：纯几何计算去 mock、Sprite 视觉比对、完整场景集成。
 - Shared：纯逻辑单元测试，不依赖 DOM 或 Canvas。
+
+## 发布版测试
+
+【用户明确要求，2026-09-28】新增发布版测试，归属 full-check，首例为 ABAC。本类型验证 build 后的真实产物，不属于 Vitest project。
+
+单项执行：`npm run test:release`，或者 `bash scripts/check/check-runner.sh release "<RUN_DIR>"`。用例放在 `src/tests/release/*.test.ts`，使用 Playwright CLI；基础设施在 `scripts/release-test/`。默认三种 Screen Profile 串行执行，构建一次复用。每轮清理浏览器和服务后验证资源释放，失败不得继续下一轮。
+
+构建阶段专用注入只改内存中的代码；正式源码和默认发布构建不启用注入。不得 mock 恢复流程、Service Worker 或仿真 Worker。测试条件、断言、覆盖限制见 `.docs/common/测试/发布版测试.md`。

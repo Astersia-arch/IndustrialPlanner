@@ -8,7 +8,7 @@ import Icons from "unplugin-icons/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const PWA_MAX_CACHE_FILE_BYTES = 50 * 1024 * 1024;
-const PWA_DIST_DIRECTORY = fileURLToPath(new URL("./dist/", import.meta.url));
+let PWA_DIST_DIRECTORY = fileURLToPath(new URL("./dist/", import.meta.url));
 const APP_VERSION_CACHE_KEY = encodeURIComponent(process.env.VITE_APP_VERSION?.trim() || "dev");
 const PUBLIC_BASE_PATH = process.env.VITE_PUBLIC_BASE_PATH?.trim() || "./";
 
@@ -76,6 +76,12 @@ export default defineConfig({
     },
   },
   plugins: [
+    {
+      name: "pwa-output-directory",
+      configResolved(config) {
+        PWA_DIST_DIRECTORY = resolve(config.root, config.build.outDir);
+      },
+    },
     {
       name: "oauth-callback-path-rewrite",
       configureServer(server) {
@@ -223,6 +229,7 @@ export default defineConfig({
           testTimeout: 10_000,
           exclude: [
             "src/tests/e2e/**",
+            "src/tests/release/**",
             "src/tests/simulation/blueprint/**",
             "src/tests/simulation/blueprint-slow/**",
             "src/tests/blueprint-planner/batch/**",

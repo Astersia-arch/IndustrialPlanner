@@ -1,3 +1,4 @@
+import { startCloudflareTestBackend } from "../helpers/cloudflare-test-backend";
 /**
  * Cloudflare 迁移同步 E2E：本地与远端曾同步一致时，版本迁移应作为本地编辑上传，
  * 不得产生用户可见冲突。
@@ -20,7 +21,16 @@ import {
   type CfV2PrepareResponse,
 } from "../../sync/clients/cloudflare/cloudflare-v2-types";
 
-const BACKEND_API_BASE_URL = "https://endfield-api.richetriotour.net";
+// AI-CORRECTION 2026-09-28: 冲突、迁移与自动下载改用逐用例隔离的本地协议后端。
+let BACKEND_API_BASE_URL: string;
+let localBackend: Awaited<ReturnType<typeof startCloudflareTestBackend>>;
+test.beforeEach(async () => {
+  localBackend = await startCloudflareTestBackend();
+  BACKEND_API_BASE_URL = localBackend.origin;
+});
+test.afterEach(async () => {
+  await localBackend?.close();
+});
 const LEGACY_SCHEMA_VERSION = 4;
 const LEGACY_ENTITY_ID = "e2e-schema-4-dark-pipe-inlet";
 

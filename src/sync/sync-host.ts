@@ -1,3 +1,5 @@
+import { BLUEPRINT_SCHEMA_VERSION } from "@/domain/document/blueprint-document";
+import { normalizeBlueprintStorageEntry } from "@/shared/storage/blueprint-storage";
 import { createSnapshotSelector } from "@/shared/snapshot/snapshot-selector";
 import { selectDocumentContent, sameDocumentRemoteContent } from "@/shared/snapshot/world-document-selection";
 import type {
@@ -574,6 +576,12 @@ export async function createSyncHost(
     }),
     createFullWithRevisionAdapter<BlueprintRecord>({
       id: "blueprints",
+      recoverUnavailableRemote: true,
+      isRemoteVersionUnsupported: isUnsupportedDocumentSchema,
+      normalizeRemote: (value) => {
+        const entry = normalizeBlueprintStorageEntry(value);
+        return entry?.kind === "blueprint" ? entry : null;
+      },
       indexPath: "assets/blueprints/index.json",
       entryPath: (blueprintId) => `assets/blueprints/${blueprintId}.json`,
       listLocal: async () => await listBlueprintSyncEntries<BlueprintRecord>("blueprint"),
@@ -607,6 +615,12 @@ export async function createSyncHost(
     }),
     createFullWithRevisionAdapter<BlueprintFolderRecord>({
       id: "blueprint-folders",
+      recoverUnavailableRemote: true,
+      isRemoteVersionUnsupported: isUnsupportedDocumentSchema,
+      normalizeRemote: (value) => {
+        const entry = normalizeBlueprintStorageEntry(value);
+        return entry?.kind === "folder" ? entry : null;
+      },
       indexPath: "assets/blueprint-folders/index.json",
       entryPath: (folderId) => `assets/blueprint-folders/${folderId}.json`,
       listLocal: async () => await listBlueprintSyncEntries<BlueprintFolderRecord>("folder"),
@@ -1507,6 +1521,8 @@ function createWorldDocumentAdapter(
 ): SyncAdapter {
   return createPatchCollectionWithRevisionAdapter<WorldDocument>({
     id: "world-documents",
+    recoverUnavailableRemote: true,
+    isRemoteVersionUnsupported: isUnsupportedDocumentSchema,
     // AI-REMOVED 2026-07-29:
     // Reason: 旧集合按本机 UUID 编址，同一基地在不同设备上无法互相发现。
     // Trigger: 用户报告跨设备刷新后当前画布未同步，也没有冲突提示。
@@ -1950,3 +1966,8 @@ export function preserveLocalWorldDocumentIdentity(
 // function isRecord(value: unknown): value is Record<string, unknown> {
 //   return typeof value === "object" && value !== null;
 // }
+
+function isUnsupportedDocumentSchema(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "schemaVersion" in value
+    && typeof value.schemaVersion === "number" && value.schemaVersion > BLUEPRINT_SCHEMA_VERSION;
+}

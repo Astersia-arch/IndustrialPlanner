@@ -549,6 +549,14 @@
   border-left-color: var(--problem-warning-color);
 }
 
+.problem-row[data-problem-severity="info"] {
+  border-left-color: var(--success, #22c55e);
+}
+
+.problem-row[data-problem-severity="info"] p:first-child {
+  color: var(--success, #22c55e);
+}
+
 .json-debug-textarea {
   width: 100%;
   min-height: 300px;

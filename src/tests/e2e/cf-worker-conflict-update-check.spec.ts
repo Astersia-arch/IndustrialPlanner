@@ -1,3 +1,4 @@
+import { startCloudflareTestBackend } from "../helpers/cloudflare-test-backend";
 /**
  * CF Worker 同步 e2e：冲突解决 → 小检查短路 → 增量同步
  * AI-CORRECTION 2026-08-12: Cloudflare 同步当前由主线程直接请求 cf-sync-v2 后端；
@@ -24,7 +25,16 @@ import {
   type CfV2PrepareResponse,
 } from "../../sync/clients/cloudflare/cloudflare-v2-types";
 
-const BACKEND_API_BASE_URL = "https://endfield-api.richetriotour.net";
+// AI-CORRECTION 2026-09-28: 冲突、迁移与自动下载改用逐用例隔离的本地协议后端。
+let BACKEND_API_BASE_URL: string;
+let localBackend: Awaited<ReturnType<typeof startCloudflareTestBackend>>;
+test.beforeEach(async () => {
+  localBackend = await startCloudflareTestBackend();
+  BACKEND_API_BASE_URL = localBackend.origin;
+});
+test.afterEach(async () => {
+  await localBackend?.close();
+});
 // AI-REMOVED 2026-08-12:
 // Reason: 模块级共享空间会让 use-remote 与 use-local 共享远端状态。
 // Trigger: 用户要求两个 E2E 各自独立。
