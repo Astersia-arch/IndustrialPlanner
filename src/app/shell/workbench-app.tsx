@@ -639,6 +639,14 @@ export const WorkbenchApp = observer(function WorkbenchApp({
           }
         }),
       },
+      "debug-disable-cargo-entry-animation": {
+        readValue: () => appHost.state.settings.debugDisableCargoEntryAnimation,
+        writeValue: action((value) => {
+          if (typeof value === "boolean") {
+            appHost.internalState.settings.debugDisableCargoEntryAnimation = value;
+          }
+        }),
+      },
       "debug-show-fps": {
         readValue: () => appHost.state.settings.debugShowFps,
         writeValue: action((value) => {
@@ -716,6 +724,7 @@ export const WorkbenchApp = observer(function WorkbenchApp({
 
           // 关闭调试模式时，同步关闭级联子选项
           if (!value) {
+            appHost.internalState.settings.debugDisableCargoEntryAnimation = false;
             appHost.internalState.settings.debugShowFps = false;
             appHost.internalState.settings.debugShowGestureDiagnosticsWindow = false;
             appHost.internalState.settings.debugSimulationWorkerDetailedReport = false;

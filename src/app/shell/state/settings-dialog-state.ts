@@ -1050,6 +1050,12 @@ export const WORKBENCH_SETTINGS_GROUPS: readonly WorkbenchSettingsGroupDefinitio
         placeholderText: BUILD_BACKEND_API_BASE_URL,
       },
       {
+        id: "debug-disable-cargo-entry-animation",
+        kind: "switch",
+        labelKey: "settingsField.debug-disable-cargo-entry-animation",
+        defaultValue: false,
+      },
+      {
         id: "debug-show-fps",
         kind: "switch",
         labelKey: "settingsField.debug-show-fps",

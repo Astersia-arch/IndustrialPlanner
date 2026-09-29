@@ -142,6 +142,7 @@ function attachSimulationStub(
     },
     topology: createSnapshotStore(null),
     queries: {
+      getCurrentTickItemTransfers: () => [],
       getStatusRuntimeJson: () => JSON.stringify({
         state: {
           runningState: options.state,

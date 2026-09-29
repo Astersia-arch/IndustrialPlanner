@@ -561,6 +561,7 @@ export type UiKey =
   | "settingsDialog.title"
   | "settingsField.debug-backend-api-address-override"
   | "settingsField.debug-backend-api-address-overrideDescription"
+  | "settingsField.debug-disable-cargo-entry-animation"
   | "settingsField.debug-show-fps"
   | "settingsField.debug-show-fpsDescription"
   | "settingsField.debug-show-gesture-diagnostics-window"

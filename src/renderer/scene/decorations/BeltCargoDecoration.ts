@@ -56,6 +56,8 @@ import {
   type BeltPortExtensionEntry,
 } from "./BeltVisualGeometry"
 
+import { BeltCargoEntryAnimation } from "./BeltCargoEntryAnimation"
+
 const ITEM_ICON_TEXTURE_PREFIX = "item-icon-"
 const BELT_CARGO_BOX_TEXTURE_KEY = "belt-cargo-box"
 const BOX_ICON_SIZE_RATIO = 0.72
@@ -154,6 +156,12 @@ export function createBeltCargoDecoration(): DecorationLayer {
   container.addChild(sharedMaskSprite)
   container.addChild(sharedCargoLayer)
   container.addChild(localCargoLayer)
+
+  const entryAnimation = new BeltCargoEntryAnimation()
+  let inputExtensions = new Map<string, BeltPortExtensionEntry>()
+  let entryDocumentKey: string | null = null
+  let entryTickRate: number | null = null
+  let entryStandardTickRate: number | null = null
 
   let destroyed = false
   let itemIconIdByItemId: Map<string, string> | null = null
@@ -260,6 +268,7 @@ export function createBeltCargoDecoration(): DecorationLayer {
       }
 
       if (ctx.renderHost.workspace.simulation?.state.runningState === "stop") {
+        entryAnimation.clear()
         presentationTickNumber = null
         presentationStandardTickRate = null
         presentationTickRate = null
@@ -304,6 +313,9 @@ export function createBeltCargoDecoration(): DecorationLayer {
       // 端口连通性缓存：文档或 gameUseBlueprintStyleDeviceImages 变更时重算
       if (cachedPortConnectivity === null || !documentStable || cachedSimplifiedDeviceIcons !== simplifiedDeviceIcons) {
         cachedPortConnectivity = resolveBeltPortConnectivityEntries(ctx)
+        inputExtensions = new Map(cachedPortConnectivity.extensions
+          .filter((entry) => entry.kind === "belt-output-to-device")
+          .map((entry) => [entry.beltEntityId, entry]))
         cachedSimplifiedDeviceIcons = simplifiedDeviceIcons
         clipMaskRevision += 1
       }
@@ -345,6 +357,34 @@ export function createBeltCargoDecoration(): DecorationLayer {
             )
           : resolveBeltCargoEntries(ctx, definitionMap, progressPresentation)
       )
+      const nextDocumentKey = documentSnapshot?.documentKey ?? null
+      const entryCargo = entryAnimation.update({
+        tick: documentStatus?.tickNumber ?? null,
+        standardTickRate: documentStatus?.standardTickRate ?? 0,
+        tickRate: documentStatus?.tickRate ?? 0,
+        nowMs: ctx.nowMs,
+        speed: simulation?.state.simulationSpeed ?? 1,
+        running: simulation?.state.runningState === "start",
+        reset: !documentStable || nextDocumentKey !== entryDocumentKey
+          || entryTickRate !== documentStatus?.tickRate
+          || entryStandardTickRate !== documentStatus?.standardTickRate
+          || simulation?.state.timeline?.isSeeking === true,
+        enabled: !simplifiedDeviceIcons
+          && ctx.renderHost.workspace.app?.state.settings.debugDisableCargoEntryAnimation !== true,
+        halfBoxCells: resolveBeltCargoBoxSize(ctx.viewportState.gridCellPixelSize)
+          / (2 * ctx.viewportState.gridCellPixelSize),
+        extensions: inputExtensions,
+        readTransfers: () => simulation?.queries.getCurrentTickItemTransfers() ?? [],
+      })
+      entryDocumentKey = nextDocumentKey
+      entryTickRate = documentStatus?.tickRate ?? null
+      entryStandardTickRate = documentStatus?.standardTickRate ?? null
+      for (const cargo of entryCargo) {
+        beltCargoEntries.push({ entityId: cargo.entityId, position: { x: 0, y: 0 },
+          itemId: cargo.itemId, progress: 1, angleRadians: cargo.angleRadians,
+          localPoint: { x: cargo.x, y: cargo.y }, isRunning: true })
+      }
+      ctx.profiler?.count("beltCargo.entryAnimationEntries", entryCargo.length)
       ctx.profiler?.count("beltCargo.entries-collected", beltCargoEntries.length)
       if (beltCargoEntries.length === 0) {
         hideAll()
@@ -470,6 +510,7 @@ export function createBeltCargoDecoration(): DecorationLayer {
     },
 
     destroy(): void {
+      entryAnimation.clear()
       destroyed = true
       pendingTextures.clear()
       resolvedTextures.clear()

@@ -63,6 +63,22 @@ export function createSimulationQueries(context: SimulationQueryContext): Simula
     readonly status: SimulationDeviceOperatingStatus;
   }>();
   return {
+    getCurrentTickItemTransfers: () => {
+      const topology = context.getTopology();
+      const presentation = context.getPresentation();
+      if (topology === null || presentation === null) return [];
+      return presentation.getTransfers().flatMap((transfer) => {
+        const edge = topology.transferEdges[transfer.edgeId];
+        const source = edge === undefined ? undefined : topology.ports[edge.sourcePortId];
+        const target = edge === undefined ? undefined : topology.ports[edge.targetPortId];
+        if (!source || !target || source.isPipe || target.isPipe || transfer.amount <= 0) return [];
+        const sourceDeviceId = topology.devices[source.deviceId]?.sourceEntityId;
+        const targetDeviceId = topology.devices[target.deviceId]?.sourceEntityId;
+        if (!sourceDeviceId || !targetDeviceId) return [];
+        return [{ sourceDeviceId, targetDeviceId,
+          itemId: transfer.itemType, amount: transfer.amount }];
+      });
+    },
     getStatusRuntimeJson: () => {
       context.beforeReadDebugData?.();
       const presentation = context.getPresentation();

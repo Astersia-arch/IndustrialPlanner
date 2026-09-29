@@ -234,6 +234,14 @@ export interface SimulationAdmissionCounterReset {
 }
 
 /** 文档级仿真运行时只读视图 */
+/** 当前公开 tick 中真实发生的物品交接；不包含预定或失败的搬运。 */
+export interface SimulationItemTransferReadModel {
+  readonly sourceDeviceId: string;
+  readonly targetDeviceId: string;
+  readonly itemId: string;
+  readonly amount: number;
+}
+
 export interface SimulationDocumentRuntimeReadModel {
   /** 当前 tick 编号，仿真未启动时为 null */
   readonly tickNumber: number | null;

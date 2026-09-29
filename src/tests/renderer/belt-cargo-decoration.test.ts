@@ -1073,6 +1073,7 @@ function createContext(options: {
             timeline: { isSeeking: false },
           },
           queries: {
+            getCurrentTickItemTransfers: () => [],
             getDocumentRuntimeStatus: () => options.documentRuntimeStatus ?? null,
             getDeviceRuntimeStatus: (entityId: string) => {
               const entry = entriesByEntityId.get(entityId)

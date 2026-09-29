@@ -308,6 +308,8 @@ function normalizePersistedAppSettings(
     showRegionAnnotations: typeof persistedAppSettings.showRegionAnnotations === "boolean"
       ? persistedAppSettings.showRegionAnnotations
       : fallback.showRegionAnnotations,
+    debugDisableCargoEntryAnimation: persistedAppSettings.debugMode === true
+      && persistedAppSettings.debugDisableCargoEntryAnimation === true,
     debugShowFps: typeof persistedAppSettings.debugShowFps === "boolean"
       ? persistedAppSettings.debugShowFps
       : fallback.debugShowFps,

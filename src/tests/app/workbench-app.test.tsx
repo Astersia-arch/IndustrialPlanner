@@ -97,6 +97,7 @@ const DEFAULT_APP_SETTINGS_STORAGE = {
   toolboxShowAllActivityContent: true,
   showGrassBackground: false,
   showRegionAnnotations: false,
+  debugDisableCargoEntryAnimation: false,
   debugShowFps: false,
   debugShowGestureDiagnosticsWindow: false,
   debugSimulationWorkerDetailedReport: false,
@@ -1318,6 +1319,7 @@ describe("WorkbenchApp", () => {
       },
       topology: createSnapshotStore(null),
       queries: {
+        getCurrentTickItemTransfers: () => [],
         getStatusRuntimeJson: () => JSON.stringify({
           state: {
             runningState: "stop",

@@ -108,6 +108,7 @@ export interface AppSettingsReadWrite extends Omit<AppSettings, "regionalMultiBa
   toolboxShowAllActivityContent: boolean;
   showGrassBackground: boolean;
   showRegionAnnotations: boolean;
+  debugDisableCargoEntryAnimation: boolean;
   debugShowFps: boolean;
   debugShowGestureDiagnosticsWindow: boolean;
   debugSimulationWorkerDetailedReport: boolean;
@@ -866,6 +867,7 @@ export class UiStateReadWriteImpl implements UiStateReadWrite {
     toolboxShowAllActivityContent: true,
     showGrassBackground: false,
     showRegionAnnotations: false,
+    debugDisableCargoEntryAnimation: false,
     debugShowFps: false,
     debugShowGestureDiagnosticsWindow: false,
     debugSimulationWorkerDetailedReport: false,

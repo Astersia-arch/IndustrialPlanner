@@ -400,6 +400,7 @@ const UI: Record<string, string> = {
     "settingsField.debug-backend-api-address-overrideDescription": "Override the backend API address when filled. Empty or whitespace-only values use the default configured for this build.",
     "settingsField.debug-force-flatten-blueprint-version": "Force Flatten Blueprint Version",
     "settingsField.debug-force-flatten-blueprint-versionDescription": "Rewrite blueprint and base documents newer than the supported schema to the current highest version without running migrations. Use only to repair unpublished debug data.",
+    "settingsField.debug-disable-cargo-entry-animation": "Disable cargo entry animation",
     "settingsField.debug-show-fps": "Show FPS/TPS",
     "settingsField.debug-show-fpsDescription": "Show a collapsible FPS/TPS indicator panel at the top-left corner of the canvas when enabled.",
     "settingsField.debug-show-gesture-diagnostics-window": "Show Gesture Test Window",

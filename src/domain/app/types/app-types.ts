@@ -39,6 +39,7 @@ export interface AppSettings {
   readonly gameAlwaysShowPowerRange: boolean;
   readonly showGrassBackground: boolean;
   readonly showRegionAnnotations: boolean;
+  readonly debugDisableCargoEntryAnimation: boolean;
   readonly debugShowFps: boolean;
   readonly debugShowGestureDiagnosticsWindow: boolean;
   readonly debugMode: boolean;

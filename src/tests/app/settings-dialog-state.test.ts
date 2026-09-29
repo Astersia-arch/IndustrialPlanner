@@ -204,6 +204,7 @@ describe("WorkbenchSettingsDialogController", () => {
           ? { "debug-force-flatten-blueprint-version": false }
           : {}),
         "debug-backend-api-address-override": "https://debug.example.test/api",
+        "debug-disable-cargo-entry-animation": false,
         "debug-show-fps": true,
         "debug-show-gesture-diagnostics-window": true,
         "experimental-blueprint-planner": false,
@@ -719,6 +720,7 @@ describe("WorkbenchSettingsDialogController", () => {
           ? { "debug-force-flatten-blueprint-version": false }
           : {}),
         "debug-backend-api-address-override": "",
+        "debug-disable-cargo-entry-animation": false,
         "debug-show-fps": false,
         "debug-show-gesture-diagnostics-window": false,
         "experimental-blueprint-planner": false,

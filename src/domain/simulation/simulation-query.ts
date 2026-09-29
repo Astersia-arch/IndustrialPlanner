@@ -1,4 +1,5 @@
 import type {
+  SimulationItemTransferReadModel,
   SimulationDeviceOperatingStatus,
   SimulationDeviceRuntimeStatusReadModel,
   SimulationDocumentRuntimeReadModel,
@@ -8,6 +9,8 @@ import type {
 } from "./types/simulation-types";
 
 export interface SimulationQuery {
+  /** 仅返回当前公开 tick 的已完成物品交接；调用方按 tick 去重，不补播遗漏 tick。 */
+  getCurrentTickItemTransfers(): readonly SimulationItemTransferReadModel[];
   getStatusRuntimeJson(): string;
   getDocumentRuntimeStatus(): SimulationDocumentRuntimeReadModel | null;
   /** 按需读取仿真引擎最近一个完整采样窗口的性能诊断。 */
