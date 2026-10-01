@@ -300,6 +300,9 @@ export class GenericDeviceSprite extends BaseRenderSprite {
   private isDeviceIconReady = false
   private staticBodyTexture: Texture | null = null
   private staticMaskTexture: Texture | null = null
+  private stopBodyTextureRecovery: (() => void) | null = null
+  private stopMaskTextureRecovery: (() => void) | null = null
+  private stopDeviceIconRecovery: (() => void) | null = null
   private animationTextures: DeviceAnimationTextures | null = null
   private preparingAnimationTextures: DeviceAnimationTextures | null = null
   private animationVisible = true
@@ -1075,6 +1078,10 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       return
     }
 
+    this.stopBodyTextureRecovery?.()
+    this.stopMaskTextureRecovery?.()
+    this.stopBodyTextureRecovery = null
+    this.stopMaskTextureRecovery = null
     this.currentBodyTextureKey = bodyTextureKey
     this.currentMaskTextureKey = maskTextureKey
     this.textureLoadVersion += 1
@@ -1097,16 +1104,39 @@ export class GenericDeviceSprite extends BaseRenderSprite {
         return
       }
 
+      if (isFallbackTexture(previewMaskTexture)) {
+        this.stopMaskTextureRecovery = this.renderHost.textureManager.watchTextureRecovery(maskTextureKey, (texture) => {
+          if (this.disposed || activeLoadVersion !== this.textureLoadVersion) return
+          this.stopMaskTextureRecovery = null
+          this.staticMaskTexture = texture
+          this.applyDevicePresentationTextures()
+          this.invalidateVisualSync()
+        })
+      }
       // TextureManager 加载失败时返回 16×16 红色 fallback，Promise 不 reject。
       // 通过尺寸判断 body 纹理是否为 fallback，若是则走自定义 fallback 渲染。
       // AI-CORRECTION 2026-09-05: REQ-025 允许任意合法帧尺寸；改查资源系统的回退身份，避免误判真实 16×16 首帧。
       if (isFallbackTexture(bodyTexture)) {
-        this.loadFallbackTexture(activeLoadVersion)
+        this.staticMaskTexture = isFallbackTexture(previewMaskTexture) ? null : previewMaskTexture
+        void this.loadFallbackTexture(activeLoadVersion, true)
+        this.stopBodyTextureRecovery = this.renderHost.textureManager.watchTextureRecovery(bodyTextureKey, (texture) => {
+          if (this.disposed || activeLoadVersion !== this.textureLoadVersion) return
+          this.stopBodyTextureRecovery = null
+          this.staticBodyTexture = texture
+          if (!isFallbackTexture(previewMaskTexture) && this.staticMaskTexture === null) {
+            this.staticMaskTexture = previewMaskTexture
+          }
+          this.applyDevicePresentationTextures()
+          this.isTextureReady = true
+          this.invalidateVisualSync()
+          this.body.visible = this.currentSuppressedAccessoryFamily === null
+          if (this.currentLayout !== null) this.applyLayout(this.currentLayout)
+        })
         return
       }
 
       this.staticBodyTexture = bodyTexture
-      this.staticMaskTexture = previewMaskTexture
+      this.staticMaskTexture = isFallbackTexture(previewMaskTexture) ? null : previewMaskTexture
       this.applyDevicePresentationTextures()
       this.isTextureReady = true
       this.invalidateVisualSync()
@@ -1120,7 +1150,17 @@ export class GenericDeviceSprite extends BaseRenderSprite {
         return
       }
 
-      this.loadFallbackTexture(activeLoadVersion)
+      void this.loadFallbackTexture(activeLoadVersion, true)
+      this.stopBodyTextureRecovery = this.renderHost.textureManager.watchTextureRecovery(bodyTextureKey, (texture) => {
+        if (this.disposed || activeLoadVersion !== this.textureLoadVersion) return
+        this.stopBodyTextureRecovery = null
+        this.staticBodyTexture = texture
+        this.applyDevicePresentationTextures()
+        this.isTextureReady = true
+        this.invalidateVisualSync()
+        this.body.visible = this.currentSuppressedAccessoryFamily === null
+        if (this.currentLayout !== null) this.applyLayout(this.currentLayout)
+      })
     })
   }
 
@@ -1396,6 +1436,7 @@ export class GenericDeviceSprite extends BaseRenderSprite {
   /**
    * 当设备 3D-top 精灵纹理加载失败时，使用 missing-sprite-texture.png 生成 fallback。
    * AI-CORRECTION 2026-08-31: 当前 fallback 发布素材为 lossless WebP，路径是 missing-sprite-texture.webp。
+   * AI-CORRECTION 2026-10-01: 蓝图精灵加载失败时也使用此 fallback；原始纹理恢复后会替换它。
    * 按 footprint 比例裁剪原图（保持高度，左右均匀裁切），内收 padding 后外描边。
    */
   private async loadFallbackTexture(
@@ -1462,7 +1503,7 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       const maskTexture = Texture.from(maskCanvas)
 
       this.staticBodyTexture = bodyTexture
-      this.staticMaskTexture = maskTexture
+      this.staticMaskTexture ??= maskTexture
       this.applyDevicePresentationTextures()
       this.isTextureReady = true
       this.invalidateVisualSync()
@@ -1602,6 +1643,8 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       return;
     }
 
+    this.stopDeviceIconRecovery?.();
+    this.stopDeviceIconRecovery = null;
     this.currentDeviceIconTextureKey = nextTextureKey;
     this.deviceIconLoadVersion += 1;
     this.isDeviceIconReady = false;
@@ -1614,6 +1657,17 @@ export class GenericDeviceSprite extends BaseRenderSprite {
         || activeLoadVersion !== this.deviceIconLoadVersion
         || this.currentDeviceIconTextureKey !== nextTextureKey
       ) {
+        return;
+      }
+
+      if (isFallbackTexture(texture)) {
+        this.stopDeviceIconRecovery = this.renderHost.textureManager.watchTextureRecovery(nextTextureKey, (recoveredTexture) => {
+          if (this.disposed || activeLoadVersion !== this.deviceIconLoadVersion) return;
+          this.stopDeviceIconRecovery = null;
+          this.deviceIcon.texture = recoveredTexture;
+          this.isDeviceIconReady = true;
+          if (this.currentLayout !== null) this.syncDeviceLabel(this.currentLayout);
+        });
         return;
       }
 
@@ -2402,6 +2456,12 @@ export class GenericDeviceSprite extends BaseRenderSprite {
 
   protected onDestroy(): void {
     this.disposed = true
+    this.stopBodyTextureRecovery?.()
+    this.stopMaskTextureRecovery?.()
+    this.stopDeviceIconRecovery?.()
+    this.stopBodyTextureRecovery = null
+    this.stopMaskTextureRecovery = null
+    this.stopDeviceIconRecovery = null
     this.animationLoadVersion += 1
     this.animationFrameLoadVersion += 1
     this.animationState = null

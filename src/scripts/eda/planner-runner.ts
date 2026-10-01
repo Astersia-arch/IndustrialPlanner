@@ -18,6 +18,9 @@ import { createWorldDocument } from "@/domain/document/world-document";
 import { createEditorStateReadWrite } from "@/editor/state-impl";
 import { resolvePlacementValidations } from "@/editor/placement-validation";
 import { edaOutputPath } from "./artifact-paths";
+import type { PlannerSearchSeed } from "@/blueprint-planner/search-seed";
+import { createProposalCurve } from "./proposal-curve";
+import { PlannerSearchPortfolio } from "@/blueprint-planner/search-portfolio";
 
 /** 常驻执行器只复用 Registry、Host 和 Worker；每次规划仍拥有独立的输入、预算和仿真世界。 */
 export class PlannerBatchSession {
@@ -34,6 +37,8 @@ export class PlannerBatchSession {
 }
 
 export interface PlannerBatchOptions {
+  readonly strategy?: "baseline" | "compact";
+  readonly seed?: PlannerSearchSeed;
   readonly attempts?: number;
   readonly localEvaluations?: number;
   readonly width?: number;
@@ -46,10 +51,15 @@ export interface PlannerBatchOptions {
   readonly profile?: Partial<PlannerSearchProfile>;
   readonly diagnostics?: boolean;
   readonly experiments?: readonly PlannerSearchExperiment[];
+  readonly stashPackingVariant?: number;
 }
 
 export interface PlannerAttemptRecord {
   readonly variant: number;
+  readonly solidOutput?: "warehouse" | "stash";
+  readonly evaluations: number;
+  readonly evaluationAccounting: "exact" | "upper-bound";
+  readonly elapsedMs: number;
   readonly outcome: "success" | "layout-failed" | "verification-failed" | "timeout";
   readonly generationMs: number;
   readonly verificationMs: number;
@@ -64,7 +74,8 @@ export interface PlannerAttemptRecord {
   readonly constraints?: { readonly placementErrors: readonly string[]; readonly excessiveOperatingInputs: readonly string[] };
 }
 
-export async function runPlannerBatch(request: BlueprintPlannerRequest, options: PlannerBatchOptions, session?: PlannerBatchSession) {
+export async function runPlannerBatch(request: BlueprintPlannerRequest, options: PlannerBatchOptions, session?: PlannerBatchSession,
+  onAttempt?: (record: PlannerAttemptRecord) => void | Promise<void>) {
   if (options.engineKind !== "dense-v2") throw new Error("EDA 测试固定使用 dense-v2 引擎。");
   if ((options.attempts === undefined) === (options.seconds === undefined)) throw new Error("必须且只能指定 attempts 或 seconds。");
   if (options.attempts !== undefined && (!Number.isInteger(options.attempts) || options.attempts <= 0)) throw new Error("attempts 必须是正整数。");
@@ -77,31 +88,56 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
   const execution = session ?? new PlannerBatchSession();
   if (execution.busy) throw new Error("规划执行器已有任务。");
   const { workspace, simulation, planner } = execution;
-  try { validatePlannerRequest(workspace.registry, request); }
+  let portfolio: PlannerSearchPortfolio;
+  try {
+    validatePlannerRequest(workspace.registry, request);
+    portfolio = new PlannerSearchPortfolio(request, options.seed);
+  }
   catch (error) { if (session === undefined) await execution.dispose(); throw error; }
   execution.busy = true;
   const startedAt = performance.now(), deadline = startedAt + (options.seconds ?? Infinity) * 1000;
   const records: PlannerAttemptRecord[] = [];
   let firstSuccessMs: number | null = null;
   let localEvaluations = 0;
+  // AI-REMOVED 2026-09-30:
+  // Reason: 全局单一种子会阻断另一种固体输出拓扑的独立续搜。
+  // Trigger: 用户要求自动选择面积更小的固体输出方式。
+  // Evidence: seed.requestKey 包含 solidOutput，两种拓扑不能共用种子。
+  // Replacement: PlannerSearchPortfolio，浏览器 Host 与批量运行器共用。
+  // Risk: Low；固定模式仍保留单种子。Human Review: Required
+  // Original code:
+  // let bestSeed = options.seed;
+  // let bestArea = bestSeed ? bestSeed.width * bestSeed.height : Infinity;
   try {
     for (let index = 0; index < (options.attempts ?? Infinity) && performance.now() < deadline; index++) {
       if (localEvaluations >= (options.localEvaluations ?? Infinity)) break;
       const variant = (options.startVariant ?? 0) + index;
+      const selection = portfolio.next(variant, options.strategy !== "baseline");
+      const solidOutput = selection.request.options.solidOutput as "warehouse" | "stash";
       const generationStart = performance.now();
       let generationMs = 0, verificationMs = 0;
+      let attemptEvaluations = 0;
+      let evaluationAccounting: PlannerAttemptRecord["evaluationAccounting"] = "exact";
+      let generatedSearch: PlannerSearchStatistics | undefined;
       const remainingEvaluations = Math.min(50_000, Math.ceil(((options.localEvaluations ?? Infinity) - localEvaluations)
         / (options.localEvaluations !== undefined && options.attempts !== undefined ? options.attempts - index : 1)));
       try {
-        const candidate = await planner.build(request, variant,
+        const candidate = await planner.build(selection.request, selection.variant,
           Math.min((options.candidateSeconds ?? 30) * 1000, deadline - performance.now()), {
             maxEvaluations: remainingEvaluations,
+            strategy: options.strategy,
+            seed: selection.seed,
+            continuationStep: selection.continuationStep,
+            maximumArea: selection.maximumArea,
             profile: options.profile,
             diagnostics: options.diagnostics,
             experiments: options.experiments,
+            stashPackingVariant: options.stashPackingVariant,
             ...(options.width === undefined ? {} : { outline: { width: options.width, height: options.height! } }),
           });
         localEvaluations += candidate.search.evaluations;
+        attemptEvaluations = candidate.search.evaluations;
+        generatedSearch = candidate.search;
         generationMs = performance.now() - generationStart;
         if (performance.now() >= deadline) throw new PlanningBudgetExhausted();
         const verificationStart = performance.now();
@@ -124,9 +160,11 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
         const constraints = { placementErrors, excessiveOperatingInputs };
         const success = meetsProductionTargets(request, report) && placementErrors.length === 0 && excessiveOperatingInputs.length === 0;
         if (success) firstSuccessMs ??= performance.now() - startedAt;
+        if (success) portfolio.remember(candidate.seed);
         const artifactPath = success ? await saveSuccessfulPlanning(workspace.registry, `${request.plan.name}-${variant}`,
-          candidate.execution.blueprint, request, { variant, generationMs, verificationMs, engineKind: options.engineKind, ticksPerSecond: 2,
+          candidate.execution.blueprint, request, { variant, solidOutput, generationMs, verificationMs, engineKind: options.engineKind, ticksPerSecond: 2,
             metrics: candidate.metrics, search: candidate.search, supplyAudit: candidate.supplyAudit, constraints, report }) : undefined;
+        if (artifactPath && candidate.seed) await writeFile(resolve(artifactPath, "search-seed.json"), JSON.stringify(candidate.seed, null, 2));
         const diagnosticPath = success ? undefined : edaOutputPath("runs/candidates", `${Date.now()}-${process.pid}-${variant}`);
         if (diagnosticPath !== undefined) {
           await mkdir(diagnosticPath, { recursive: true });
@@ -136,7 +174,8 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
             writeFile(resolve(diagnosticPath, "preview.svg"), createLayoutPreview(workspace.registry, candidate.execution.blueprint)),
           ]);
         }
-        records.push({ variant, generationMs, verificationMs,
+        records.push({ variant, solidOutput, generationMs, verificationMs, evaluations: attemptEvaluations, evaluationAccounting,
+          elapsedMs: performance.now() - startedAt,
           outcome: success ? "success" : report.status === "timeout" ? "timeout" : "verification-failed",
           area: candidate.metrics.area, width: candidate.metrics.width, height: candidate.metrics.height, search: candidate.search,
           measuredOutputs: report.probes.filter(probe => request.plan.targets.some(target => target.itemId === probe.id)), artifactPath, diagnosticPath, constraints,
@@ -146,11 +185,17 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
         });
       } catch (error) {
         if (!(error instanceof PlannerCandidateError) && !(error instanceof PlanningBudgetExhausted)) throw error;
-        const search = error instanceof PlannerCandidateError ? error.search : undefined;
-        localEvaluations += search?.evaluations ?? (generationMs === 0 ? remainingEvaluations : 0);
-        records.push({ variant, search, generationMs: generationMs || performance.now() - generationStart, verificationMs,
+        const search = error instanceof PlannerCandidateError ? error.search : generatedSearch;
+        if (generatedSearch === undefined) {
+          attemptEvaluations = search?.evaluations ?? remainingEvaluations;
+          evaluationAccounting = search === undefined ? "upper-bound" : "exact";
+          localEvaluations += attemptEvaluations;
+        }
+        records.push({ variant, solidOutput, search, evaluations: attemptEvaluations, evaluationAccounting, elapsedMs: performance.now() - startedAt,
+          generationMs: generationMs || performance.now() - generationStart, verificationMs,
           outcome: error instanceof PlanningBudgetExhausted ? "timeout" : "layout-failed", error: error.message });
       }
+      await onAttempt?.(records[records.length - 1]!);
     }
   } finally { execution.busy = false; if (session === undefined) await execution.dispose(); }
   const elapsedMs = performance.now() - startedAt;
@@ -158,6 +203,6 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
     successes: records.filter((entry) => entry.outcome === "success").length,
     attemptsPerMinute: records.length * 60_000 / elapsedMs, workerThreadId: planner.threadId,
     environment: { cpu: cpus()[0]?.model, logicalCpus: cpus().length, availableParallelism: availableParallelism(), node: process.version, engineKind: options.engineKind, ticksPerSecond: 2 },
-    records,
+    records, proposalCurve: createProposalCurve(records),
   };
 }

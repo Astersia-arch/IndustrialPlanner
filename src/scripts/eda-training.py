@@ -162,10 +162,17 @@ def objective(record, target_area):
 
 
 def accepted(record, width, height):
+    # AI-REMOVED 2026-09-30:
+    # Reason: 物流绕路也会提高占用覆盖率，覆盖率门槛会排除更小的有效布局。
+    # Trigger: 用户明确要求以最小面积作为全局优化目标，覆盖率仅供观察。
+    # Evidence: 在线选优与 proposal-curve 已按面积优先；本函数仍保留旧 >50% 门槛。
+    # Replacement: 下方保留尺寸、预算、产量和合法性验收，不再检查覆盖率。
+    # Risk: 新旧验收口径不可混用，policyVersion 升为 4。Human Review: Required。
+    # Original code:
+    #     and record.get("search", {}).get("quality", {}).get("utilization", 0) > .5 \
     actual_width, actual_height = record.get("width", math.inf), record.get("height", math.inf)
     fits = (actual_width <= width and actual_height <= height) or (actual_width <= height and actual_height <= width)
     return record.get("outcome") == "success" and fits and record.get("search", {}).get("evaluations", math.inf) <= 50_000 \
-        and record.get("search", {}).get("quality", {}).get("utilization", 0) > .5 \
         and all(probe["perMinute"] >= 30 for probe in record.get("measuredOutputs", [])) \
         and bool(record.get("measuredOutputs")) \
         and record.get("constraints") is not None \
@@ -352,7 +359,7 @@ def main():
             signal.signal(sig, stop_requested)
         previous = read_json(directory / "manifest.json")
         identity = dict(cases=CASES, seed=args.seed, screenEvaluations=args.screen_evaluations,
-                        optunaVersion=optuna.__version__, policyVersion=3, workers=args.workers, cpuPolicy=policy,
+                        optunaVersion=optuna.__version__, policyVersion=4, workers=args.workers, cpuPolicy=policy,
                         candidateSeconds=args.candidate_seconds, maxRssMiB=args.max_rss_mib)
         identity = json.loads(json.dumps(identity))
         if previous and previous["identity"] != identity:

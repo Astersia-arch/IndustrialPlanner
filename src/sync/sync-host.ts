@@ -1,3 +1,5 @@
+import { YituliuSyncRemote } from "./clients/yituliu";
+import { readYituliuSession, yituliuTargetKey, subscribeToYituliuSession } from "@/shared/storage/yituliu-session";
 import { BLUEPRINT_SCHEMA_VERSION } from "@/domain/document/blueprint-document";
 import { normalizeBlueprintStorageEntry } from "@/shared/storage/blueprint-storage";
 import { createSnapshotSelector } from "@/shared/snapshot/snapshot-selector";
@@ -218,6 +220,8 @@ function deriveEnabled(
   //   return true;
   // }
   // return false;
+  const yituliuTarget = yituliuTargetKey();
+  if (yituliuTarget !== null && isSyncProviderTargetActive("yituliu", yituliuTarget)) return true;
   const webDavTargetKey = createWebDavSyncTargetKey(settings);
   if (
     settings.url.trim() !== ""
@@ -682,6 +686,7 @@ export async function createSyncHost(
     readSettings: () => currentSettings,
     validateSettings: (settings) => {
       const provider = readActiveSyncProvider();
+      if (provider === "yituliu") return readYituliuSession() === null ? "一图流登录已失效" : null;
       if (provider === "cloudflare") {
         if (resolveBackendApiBaseUrl().trim() === "") {
           return "Cloudflare backend URL is empty";
@@ -702,6 +707,7 @@ export async function createSyncHost(
       requestOptions,
     ) => {
       const provider = readActiveSyncProvider();
+      if (provider === "yituliu") return new YituliuSyncRemote();
       if (provider === "cloudflare") {
         const target = getCloudflareTarget();
         return createCloudflareSyncRemote({
@@ -884,7 +890,7 @@ export async function createSyncHost(
         const cloudflareTarget = provider === "cloudflare"
           ? getCloudflareTarget(cloudflareSettings)
           : null;
-        const remote = cloudflareTarget !== null
+        const remote = provider === "yituliu" ? new YituliuSyncRemote() : cloudflareTarget !== null
           ? createCloudflareSyncRemote({
               apiBase: resolveBackendApiBaseUrl(),
               spaceId: cloudflareTarget.spaceId,
@@ -1213,6 +1219,17 @@ export async function createSyncHost(
     derivedSettingsRefresh = derivedSettingsRefresh.then(refresh, refresh);
     return derivedSettingsRefresh;
   };
+  let yituliuSessionId = readYituliuSession()?.id;
+  disposers.push(subscribeToYituliuSession(() => {
+    const nextId = readYituliuSession()?.id;
+    if (nextId === yituliuSessionId) return;
+    yituliuSessionId = nextId;
+    if (readActiveSyncProvider() !== "yituliu") return;
+    service.stop();
+    void refreshDerivedEnabled().then(() => {
+      if (syncStarted && currentSettings.enabled) service.start();
+    }).catch(() => { /* 持久化失败时保持停止，等待用户重试。 */ });
+  }));
   disposers.push(subscribeToSyncProviderActivationChanges(() => {
     service.stop();
     disposeCloudflareWorkerClient();

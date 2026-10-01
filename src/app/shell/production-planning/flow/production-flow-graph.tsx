@@ -3,15 +3,17 @@ import LucideRotateCcw from "~icons/lucide/rotate-ccw";
 
 import type { ProductionPlanningDisplayMode, ProductionPlanningIndex, ProductionPlanningResult } from "../production-planning-model";
 import { CompositeItemIcon } from "@/app/shell/shared";
-import { buildProductionFlowGraph, type ProductionFlowLink, type ProductionFlowNode } from "./flow-graph-builder";
+import { buildProductionFlowGraph, type ProductionFlowGraphInput, type ProductionFlowLink, type ProductionFlowNode } from "./flow-graph-builder";
 import { createSankeyLayout, updateSankeyLinkBreadths, type SankeyGraph, type SankeyLink, type SankeyNode } from "./sankey-layout";
 import styles from "../production-planning-panel.module.scss";
 
 interface ProductionFlowGraphProps {
   readonly displayMode: ProductionPlanningDisplayMode;
   readonly initialViewport?: ViewportState;
-  readonly plan: ProductionPlanningResult;
-  readonly index: ProductionPlanningIndex;
+  readonly plan?: ProductionPlanningResult;
+  readonly index?: ProductionPlanningIndex;
+  readonly input?: ProductionFlowGraphInput;
+  readonly fitToView?: boolean;
   readonly onViewportChange?: (viewport: ViewportState) => void;
   readonly t: (key: string) => string;
 }
@@ -67,10 +69,13 @@ export function ProductionFlowGraph({
   initialViewport,
   plan,
   index,
+  input,
+  fitToView = false,
   onViewportChange,
   t,
 }: ProductionFlowGraphProps) {
-  const graphInput = useMemo(() => buildProductionFlowGraph(plan, index, t, displayMode), [displayMode, index, plan, t]);
+  const graphInput = useMemo(() => input ?? (plan && index ? buildProductionFlowGraph(plan, index, t, displayMode)
+    : { nodes: [], links: [] }), [displayMode, index, input, plan, t]);
   const initialLayout = useMemo(() => {
     const width = resolveLayoutWidth(graphInput);
     return createSankeyLayout(graphInput, {
@@ -84,6 +89,7 @@ export function ProductionFlowGraph({
   const [graph, setGraph] = useState(() => cloneSankeyGraph(initialLayout));
   const [viewport, setRawViewport] = useState<ViewportState>(() => normalizeViewportState(initialViewport));
   const viewportRef = useRef(viewport);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   const setViewport = useCallback((update: ViewportUpdate) => {
     setRawViewport((current) => {
@@ -94,6 +100,36 @@ export function ProductionFlowGraph({
       return nextViewport;
     });
   }, [onViewportChange]);
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!fitToView || element === null) return;
+    const fit = () => {
+      if (initialLayout.nodes.length === 0) return;
+      // AI-REMOVED 2026-09-30:
+      // Reason: 虚拟 Sankey 高度包含空白，不适合作为任务摘要的缩放边界。
+      // Trigger: 手机流程图文字过小。Evidence: 三屏截图。
+      // Replacement: 下方按实际卡片与回流线计算边界。Risk: Low。Human Review: Required
+      // Original code:
+      // const bounds = getGraphBounds(initialLayout);
+      // const width = bounds.width + 44, height = bounds.height + 44;
+      // const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, element.clientHeight / height)));
+      // setViewport({ x: Math.max(0, (element.clientWidth - width * scale) / 2),
+      //   y: Math.max(0, (element.clientHeight - height * scale) / 2), scale });
+      const left = Math.min(...initialLayout.nodes.map(node => node.x0)) - 48;
+      const top = Math.min(...initialLayout.nodes.map(getNodeCardTop)) + 10;
+      const width = Math.max(...initialLayout.nodes.map(node => node.x1)) + 92 - left;
+      const height = Math.max(...initialLayout.nodes.map(node => getNodeCardTop(node) + NODE_CARD_HEIGHT)) + 122 - top;
+      const availableHeight = Math.max(1, element.clientHeight - 44);
+      const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, availableHeight / height)));
+      setViewport({ x: (element.clientWidth - width * scale) / 2 - left * scale,
+        y: 44 + (availableHeight - height * scale) / 2 - top * scale, scale });
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    fit();
+    return () => observer.disconnect();
+  }, [fitToView, initialLayout, setViewport]);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -331,6 +367,7 @@ export function ProductionFlowGraph({
 
   return (
     <div
+      ref={canvasRef}
       className={styles["production-flow-canvas"]}
       onWheel={handleWheel}
       onPointerDown={handleCanvasPointerDown}

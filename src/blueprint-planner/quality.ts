@@ -1,11 +1,22 @@
 import type { WorldEntity } from "@/domain/document/world-document";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import { resolveEntityGridRect } from "@/shared/geometry/power-range";
-import type { PlannerNetwork } from "./model";
+import type { PlannerNetwork, PlannerNode } from "./model";
 import type { PlannerRouter } from "./router";
 import type { PlannerSearchStatistics } from "./search-types";
 import { getPlannerPorts, opposite, transportCapacity } from "./geometry";
 import { PlannerCandidateError } from "./model";
+
+export function countPlannerOutputStashes(nodes: readonly Pick<PlannerNode, "entity" | "purpose">[]): number {
+  return nodes.filter(node => node.entity.definitionId === "storager_1" && (node.purpose === "product" || node.purpose === "byproduct")).length;
+}
+
+/** 完整面积优先；同面积优先少箱，最后比较原施工成本。 */
+export function comparePlannerRanks(left: { area: number; outputStashCount?: number; secondary?: number },
+  right: { area: number; outputStashCount?: number; secondary?: number }): number {
+  return left.area - right.area || (left.outputStashCount ?? 0) - (right.outputStashCount ?? 0)
+    || (left.secondary ?? 0) - (right.secondary ?? 0);
+}
 
 /** 验收评分固定，不接受训练权重；长度在单入单出物流节点处连续累计。 */
 export function measurePlannerQuality(registry: RegistryContract, network: PlannerNetwork, entities: readonly WorldEntity[],
@@ -68,7 +79,7 @@ export function measurePlannerQuality(registry: RegistryContract, network: Plann
   const secondary = lengthPenalty + turnPenalty * 0.1 + excessFluidSources * 20 + extraGas * 20
     + (aspect - 1) ** 2 - adjacencyPairs * 0.2;
   if (!Number.isFinite(secondary)) throw new PlannerCandidateError("物流长度评分超出数值范围，候选过于分散。");
-  return { secondary, occupiedCells: occupied.size, utilization: occupied.size / area,
+  return { secondary, occupiedCells: occupied.size, utilization: occupied.size / area, outputStashCount: countPlannerOutputStashes(network.nodes),
     excessFluidSources, lengthPenalty, turnPenalty, adjacencyPairs };
 }
 

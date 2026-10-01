@@ -1,3 +1,4 @@
+import { yituliuTargetKey } from "./yituliu-session";
 import { resolveBackendApiBaseUrl } from "./backend-api-address";
 import {
   applyIndexedDbStoreMutations,
@@ -51,7 +52,7 @@ const SYNC_CONNECTION_SETTINGS_LOCATION = {
 export const CLOUDFLARE_SYNC_TOMBSTONE_STORE_NAME = "cloudflare-sync-tombstones";
 export const WEBDAV_SYNC_TOMBSTONE_STORE_NAME = "webdav-sync-tombstones";
 
-export type ActiveSyncProvider = "cloudflare" | "webdav";
+export type ActiveSyncProvider = "cloudflare" | "webdav" | "yituliu";
 
 export interface SyncTombstone<TValue> {
   readonly assetId: string;
@@ -204,6 +205,12 @@ async function resolveActiveSyncTombstoneScope(): Promise<ActiveSyncTombstoneSco
   const provider = readActiveSyncProvider();
   if (provider === null) {
     return null;
+  }
+
+  if (provider === "yituliu") {
+    const target = yituliuTargetKey();
+    if (target === null || !isSyncProviderTargetActive("yituliu", target)) return null;
+    return { provider, scopeKey: target, storeLocation: { databaseName: SYNC_DATABASE_NAME, storeName: "yituliu-sync-tombstones" } };
   }
 
   if (provider === "cloudflare") {

@@ -24,6 +24,7 @@ const SYNC_PROVIDER_OPTIONS: readonly {
   { value: "none", labelKey: "settingsOption.syncProvider.none" },
   { value: "webdav", labelKey: "settingsOption.syncProvider.webdav" },
   { value: "cloudflare", labelKey: "settingsOption.syncProvider.cloudflare" },
+  { value: "yituliu", labelKey: "settingsOption.syncProvider.yituliu" },
 ];
 
 export const USER_SETTINGS_DIALOG_LOCAL_STORAGE_KEY = "v3-user-settings-dialog";

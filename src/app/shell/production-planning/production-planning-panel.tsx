@@ -881,7 +881,7 @@ export const ProductionPlanningPanel = observer(function ProductionPlanningPanel
               </button>
               {appHost.blueprintPlannerDialog.enabled ? <button type="button"
                 className={cm(styles, "production-planning-icon-text-button")}
-                disabled={calculation === null || calculation.plan.recipeTotals.some((entry) => entry.module !== null)
+                disabled={useModules || calculation === null || calculation.plan.recipeTotals.some((entry) => entry.module !== null)
                   || appHost.workspace.blueprintPlanner?.state.activeTaskId !== null}
                 onClick={openAutomaticPlanning}>
                 <LucideFactory /><span>{t("eda.planThisLine")}</span>

@@ -1,13 +1,16 @@
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { GridRotation } from "@/domain/shared/grid";
 import { resolveEntityGridRect, resolveGasDiffusionRangeGridRect, areGridRectsContaining, areGridRectsIntersecting } from "@/shared/geometry/power-range";
-import { getPlannerPorts, opposite, ROTATIONS, type PlannerPort } from "./geometry";
+import { allowsPlannerOverlap, getPlannerPorts, opposite, ROTATIONS, type PlannerPort } from "./geometry";
+import type { LogisticsKind } from "@/domain/shared/logistics";
 import type { PlannerNetwork, PlannerWire } from "./model";
 import { DEFAULT_SEARCH_PROFILE, type PlannerSearchProfile } from "./search-profile";
 import type { PlannerLayoutIssue, PlannerSearchStatistics } from "./search-types";
 import { buildLayoutGraph } from "./layout-graph";
 import { compactSequencePair } from "./sequence-pair";
 import { restrictPort } from "./wiring";
+import { compactLayoutProposals, type PlannerPose } from "./constructive-layout";
+import { getPlannerStashDrainPorts } from "./terminals";
 
 interface Pose { x: number; y: number; rotation: GridRotation; }
 interface Geometry { width: number; height: number; ports: Map<string, PlannerPort>; }
@@ -28,6 +31,8 @@ export class CompactLayoutSearch {
   private readonly neighbors: number[][];
   private readonly environmentPairs: Array<{ device: number; environment: number }>;
   private readonly localTerminals: Array<{ parent: number; terminal: number }>;
+  private readonly blockedKinds: number[];
+  private readonly stashDrainKeys: string[][];
   private current: Evaluation;
   private best: Pose[];
   private bestEvaluation: Evaluation;
@@ -37,6 +42,8 @@ export class CompactLayoutSearch {
   private repairIssues: PlannerLayoutIssue[] = [];
   private repairFocus: number[] = [];
   private reheatUntil = 0;
+  private nextRebuildEvaluation = 1500;
+  private pendingRebuild: { iterator: Generator<void, PlannerPose[] | null>; next: IteratorResult<void, PlannerPose[] | null>; previous: Pose[] } | null = null;
   // AI-REMOVED 2026-09-16:
   // Reason: 高密度升温/越界优先实验未改善 30×40 案例，收敛回已验证策略。
   // Trigger: 赤铜矿缩小边界的有限调优。
@@ -50,6 +57,7 @@ export class CompactLayoutSearch {
     private readonly wires: PlannerWire[], readonly statistics: PlannerSearchStatistics, private readonly profile: PlannerSearchProfile = DEFAULT_SEARCH_PROFILE) {
     this.randomState = (statistics.seed + 1) * 2654435761 >>> 0;
     this.poses = network.nodes.map(node => ({ ...node.entity.position, rotation: node.entity.rotation }));
+    this.stashDrainKeys = network.nodes.map(node => getPlannerStashDrainPorts(registry, node).map(portKey));
     this.geometry = network.nodes.map(node => ROTATIONS.map(rotation => {
       const entity = { ...node.entity, position: { x: 0, y: 0 }, rotation };
       const rect = resolveEntityGridRect({ entity, definition: node.definition });
@@ -57,6 +65,8 @@ export class CompactLayoutSearch {
         .flatMap(direction => getPlannerPorts(registry, entity, node.definition, direction))
         .map(port => [portKey(port), port])) };
     }));
+    this.blockedKinds = network.nodes.map(node => (["belt", "pipe"] as const).reduce((mask, kind, bit) => mask
+      | (allowsPlannerOverlap(registry, node.definition, registry.queries.findEntityDefinition(registry.queries.resolveLogisticsDefinitionId(kind, "straight"))!) ? 0 : 1 << bit), 0));
   // AI-REMOVED 2026-09-16:
   // Reason: 高密度升温/越界优先实验未改善 30×40 案例，收敛回已验证策略。
   // Trigger: 赤铜矿缩小边界的有限调优。
@@ -78,7 +88,18 @@ export class CompactLayoutSearch {
     this.originalSourceKeys = this.edges.map(edge => edge.sourceKey);
     this.junctionPorts = network.nodes.flatMap((node, index) => {
       const role = registry.queries.resolveLogisticsRole(node.definition.id);
-      if (role !== "splitter" && role !== "converger") return [];
+      if (role !== "splitter" && role !== "converger") {
+        if (statistics.strategy !== "compact") return [];
+        return node.definition.portGroups.flatMap((_, groupIndex) => (["input", "output"] as const).flatMap(direction => {
+          const source = direction === "output";
+          const edges = this.edges.flatMap((edge, at) => (source ? edge.source : edge.target) === index
+            && Number((source ? edge.sourceKey : edge.targetKey).split("/")[0]) === groupIndex ? [at] : []);
+          const keys = [...this.geometry[index]![0]!.ports].filter(([, port]) => port.direction === direction && port.groupIndex === groupIndex
+            && edges.every(at => wires[at]!.itemIds.every(item => getPlannerPorts(registry, node.entity, node.definition, direction, item)
+              .some(candidate => candidate.groupIndex === port.groupIndex && candidate.portIndex === port.portIndex)))).map(([key]) => key);
+          return edges.length && keys.length >= edges.length && keys.length <= 6 ? [{ node: index, source, edges, keys }] : [];
+        }));
+      }
       const source = role === "splitter";
       const edges = this.edges.flatMap((edge, at) => (source ? edge.source : edge.target) === index ? [at] : []);
       const keys = [...this.geometry[index]![0]!.ports].filter(([, port]) => port.direction === (source ? "output" : "input")).map(([key]) => key);
@@ -108,6 +129,7 @@ export class CompactLayoutSearch {
     this.current = this.evaluate();
     this.best = this.snapshot(); this.bestEvaluation = this.current;
     statistics.initialWireLength = this.current.wireLength;
+    this.nextRebuildEvaluation = statistics.evaluations + 1500;
   }
 
   async advance(count: number, checkBudget: () => void): Promise<boolean> {
@@ -116,6 +138,16 @@ export class CompactLayoutSearch {
     let refreshRepairAt = this.statistics.evaluations;
     while (this.statistics.evaluations < end && this.movable.length) {
       checkBudget();
+      if (this.pendingRebuild || (this.statistics.experiments?.includes("partial-rebuild") && this.statistics.strategy === "compact" && this.statistics.maximumArea !== undefined && this.statistics.evaluations >= this.nextRebuildEvaluation
+        && (!this.bestEvaluation.feasible || this.focus.length > 0))) {
+        this.rebuild(end, checkBudget);
+        // AI-REMOVED 2026-09-30:
+        // Reason: 重建跨批次继续，完成时才安排下一次。Trigger: 重建批次饥饿。
+        // Evidence: 首轮 rebuildCompleted。Replacement: rebuild() 完成分支。
+        // Risk: Low。Human Review: Required。
+        // Original code: this.nextRebuildEvaluation = this.statistics.evaluations + 3000;
+        if (this.statistics.evaluations >= end) continue;
+      }
       if (repairEnabled && this.statistics.evaluations >= refreshRepairAt) {
         this.repairIssues = [];
         this.current = this.evaluate(this.repairIssues);
@@ -127,7 +159,7 @@ export class CompactLayoutSearch {
           { ...this.poses[index]!, ...this.dimensions(index) })));
         refreshRepairAt = this.statistics.evaluations + 64;
       }
-      const progress = this.statistics.evaluations / this.statistics.evaluationLimit;
+      const progress = this.statistics.evaluations / (this.statistics.coolingEvaluations ?? this.statistics.evaluationLimit);
       const temperature = Math.max(this.statistics.evaluations < this.reheatUntil ? 5 : 0, this.profile.initialTemperature * Math.pow(this.profile.coolingRatio, progress));
       this.statistics.evaluations++;
   // AI-REMOVED 2026-09-16:
@@ -168,17 +200,99 @@ export class CompactLayoutSearch {
         child.rotation = ((oldChild.rotation + turn) % 360) as GridRotation;
       }
       const candidate = this.evaluate();
+      // 2026-09-30：可交付候选的保留独立于退火接受，避免合法但代理分较高的布局被遗漏。
+      if ((candidate.feasible && !this.bestEvaluation.feasible) || (candidate.feasible === this.bestEvaluation.feasible && candidate.cost < this.bestEvaluation.cost)) {
+        this.best = this.snapshot(); this.bestEvaluation = candidate;
+      }
       if (Number.isFinite(candidate.cost) && (candidate.cost <= this.current.cost || this.random() < Math.exp((this.current.cost - candidate.cost) / temperature))) {
         this.current = candidate; this.statistics.acceptedMoves++;
-        if ((candidate.feasible && !this.bestEvaluation.feasible) || (candidate.feasible === this.bestEvaluation.feasible && candidate.cost < this.bestEvaluation.cost)) {
-          this.best = this.snapshot(); this.bestEvaluation = candidate;
-        }
+        // AI-REMOVED 2026-09-30:
+        // Reason: 最佳可行快照不能依赖随机接受。Trigger: 用户要求继续改进密集布局搜索。
+        // Evidence: 合法提案可能因代理分较高被退火拒绝。Replacement: 上方独立保留快照。
+        // Risk: Low；仍须完整布线和真实验收。Human Review: Required。
+        // Original code:
+        // if ((candidate.feasible && !this.bestEvaluation.feasible) || (candidate.feasible === this.bestEvaluation.feasible && candidate.cost < this.bestEvaluation.cost)) {
+        //   this.best = this.snapshot(); this.bestEvaluation = candidate;
+        // }
       } else this.restore(previous);
       if (this.statistics.evaluations % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
     this.statistics.remainingConflicts = this.bestEvaluation.conflicts;
     this.statistics.finalWireLength = this.bestEvaluation.wireLength;
-    return this.bestEvaluation.feasible;
+    return !this.pendingRebuild && this.bestEvaluation.feasible;
+  }
+
+  /** 拿走冲突设备与近邻，保留其他设备；每个重放位置都计入当前批次的共享预算。 */
+  private rebuild(end: number, checkBudget: () => void): void {
+    if (!this.pendingRebuild) {
+      const previous = this.snapshot();
+      this.restore(this.best);
+      const issues: PlannerLayoutIssue[] = [];
+      this.evaluate(issues);
+      const issue = issues[Math.floor(this.random() * issues.length)];
+      const causes = issue ? this.network.nodes.flatMap((node, index) => issue.entityIds.includes(node.entity.id) ? [index] : []) : this.focus;
+      const anchors = causes.length ? causes : this.movable;
+      const group = this.movable.filter(index => causes.includes(index));
+      const distance = (index: number) => Math.min(...anchors.map(anchor => Math.abs(this.poses[index]!.x - this.poses[anchor]!.x)
+        + Math.abs(this.poses[index]!.y - this.poses[anchor]!.y) - (this.neighbors[anchor]!.includes(index) ? 4 : 0)));
+      const size = Math.max(group.length, 3 + Math.floor(this.random() * 3));
+      for (const index of [...this.movable].sort((a, b) => distance(a) - distance(b))) {
+        if (group.length >= size) break;
+        if (!group.includes(index)) group.push(index);
+      }
+      // 环境与局部源汇随所属设备一起重建，仍由完整评分和后续真实布线验收。
+      for (const pair of [...this.environmentPairs.map(pair => [pair.device, pair.environment] as const),
+        ...this.localTerminals.map(pair => [pair.parent, pair.terminal] as const)]) {
+        if (pair.some(index => group.includes(index))) for (const index of pair) {
+          if (!this.fixed.has(index) && !group.includes(index)) group.push(index);
+        }
+      }
+      const wires = this.wires.map((wire, index) => ({ ...wire,
+        source: this.port(this.edges[index]!.source, this.edges[index]!.sourceKey),
+        target: this.port(this.edges[index]!.target, this.edges[index]!.targetKey) }));
+      this.statistics.rebuildAttempts = (this.statistics.rebuildAttempts ?? 0) + 1;
+      // AI-REMOVED 2026-09-30:
+      // Reason: 批次上限不应丢弃未完成重建。Trigger: 首轮百万实验发现重建饥饿。
+      // Evidence: 固定 750 提案批次小于局部位置枚举工作量。
+      // Replacement: 下方单游标分批消费，共享总预算。Risk: Low。Human Review: Required。
+      // Original code:
+      // const poses = constructCompactLayout(this.registry, this.network, wires, this.statistics.outline,
+      //   Math.floor(this.random() * 0x7fffffff), () => {
+      //     checkBudget();
+      //     if (this.statistics.evaluations >= end) return false;
+      //     this.statistics.evaluations++;
+      //     this.statistics.rebuildEvaluations = (this.statistics.rebuildEvaluations ?? 0) + 1;
+      //     return true;
+      //   }, { poses: this.poses, movable: group });
+      const iterator = compactLayoutProposals(this.registry, this.network, wires, this.statistics.outline,
+        Math.floor(this.random() * 0x7fffffff), { poses: this.poses, movable: group });
+      this.pendingRebuild = { iterator, next: iterator.next(), previous };
+    }
+    const pending = this.pendingRebuild;
+    while (!pending.next.done && this.statistics.evaluations < end) {
+      checkBudget();
+      this.statistics.evaluations++;
+      this.statistics.rebuildEvaluations = (this.statistics.rebuildEvaluations ?? 0) + 1;
+      pending.next = pending.iterator.next();
+    }
+    if (!pending.next.done) return;
+    const poses = pending.next.value;
+    this.pendingRebuild = null;
+    this.nextRebuildEvaluation = this.statistics.evaluations + 3000;
+    if (poses) {
+      this.statistics.rebuildCompleted = (this.statistics.rebuildCompleted ?? 0) + 1;
+      this.restore(poses);
+      const candidate = this.evaluate();
+      if ((candidate.feasible && !this.bestEvaluation.feasible)
+        || (candidate.feasible === this.bestEvaluation.feasible && candidate.cost < this.bestEvaluation.cost)) {
+        this.best = this.snapshot(); this.bestEvaluation = candidate; this.current = candidate;
+        this.statistics.rebuildImprovements = (this.statistics.rebuildImprovements ?? 0) + 1;
+        this.reheatUntil = this.statistics.evaluations + 500;
+        return;
+      }
+    }
+    this.restore(pending.previous);
+    this.current = this.evaluate();
   }
 
   applyBest(): void {
@@ -204,7 +318,13 @@ export class CompactLayoutSearch {
       for (const index of junction.edges) {
         const wire = this.wires[index]!, port = junction.source ? wire.source : wire.target;
         restrictPort(this.registry, node, port, wire.itemIds);
-        if (junction.source) node.entity.config[`portGroups[${port.groupIndex}].ports[${port.portIndex}].priorityGroup`] = 1;
+        if (junction.source) {
+          const graph = buildLayoutGraph(this.network.nodes.map(entry => entry.entity.id), this.wires.map(entry => ({ from: entry.source.entityId, to: entry.target.entityId })));
+          const group = graph.groupIndexByNodeId.get(node.entity.id)!;
+          node.entity.config[`portGroups[${port.groupIndex}].ports[${port.portIndex}].priorityGroup`] =
+            this.registry.queries.resolveLogisticsRole(node.definition.id) !== "splitter" && graph.groups[group]!.cyclic
+              && graph.groupIndexByNodeId.get(wire.target.entityId) !== group ? 5 : 1;
+        }
       }
     }
   }
@@ -268,6 +388,40 @@ export class CompactLayoutSearch {
   private propose(index: number, progress: number): void {
     const pose = this.poses[index]!, mode = this.random();
     const origin = { ...pose };
+    if (this.statistics.strategy === "compact" && this.random() < 0.18) {
+      // 每次重新从连接邻域取组，允许拆分与重新组合，不把初始聚类变成永久宏块。
+      const group = [index];
+      const limit = 2 + Math.floor(this.random() * 4);
+      for (let cursor = 0; cursor < group.length && group.length < limit; cursor++) {
+        for (const neighbor of this.neighbors[group[cursor]!]!) {
+          if (!this.fixed.has(neighbor) && !group.includes(neighbor) && this.random() < 0.65) group.push(neighbor);
+          if (group.length >= limit) break;
+        }
+      }
+      const left = Math.min(...group.map(member => this.poses[member]!.x));
+      const top = Math.min(...group.map(member => this.poses[member]!.y));
+      const bottom = Math.max(...group.map(member => this.poses[member]!.y + this.dimensions(member).height));
+      const rotate = this.random() < 0.3;
+      const dx = this.random() < 0.5 ? (this.random() < 0.65 ? -1 : 1) : 0;
+      const dy = dx ? 0 : (this.random() < 0.65 ? -1 : 1);
+      for (const member of group) {
+        const current = this.poses[member]!, oldX = current.x, oldY = current.y, height = this.dimensions(member).height;
+        current.x = rotate ? left + bottom - oldY - height : oldX + dx;
+        current.y = rotate ? top + oldX - left : oldY + dy;
+        if (rotate) current.rotation = ((current.rotation + 90) % 360) as GridRotation;
+      }
+      return;
+    }
+    if (this.statistics.strategy === "compact" && this.random() < 0.06) {
+      // 存取线的几何槽位固定，同尺寸取货口可交换槽位，供料配对随布局变化。
+      const docks = [...this.fixed].filter(member => this.network.nodes[member]!.definition.id === "unloader_1");
+      if (docks.length > 1) {
+        const a = docks[Math.floor(this.random() * docks.length)]!, b = docks[Math.floor(this.random() * docks.length)]!;
+        [this.poses[a]!.x, this.poses[b]!.x] = [this.poses[b]!.x, this.poses[a]!.x];
+        [this.poses[a]!.y, this.poses[b]!.y] = [this.poses[b]!.y, this.poses[a]!.y];
+        return;
+      }
+    }
     // AI-REMOVED 2026-09-16:
     // Reason: 供电桩改为布线后从合法空位生成，不再参与退火。
     // Trigger: 初排桩数与位置锁死布局并阻挡物流。
@@ -398,6 +552,7 @@ export class CompactLayoutSearch {
     let violations = 0;
     const rects = this.poses.map((pose, index) => ({ x: pose.x, y: pose.y, ...this.dimensions(index) }));
     // 分/汇流端口来自同一库存组，可交换出口/入口和未启用口；每次确定性枚举至多 3! 种分配。
+    // 订正 2026-09-30：compact 还处理普通设备的等价端口组，最多六个候选口；保持同组库存与物品接受规则。
     for (let pass = 0; pass < 2; pass++) for (const junction of this.junctionPorts) {
       let bestCost = Infinity, bestKeys: string[] = [];
       const chosen: string[] = [];
@@ -411,7 +566,7 @@ export class CompactLayoutSearch {
           const other = this.port(junction.source ? edge.target : edge.source, junction.source ? edge.targetKey : edge.sourceKey);
           const direct = edge.minimumCells === 0 && own.outside.x === other.cell.x && own.outside.y === other.cell.y
             && other.outside.x === own.cell.x && other.outside.y === own.cell.y;
-          const blocked = !direct && rects.some(rect => contains(rect, own.outside));
+          const blocked = !direct && rects.some((rect, index) => (this.blockedKinds[index]! & (own.kind === "belt" ? 1 : 2)) !== 0 && contains(rect, own.outside));
           const length = Math.abs(own.outside.x - other.outside.x) + Math.abs(own.outside.y - other.outside.y);
           const penalty = (blocked ? 1000 : 0) + Math.max(length, edge.minimumCells - 1)
             + Math.max(0, edge.minimumCells - length - 1) * 50;
@@ -434,6 +589,7 @@ export class CompactLayoutSearch {
       if (!this.fixed.has(i)) record?.("minimum-coordinate", Math.max(0, minX - rect.x) + Math.max(0, minY - rect.y), [i], rect);
       for (let j = 0; j < i; j++) {
         const other = rects[j]!;
+        if (allowsPlannerOverlap(this.registry, this.network.nodes[i]!.definition, this.network.nodes[j]!.definition)) continue;
         violations += Math.max(0, Math.min(rect.x + rect.width, other.x + other.width) - Math.max(rect.x, other.x))
           * Math.max(0, Math.min(rect.y + rect.height, other.y + other.height) - Math.max(rect.y, other.y));
         record?.("body-overlap", Math.max(0, Math.min(rect.x + rect.width, other.x + other.width) - Math.max(rect.x, other.x))
@@ -465,9 +621,17 @@ export class CompactLayoutSearch {
     // 成品箱清空夹具不计交付面积，但验证时占据的格子必须在布局阶段预留。
     const fixtureRects = this.network.nodes.flatMap((node, index) => {
       if (node.definition.id !== "storager_1" || (node.purpose !== "product" && node.purpose !== "byproduct")) return [];
-      const relative = [...this.dimensions(index).ports.values()].find(port => port.direction === "output")!;
-      const port = this.port(index, portKey(relative));
-      const cells = [port.outside, { x: port.outside.x * 2 - port.cell.x, y: port.outside.y * 2 - port.cell.y }];
+      // AI-REMOVED 2026-09-30:
+      // Reason: 多线合箱需要预留多路排空。Trigger: 60/min 单箱。
+      // Evidence: 首个出口只有 30/min。Replacement: stashDrainKeys 与验收共用选口。
+      // Risk: Low；增加预留格。Human Review: Required。
+      // Original code:
+      // const relative = [...this.dimensions(index).ports.values()].find(port => port.direction === "output")!;
+      // const port = this.port(index, portKey(relative));
+      const cells = this.stashDrainKeys[index]!.flatMap(key => {
+        const port = this.port(index, key);
+        return [port.outside, { x: port.outside.x * 2 - port.cell.x, y: port.outside.y * 2 - port.cell.y }];
+      });
       for (const cell of cells) if (rects.some(rect => contains(rect, cell))) violations++;
       if (record) for (const cell of cells) {
         const blockers = rects.flatMap((rect, i) => contains(rect, cell) ? [i] : []);
@@ -475,7 +639,7 @@ export class CompactLayoutSearch {
       }
       return cells.map(cell => ({ ...cell, width: 1, height: 1 }));
     });
-    const obstacles = [...rects, ...fixtureRects];
+    const obstacles = [...rects.map((rect, index) => ({ ...rect, blockedKinds: this.blockedKinds[index]! })), ...fixtureRects.map(rect => ({ ...rect, blockedKinds: 3 }))];
     // 一次建立格子占用，供端口检查与拥塞估计复用，避免每个格子重复扫描所有建筑。
     const gridLeft = Math.min(0, ...obstacles.map(rect => rect.x)), gridTop = Math.min(0, ...obstacles.map(rect => rect.y));
     const gridWidth = Math.max(...obstacles.map(rect => rect.x + rect.width)) - gridLeft;
@@ -483,10 +647,10 @@ export class CompactLayoutSearch {
     const occupied = new Uint8Array(gridWidth * gridHeight);
     for (const rect of obstacles) for (let y = rect.y; y < rect.y + rect.height; y++) {
       const start = (y - gridTop) * gridWidth + rect.x - gridLeft;
-      occupied.fill(1, start, start + rect.width);
+      for (let x = start; x < start + rect.width; x++) occupied[x] = occupied[x]! | rect.blockedKinds;
     }
-    const isOccupied = (point: { x: number; y: number }) => point.x >= gridLeft && point.x < gridLeft + gridWidth
-      && point.y >= gridTop && point.y < gridTop + gridHeight && occupied[(point.y - gridTop) * gridWidth + point.x - gridLeft] === 1;
+    const isOccupied = (point: { x: number; y: number }, kind: LogisticsKind) => point.x >= gridLeft && point.x < gridLeft + gridWidth
+      && point.y >= gridTop && point.y < gridTop + gridHeight && (occupied[(point.y - gridTop) * gridWidth + point.x - gridLeft]! & (kind === "belt" ? 1 : 2)) !== 0;
     let wireLength = 0, wireCost = 0, congestion = 0;
     const used = new Map<string, string>();
     const endpoints: Array<{ source: PlannerPort; target: PlannerPort; direct: boolean }> = [];
@@ -502,8 +666,8 @@ export class CompactLayoutSearch {
         if (direct) continue;
         violations += Math.max(0, Math.max(0, minX - 1) - port.outside.x) + Math.max(0, Math.max(0, minY - 1) - port.outside.y);
         record?.("port-minimum-coordinate", Math.max(0, Math.max(0, minX - 1) - port.outside.x) + Math.max(0, Math.max(0, minY - 1) - port.outside.y), [index], port.outside);
-        if (isOccupied(port.outside)) violations++;
-        if (record && isOccupied(port.outside)) record("port-blocked", 1, [index, ...rects.flatMap((rect, i) => contains(rect, port.outside) ? [i] : [])], port.outside);
+        if (isOccupied(port.outside, port.kind)) violations++;
+        if (record && isOccupied(port.outside, port.kind)) record("port-blocked", 1, [index, ...rects.flatMap((rect, i) => contains(rect, port.outside) ? [i] : [])], port.outside);
         const key = `${port.outside.x},${port.outside.y}/${port.kind}`;
         const owner = String(edgeIndex);
         if (used.has(key) && used.get(key) !== owner) violations++;
@@ -519,7 +683,7 @@ export class CompactLayoutSearch {
         const oppositePort = index === edge.source ? target : source;
         if (!contains(rects[index === edge.source ? edge.target : edge.source]!, next)
           && !(next.x === oppositePort.outside.x && next.y === oppositePort.outside.y)
-          && isOccupied(next)) congestion += 12;
+          && isOccupied(next, port.kind)) congestion += 12;
       }
       const length = Math.abs(source.outside.x - target.outside.x) + Math.abs(source.outside.y - target.outside.y);
       const extra = this.penalties.get(`${source.entityId}/${target.entityId}`) ?? 0;
@@ -539,7 +703,7 @@ export class CompactLayoutSearch {
       const [x, y] = key.split("/")[0]!.split(",").map(Number);
       let free = 0;
       for (let cy = y! * 4; cy < y! * 4 + 4; cy++) for (let cx = x! * 4; cx < x! * 4 + 4; cx++) {
-        if (!isOccupied({ x: cx, y: cy })) free++;
+        if (!isOccupied({ x: cx, y: cy }, key.endsWith("/belt") ? "belt" : "pipe")) free++;
       }
       congestion += Math.max(0, density / Math.max(0.125, free / 16) - 0.65) ** 2 * 16;
     }
@@ -579,9 +743,9 @@ function contains(rect: { x: number; y: number; width: number; height: number },
 }
 
 /** 端口只空出一格仍可能被相邻端口围死；先用自由空间连通分量排除这种假可布线布局。 */
-function countDisconnectedPorts(rects: readonly { x: number; y: number; width: number; height: number }[],
+function countDisconnectedPorts(rects: readonly { x: number; y: number; width: number; height: number; blockedKinds: number }[],
   edges: readonly { source: PlannerPort; target: PlannerPort; direct: boolean }[], minimumX: number, minimumY: number, width: number, height: number, issues?: PlannerLayoutIssue[]): number {
-  return ["belt", "pipe"].reduce((sum, kind) => sum + countDisconnectedKind(rects, edges.filter(edge => edge.source.kind === kind), minimumX, minimumY, width, height, issues), 0);
+  return ["belt", "pipe"].reduce((sum, kind, bit) => sum + countDisconnectedKind(rects.filter(rect => (rect.blockedKinds & (1 << bit)) !== 0), edges.filter(edge => edge.source.kind === kind), minimumX, minimumY, width, height, issues), 0);
 }
 
 function countDisconnectedKind(rects: readonly { x: number; y: number; width: number; height: number }[],

@@ -30,7 +30,7 @@ export function readPlanningInput(registry: RegistryContract, value: unknown): B
   }, index);
   const options: BlueprintPlannerOptions = {
     solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight", solidOutput: "stash",
-    byproducts: "output", plantStartup: "preload", budgetMs: 60_000, evaluationsPerRound: 50_000,
+    byproducts: "output", plantStartup: "preload", evaluationsPerRound: 50_000,
     ...(typeof input.options === "object" && input.options !== null ? input.options : {}),
   };
   return { options, plan: createBlueprintPlannerPlan({ result, targets: state.targets, supplies: state.supplies,

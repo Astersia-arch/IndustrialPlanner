@@ -67,5 +67,9 @@ it("多次尝试共享局部评估上限，几何拒绝也消耗预算", async (
   expect(result.attempts).toBe(3);
   expect(result.localEvaluations).toBe(7);
   expect(result.records.map(record => record.search?.evaluations)).toEqual([3, 2, 2]);
+  expect(result.records.map(record => record.evaluations)).toEqual([3, 2, 2]);
+  expect(result.proposalCurve.points.map(point => point.exactCumulativeEvaluations)).toEqual([3, 5, 7]);
+  expect(result.proposalCurve.totalEvaluations).toBe(result.localEvaluations);
+  expect(result.proposalCurve.bestArea).toBeNull();
   expect(result.records.every(record => record.search!.acceptedMoves <= record.search!.evaluations)).toBe(true);
 }, 120_000);

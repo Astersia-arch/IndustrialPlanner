@@ -3,7 +3,7 @@ import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { GridPoint, GridRect } from "@/domain/shared/grid";
 import type { LogisticsKind } from "@/domain/shared/logistics";
 import { resolveEntityGridRect } from "@/shared/geometry/power-range";
-import { cellKey, DELTAS, EDGES, findLogisticsDevice, opposite, resolveTransportPose, type PlannerPort } from "./geometry";
+import { allowsPlannerOverlap, cellKey, DELTAS, EDGES, findLogisticsDevice, opposite, resolveTransportPose, type PlannerPort } from "./geometry";
 import { PlannerCandidateError } from "./model";
 
 interface RouteCell {
@@ -62,6 +62,7 @@ export class PlannerRouter {
   readonly conflicts = new Map<string, Set<string>>();
   private activeRoute = "";
   private readonly blocked = new Set<string>();
+  private readonly permeable = new Map<string, Set<LogisticsKind>>();
   private readonly paths = new Map<string, Map<LogisticsKind, RouteCell>>();
   private readonly reserved = new Map<string, Set<LogisticsKind>>();
   private readonly generated: WorldEntity[] = [];
@@ -80,16 +81,56 @@ export class PlannerRouter {
       const rect = resolveEntityGridRect({ entity, definition });
       minX = Math.min(minX, rect.x); minY = Math.min(minY, rect.y);
       maxX = Math.max(maxX, rect.x + rect.width); maxY = Math.max(maxY, rect.y + rect.height);
+      const permeableKinds = (["belt", "pipe"] as const).filter(kind => allowsPlannerOverlap(registry, definition,
+        registry.queries.findEntityDefinition(registry.queries.resolveLogisticsDefinitionId(kind, "straight"))!));
       for (let y = rect.y; y < rect.y + rect.height; y++) {
-        for (let x = rect.x; x < rect.x + rect.width; x++) this.blocked.add(cellKey({ x, y }));
+        for (let x = rect.x; x < rect.x + rect.width; x++) {
+          const key = cellKey({ x, y });
+          const allowed = new Set(permeableKinds);
+          if (this.blocked.has(key)) for (const kind of allowed) if (!this.permeable.get(key)?.has(kind)) allowed.delete(kind);
+          this.permeable.set(key, allowed);
+          this.blocked.add(key);
+        }
       }
     }
-    this.bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    // 路由边界还包括端点；只有端口、没有实体障碍的空地也必须具有有限搜索框。
+    for (const port of ports) {
+      minX = Math.min(minX, port.outside.x); minY = Math.min(minY, port.outside.y);
+      maxX = Math.max(maxX, port.outside.x + 1); maxY = Math.max(maxY, port.outside.y + 1);
+    }
+    this.bounds = { x: Number.isFinite(minX) ? minX : 0, y: Number.isFinite(minY) ? minY : 0,
+      width: Number.isFinite(maxX - minX) ? maxX - minX : 0, height: Number.isFinite(maxY - minY) ? maxY - minY : 0 };
     for (const port of ports) this.reserve(cellKey(port.outside), port.kind);
     for (const port of ports) this.prepareEscape(port);
   }
 
   get entities(): readonly WorldEntity[] { return this.generated; }
+
+  /** 仅复用当前端口、边界、障碍及交叉都仍合法的完整线路；校验完成前不写占用。 */
+  reuse(source: PlannerPort, target: PlannerPort, cells: readonly GridPoint[], minimumCells = 0): boolean {
+    if (source.kind !== target.kind || cells.length < minimumCells) return false;
+    if (!cells.length) return false;
+    const first = cells[0]!, last = cells.at(-1)!;
+    if (first.x !== source.outside.x || first.y !== source.outside.y || last.x !== target.outside.x || last.y !== target.outside.y) return false;
+    const seen = new Set<string>();
+    let incoming = EDGES.indexOf(source.edge), tail: SearchEntry | null = null, turns = 0;
+    for (const [index, point] of cells.entries()) {
+      const key = cellKey(point), next = cells[index + 1];
+      const outgoing = next ? DELTAS.findIndex(delta => point.x + delta.x === next.x && point.y + delta.y === next.y) : EDGES.indexOf(opposite(target.edge));
+      if (outgoing < 0 || seen.has(key) || point.x < this.boundary.minimumX || point.y < (this.boundary.minimumY ?? -Infinity)
+        || point.x > (this.boundary.maximumX ?? Infinity) || point.y > (this.boundary.maximumY ?? Infinity)
+        || this.isBlocked(key, source.kind) || (index > 0 && index < cells.length - 1 && this.reserved.get(key)?.has(source.kind))
+        || !this.canEnter(key, source.kind, incoming) || !this.canLeave(key, source.kind, incoming, outgoing)) return false;
+      seen.add(key); turns += Number(incoming !== outgoing);
+      tail = { point, direction: incoming, cost: index, estimate: index, parent: tail, steps: index + 1 };
+      incoming = outgoing;
+    }
+    this.activeRoute = `${portId(source)}>${portId(target)}`;
+    this.commit(tail!, source.kind, EDGES.indexOf(opposite(target.edge)));
+    this.routes.push({ source: source.entityId, target: target.entityId, sourcePort: portId(source), targetPort: portId(target),
+      sourceEdge: source.edge, targetEdge: target.edge, cells: cells.map(point => ({ ...point })), turns });
+    return true;
+  }
 
   /** 初次布线排序的局部空间估计；复用真实静态占用与端口预留，不替代 A* 可达性验证。 */
   estimateEndpointFreedom(source: PlannerPort, target: PlannerPort): number {
@@ -101,7 +142,7 @@ export class PlannerRouter {
         const next: GridPoint[] = [];
         for (const point of frontier) for (const delta of DELTAS) {
           const neighbor = { x: point.x + delta.x, y: point.y + delta.y }, key = cellKey(neighbor);
-          if (visited.has(key) || this.blocked.has(key) || (this.reserved.get(key)?.has(port.kind) && !terminals.has(key))
+          if (visited.has(key) || this.isBlocked(key, port.kind) || (this.reserved.get(key)?.has(port.kind) && !terminals.has(key))
             || neighbor.x < this.boundary.minimumX || neighbor.x > (this.boundary.maximumX ?? Infinity)
             || neighbor.y < (this.boundary.minimumY ?? -Infinity) || neighbor.y > (this.boundary.maximumY ?? Infinity)) continue;
           visited.add(key); next.push(neighbor);
@@ -128,7 +169,7 @@ export class PlannerRouter {
     }
     const start = this.escapes.get(portId(source)) ?? source.outside, goal = this.escapes.get(portId(target)) ?? target.outside;
     const startKey = cellKey(start), goalKey = cellKey(goal);
-    if (this.blocked.has(startKey) || this.blocked.has(goalKey)) throw new PlannerCandidateError("端口外侧被设备阻挡。");
+    if (this.isBlocked(startKey, source.kind) || this.isBlocked(goalKey, source.kind)) throw new PlannerCandidateError("端口外侧被设备阻挡。");
     let margin = 8;
     const routeDeadline = performance.now() + 1500;
     // 空间没有固定上限；逐步扩展搜索区域，终止由任务预算或取消决定。
@@ -169,7 +210,7 @@ export class PlannerRouter {
             }
             if (repeated) continue;
           }
-          if (this.blocked.has(nextKey) || (this.reserved.get(nextKey)?.has(source.kind) && nextKey !== startKey && nextKey !== goalKey)) continue;
+          if (this.isBlocked(nextKey, source.kind) || (this.reserved.get(nextKey)?.has(source.kind) && nextKey !== startKey && nextKey !== goalKey)) continue;
           if (!this.canEnter(nextKey, source.kind, nextDirection)) { this.recordConflict(nextKey); continue; }
           const cost = current.cost + 1 + (nextDirection === current.direction ? 0 : key === startKey ? 3 : 1)
             + (this.paths.has(nextKey) ? 0.2 : 0) + (this.boundary.history?.get(`${this.activeRoute}|${nextKey}`) ?? 0);
@@ -204,6 +245,10 @@ export class PlannerRouter {
     const has = (definition: typeof straight, type: string) => definition.placementBehaviors.some((behavior) => behavior.type === type);
     return (has(straight, "allow-belt-overlap") && has(otherDefinition, "allow-pipe-overlap"))
       || (has(straight, "allow-pipe-overlap") && has(otherDefinition, "allow-belt-overlap"));
+  }
+
+  private isBlocked(key: string, kind: LogisticsKind): boolean {
+    return this.blocked.has(key) && !this.permeable.get(key)?.has(kind);
   }
 
   private recordConflict(key: string): void {

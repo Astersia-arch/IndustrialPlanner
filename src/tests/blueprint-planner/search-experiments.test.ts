@@ -12,6 +12,7 @@ import type { PlannerSearchStatistics } from "@/blueprint-planner/search-types";
 import { DEFAULT_SEARCH_PROFILE } from "@/blueprint-planner/search-profile";
 import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
 import nugget from "./fixtures/pyrrolite-nugget.json";
+import powerNoSpace from "./fixtures/power-no-space.json";
 
 it("约束修复遵守总提案预算与固定存取线，最终几何仍由共同评分核验", async () => {
   const registry = createRegistryContract();
@@ -54,16 +55,17 @@ it("困难线路排序使用边界、实体和同类端口预留，不把异类�
   expect(router.entities).toEqual([]);
 });
 
-it("默认供电失败去重通过真实 Worker 执行，每个可行检查点最多拒绝一次供电", async () => {
+it("基线策略的默认供电失败去重通过真实 Worker 执行，每个可行检查点最多拒绝一次供电", async () => {
   const client = new NodePlannerClient();
   try {
-    await expect(client.build(structuredClone(nugget.request) as BlueprintPlannerRequest, 9, 120_000,
-      { maxEvaluations: 50_000, outline: { width: 30, height: 40 }, diagnostics: true, experiments: undefined }))
+    // 2026-09-30：重叠规则修复改变了旧随机样本的失败阶段；使用专门缺少 2×2 桩位的固定场景验证相同去重契约。
+    await expect(client.build(structuredClone(powerNoSpace.request) as BlueprintPlannerRequest, 0, 30_000,
+      { strategy: "baseline", maxEvaluations: 5_000, outline: powerNoSpace.outline, diagnostics: true, experiments: undefined }))
       .rejects.toSatisfy((error: unknown) => {
         expect(error).toBeInstanceOf(PlannerCandidateError);
         const search = (error as PlannerCandidateError).search!, diagnostic = search.diagnostics!;
         expect(search.experiments).toEqual(["power-dedup"]);
-        expect(search.evaluations).toBe(50_000);
+        expect(search.evaluations).toBe(5_000);
         expect(diagnostic.rejectionCounts.power).toBeGreaterThan(0);
         expect(diagnostic.rejectionCounts.power).toBeLessThanOrEqual(diagnostic.feasibleLayouts);
         expect(diagnostic.fullyRoutedAttempts).toBe(diagnostic.rejectionCounts.power);

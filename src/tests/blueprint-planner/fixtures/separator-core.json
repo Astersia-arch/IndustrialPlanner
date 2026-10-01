@@ -1,0 +1,22 @@
+{
+  "fixtureVersion": 1,
+  "provenance": "分离芯单机 60/min；两种原料外供，验证同物品多线合箱与分箱",
+  "request": {
+    "options": {
+      "solidSupply": "warehouse", "fluidSupply": "conduit", "warehouseBus": "straight",
+      "solidOutput": "stash", "byproducts": "output", "plantStartup": "preload", "evaluationsPerRound": 50000
+    },
+    "plan": {
+      "name": "分离芯60每分钟多线合箱", "sourceBaseId": "wuling_protocol_core",
+      "targets": [{ "itemId": "item_filter_core", "perMinute": 60 }],
+      "externalSupplies": [{ "itemId": "item_copper_jar", "perMinute": 30 }, { "itemId": "item_xiranite_powder", "perMinute": 30 }],
+      "infiniteItemIds": ["item_copper_jar", "item_xiranite_powder"], "byproductItemIds": [],
+      "containsModules": false, "unresolvedPerMinute": 0, "activeActivityIds": [],
+      "recipes": [{
+        "recipeId": "tools_proc_filter_core_2", "cyclesPerMinute": 30, "deviceCount": 1,
+        "inputs": [{ "itemId": "item_copper_jar", "perMinute": 30 }, { "itemId": "item_xiranite_powder", "perMinute": 30 }],
+        "outputs": [{ "itemId": "item_filter_core", "perMinute": 60 }], "runningInputs": []
+      }]
+    }
+  }
+}

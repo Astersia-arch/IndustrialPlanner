@@ -1514,3 +1514,18 @@
     background: var(--surface-3);
   }
 }
+
+.yituliu-status-content {
+  align-content: start;
+
+  .sync-status-section {
+    align-content: start;
+  }
+
+  button {
+    justify-self: start;
+    align-self: start;
+    padding: 9px 14px;
+    min-height: 36px;
+  }
+}

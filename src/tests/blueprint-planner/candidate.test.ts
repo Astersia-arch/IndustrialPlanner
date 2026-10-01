@@ -60,7 +60,10 @@ describe("EDA 固定生产方案", () => {
       document.slotLinks = candidate.execution.blueprint.slotLinks;
       const placement = resolvePlacementValidations({ document, workspace, state: createEditorStateReadWrite() });
       expect(Object.entries(placement).filter(([, result]) => !result.canPlace)).toEqual([]);
-      const report = await host.actions.runBlueprint({ ...candidate.execution, maxWallTimeMs: 240_000 });
+      // 取货口必须只凭交付蓝图配置持续供料，不能依赖验证场景覆盖库存来掩盖导出缺失。
+      const report = await host.actions.runBlueprint({ ...candidate.execution, maxWallTimeMs: 240_000,
+        scene: { ...candidate.execution.scene, initialSlots: candidate.execution.scene.initialSlots.filter(slot =>
+          candidate.execution.blueprint.entities[slot.entityId]?.definitionId !== "unloader_1") } });
       expect(report.status).toBe("completed");
       expect(report.diagnostics.filter((entry) => entry.severity === "error")).toEqual([]);
       expect(report.probes[0]?.perMinute).toBeGreaterThanOrEqual(30);
@@ -68,6 +71,10 @@ describe("EDA 固定生产方案", () => {
       expect(candidate.metrics.productionDeviceCount).toBe(request.plan.recipes.filter((recipe) => !recipe.recipeId.startsWith("r_gas_diffuser_")).reduce((sum, recipe) => sum + Math.ceil(recipe.deviceCount), 0));
       expect(Object.values(candidate.execution.blueprint.entities).some((entity) => entity.definitionId.startsWith("cheat_"))).toBe(false);
       expect(JSON.stringify(request)).toBe(before);
+      for (const entity of Object.values(candidate.execution.blueprint.entities).filter(entity => entity.definitionId === "unloader_1")) {
+        expect(entity.config["storageSlotGroups[0].slots[0].ignoreStock"]).toBe(true);
+        expect(entity.config["storageSlotGroups[0].slots[0].initialCount"]).toBeGreaterThan(0);
+      }
       if (request.options.plantStartup === "warehouse") {
         const startup = Object.values(candidate.execution.blueprint.entities).find((entity) => entity.id.startsWith("eda-startup-admission-"));
         expect(Object.values(startup!.config)).toContainEqual({ itemId: request.plan.targets[0]!.itemId, limit: 29, perMinuteLimit: null });

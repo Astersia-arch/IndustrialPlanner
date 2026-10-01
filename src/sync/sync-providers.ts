@@ -29,6 +29,7 @@ export interface SyncProviderConfig {
 }
 
 export const SYNC_PROVIDER_CONFIGS: readonly SyncProviderConfig[] = [
+  { id: "yituliu", labelKey: "settingsOption.syncProvider.yituliu" },
   { id: "none",      labelKey: "settingsOption.syncProvider.none" },
   { id: "webdav",    labelKey: "settingsOption.syncProvider.webdav" },
   { id: "cloudflare", labelKey: "settingsOption.syncProvider.cloudflare" },
@@ -56,6 +57,6 @@ export function readSyncProvider(): string {
 export function writeSyncProvider(id: string): void {
   // AI-CORRECTION 2026-08-24: 非 none 写入现在只表达待配置选择，不再直接激活同步。
   requestSyncProvider(
-    id === "webdav" || id === "cloudflare" ? id : "none",
+    id === "webdav" || id === "cloudflare" || id === "yituliu" ? id : "none",
   );
 }

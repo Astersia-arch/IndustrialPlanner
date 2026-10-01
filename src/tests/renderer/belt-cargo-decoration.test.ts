@@ -404,6 +404,39 @@ describe("createBeltCargoDecoration", () => {
     decoration.destroy()
   })
 
+  it("uses the white rounded box in blueprint style even after the baked box has loaded", async () => {
+    const decoration = createBeltCargoDecoration()
+    const publishedBoxTexture = createIconTexture(128, 128)
+    const getTexture = vi.fn(async (key: string) => (
+      key === "belt-cargo-box" ? publishedBoxTexture : createIconTexture(32, 32)
+    ))
+    const ctx = createContext({ getTexture, simplifiedDeviceIcons: true })
+    const settings = (ctx as unknown as {
+      renderHost: { workspace: { app: { state: { settings: {
+        gameUseBlueprintStyleDeviceImages: boolean;
+      } } } } };
+    }).renderHost.workspace.app.state.settings
+    decoration.sync(ctx as never)
+    expect(getTexture).not.toHaveBeenCalledWith("belt-cargo-box")
+    const box = resolveCargoRoot(decoration, 0)
+    const boxSprite = box.children[0] as { texture: unknown; width: number }
+    const blueprintBoxTexture = boxSprite.texture
+    expect(boxSprite.width).toBeCloseTo(resolveBeltCargoBoxSize(100))
+
+    settings.gameUseBlueprintStyleDeviceImages = false
+    decoration.sync(ctx as never)
+    await flushMicrotasks()
+    decoration.sync(ctx as never)
+    expect(boxSprite.texture).toBe(publishedBoxTexture)
+    expect(boxSprite.width).toBeCloseTo(resolveBeltCargoBoxSize(100) * 2)
+
+    settings.gameUseBlueprintStyleDeviceImages = true
+    decoration.sync(ctx as never)
+    expect(boxSprite.texture).toBe(blueprintBoxTexture)
+    expect(boxSprite.width).toBeCloseTo(resolveBeltCargoBoxSize(100))
+    decoration.destroy()
+  })
+
   it("draws every running belt reported by device runtime status", () => {
     const decoration = createBeltCargoDecoration()
     const getTexture = vi.fn().mockResolvedValue({ id: "unused" })

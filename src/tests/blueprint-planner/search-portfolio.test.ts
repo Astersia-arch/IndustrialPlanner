@@ -1,0 +1,96 @@
+// @vitest-environment node
+
+import { expect, it } from "vitest";
+import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
+import { createRegistryContract } from "@/registry";
+import { createProductionNetwork } from "@/blueprint-planner/production-network";
+import { capturePlannerSeed } from "@/blueprint-planner/search-seed";
+import { PlannerSearchPortfolio } from "@/blueprint-planner/search-portfolio";
+import { continuationOutline } from "@/blueprint-planner/search-outline";
+import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
+import { PlannerCandidateError } from "@/blueprint-planner/model";
+import yazhen from "./fixtures/yazhen-syringe.json";
+
+it("停滞续搜可交换长宽空间，但总面积、固定设施和显式边界保持约束", () => {
+  const seed = { width: 20, height: 20 };
+  expect(continuationOutline(seed, 1, 0)).toEqual({ width: 19, height: 20 });
+  expect(continuationOutline(seed, 2, 1)).toEqual({ width: 20, height: 19 });
+  const shapes = Array.from({ length: 16 }, (_, i) => continuationOutline(seed, i, i + 2));
+  expect(shapes).toContainEqual({ width: 21, height: 19 });
+  expect(shapes).toContainEqual({ width: 18, height: 22 });
+  expect(shapes.every(shape => shape.width * shape.height < 400)).toBe(true);
+  for (let i = 2; i < 18; i++) {
+    const shape = continuationOutline(seed, i, i, { width: 10, height: 18 }, { width: 21, height: 23 });
+    expect(shape.width).toBeGreaterThanOrEqual(10);
+    expect(shape.height).toBeGreaterThanOrEqual(18);
+    expect(shape.width).toBeLessThanOrEqual(21);
+    expect(shape.height).toBeLessThanOrEqual(23);
+    expect(shape.width * shape.height).toBeLessThan(400);
+  }
+});
+
+it("布局池保留同面积的不同摆位、去重、限制容量并在改善后恢复最优分支", () => {
+  // 此用例只验证池的纯数据调度契约；生产可行性由调用方真实验收，另有 Worker 集成测试覆盖。
+  const request = structuredClone(yazhen.request) as BlueprintPlannerRequest;
+  const seed = capturePlannerSeed(request, createProductionNetwork(createRegistryContract(), request), [], [], 20, 20);
+  const original = JSON.stringify(seed);
+  const pool = new PlannerSearchPortfolio(request, seed);
+  pool.remember(structuredClone(seed));
+  expect(pool.next(0).seed).toBe(seed);
+  expect(pool.next(1).continuationStep).toBe(1);
+  for (let i = 1; i < 7; i++) {
+    const other = structuredClone(seed);
+    other.network.nodes[i]!.entity.position = { ...other.network.nodes[i]!.entity.position, x: i };
+    pool.remember(other);
+  }
+  const selections = Array.from({ length: 40 }, (_, i) => pool.next(i + 2)).filter(item => item.seed);
+  const retained = new Set(selections.map(item => item.seed));
+  expect(retained.size).toBe(4);
+  expect(retained.has(seed)).toBe(true);
+  expect(selections.filter(item => item.seed === seed).length).toBeGreaterThan(selections.length / 2);
+  expect(selections.some(item => item.continuationStep! >= 2)).toBe(true);
+  expect(pool.next(43).seed).toBeUndefined();
+  expect(pool.next(44, false).seed).toBeUndefined();
+  const improved = { ...structuredClone(seed), width: 19 };
+  pool.remember(improved);
+  expect(pool.next(44)).toMatchObject({ seed: improved, continuationStep: 0 });
+  expect(JSON.stringify(seed)).toBe(original);
+});
+
+it("全局面积上限覆盖备用布局、独立重启及自动输出的另一种拓扑", () => {
+  const registry = createRegistryContract();
+  const request = structuredClone(yazhen.request) as BlueprintPlannerRequest;
+  const stash = capturePlannerSeed(request, createProductionNetwork(registry, request), [], [], 17, 23);
+  const auto = { ...request, options: { ...request.options, solidOutput: "auto" as const } };
+  const pool = new PlannerSearchPortfolio(auto, stash);
+  const warehouse = { ...request, options: { ...request.options, solidOutput: "warehouse" as const } };
+  const other = capturePlannerSeed(warehouse, createProductionNetwork(registry, warehouse), [], [], 20, 20);
+  pool.remember(other);
+  for (let variant = 0; variant < 40; variant++) {
+    const next = pool.next(variant);
+    expect(next.maximumArea).toBe(390);
+    const box = continuationOutline(next.seed ?? { width: 27, height: 29 }, variant,
+      next.continuationStep ?? variant + 2, { width: 5, height: 10 }, undefined, next.maximumArea);
+    expect(box.width * box.height).toBeLessThan(391);
+  }
+  expect(pool.next(0, false).maximumArea).toBeUndefined();
+  expect(() => continuationOutline(stash, 0, 0, { width: 20, height: 20 }, undefined, 390)).toThrow("面积上限");
+  expect(() => continuationOutline(stash, 0, 0, { width: 20, height: 20 }, undefined, 390)).toThrow(PlannerCandidateError);
+});
+
+it("真实 Worker 中新增固定存取口也不能撑破全局面积上限", async () => {
+  const client = new NodePlannerClient();
+  try {
+    for (const strategy of ["baseline", "compact"] as const) {
+      const statistics = await client.build(structuredClone(yazhen.request) as BlueprintPlannerRequest, 7, 30_000,
+        { strategy, maximumArea: 440, maxEvaluations: 7 }).then(candidate => candidate.search, (error: unknown) => {
+        expect(error).toBeInstanceOf(PlannerCandidateError);
+        return (error as PlannerCandidateError).search!;
+      });
+      expect(statistics.evaluations).toBeLessThanOrEqual(7);
+      expect(statistics.maximumArea).toBe(440);
+      expect(statistics.outline.width * statistics.outline.height).toBeLessThanOrEqual(440);
+      expect(statistics.experiments).toEqual(strategy === "compact" ? ["power-dedup", "partial-rebuild"] : ["power-dedup"]);
+    }
+  } finally { await client.dispose(); }
+}, 40_000);

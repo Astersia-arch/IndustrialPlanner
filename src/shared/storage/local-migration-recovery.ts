@@ -177,7 +177,7 @@ async function restoreStores(database: IDBDatabase, snapshot: RecoverySnapshot, 
 }
 
 function isProtectedLocalKey(key: string): boolean {
-  return !CONNECTION_KEYS.has(key) && (key.startsWith("v3-") || /^stage\d+-/.test(key) || key.startsWith("modular-balance-"));
+  return !key.startsWith("v3-yituliu-login:") && key !== "v3-yituliu-session" && !CONNECTION_KEYS.has(key) && (key.startsWith("v3-") || /^stage\d+-/.test(key) || key.startsWith("modular-balance-"));
 }
 
 function readLocal(): Record<string, string> {

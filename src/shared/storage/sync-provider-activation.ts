@@ -3,7 +3,7 @@ import {
   trySaveToLocalStorage,
 } from "./browser-storage";
 
-export type SyncProviderId = "none" | "webdav" | "cloudflare";
+export type SyncProviderId = "none" | "webdav" | "cloudflare" | "yituliu";
 export type ActiveSyncProviderId = Exclude<SyncProviderId, "none">;
 
 export type SyncProviderActivation =
@@ -202,7 +202,7 @@ function normalizeSyncProviderActivation(
   }
   if (
     (value.state === "pending" || value.state === "active")
-    && (value.provider === "webdav" || value.provider === "cloudflare")
+    && (value.provider === "webdav" || value.provider === "cloudflare" || value.provider === "yituliu")
   ) {
     if (value.state === "pending") {
       return {

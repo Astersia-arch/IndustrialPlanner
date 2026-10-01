@@ -58,6 +58,7 @@ export function isFallbackTexture(texture: Texture): boolean {
 interface TextureActions {
   readonly performanceDiagnostics: TexturePerfDiagnostics;
   getTexture(unifiedResourceKey: string): Promise<Texture>;
+  watchTextureRecovery(unifiedResourceKey: string, onRecovered: (texture: Texture) => void): () => void;
   getDeviceAnimation(spriteId: string, definition: DeviceSpriteAnimationDefinition): Promise<DeviceAnimationTextures | null>;
   getDeviceAnimationStats(): DeviceAnimationTextureStats;
   getLogisticsStatic(key: string): Promise<Texture>;
@@ -72,6 +73,10 @@ class TextureActionsImpl implements TextureActions {
   private textureConfig: RenderTextureConfig
 
   private readonly texturePromisesByKey = new Map<string, Promise<Texture>>()
+  private readonly textureRecoveryListenersByKey = new Map<string, Set<(texture: Texture) => void>>()
+  private readonly textureRetryTimersByKey = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly textureRetryAttemptsByKey = new Map<string, number>()
+  private readonly loggedTextureFailures = new Set<string>()
   private bodyAliases: Promise<Record<string, string>> | null = null
   private readonly trackedBitmapTextures = new Set<Texture>()
   private readonly disposeResolutionReaction: (() => void) | null
@@ -163,9 +168,67 @@ class TextureActionsImpl implements TextureActions {
       return existing
     }
 
-    const promise = this.resolveTexture(unifiedResourceKey)
+    const promise = this.resolveTexture(unifiedResourceKey).catch((error) => {
+      if (!this.loggedTextureFailures.has(unifiedResourceKey)) {
+        this.loggedTextureFailures.add(unifiedResourceKey)
+        console.warn("Texture path resolution failed; retrying while visible", { key: unifiedResourceKey, error })
+      }
+      return this.createFallbackTexture()
+    })
     this.texturePromisesByKey.set(unifiedResourceKey, promise)
     return promise
+  }
+
+  public watchTextureRecovery(unifiedResourceKey: string, onRecovered: (texture: Texture) => void): () => void {
+    const listeners = this.textureRecoveryListenersByKey.get(unifiedResourceKey) ?? new Set<(texture: Texture) => void>()
+    listeners.add(onRecovered)
+    this.textureRecoveryListenersByKey.set(unifiedResourceKey, listeners)
+
+    void this.getTexture(unifiedResourceKey).then((texture) => {
+      if (this.destroyed || !listeners.has(onRecovered)) return
+      if (isFallbackTexture(texture)) {
+        this.scheduleTextureRetry(unifiedResourceKey)
+      } else {
+        listeners.delete(onRecovered)
+        if (listeners.size === 0) this.textureRecoveryListenersByKey.delete(unifiedResourceKey)
+        onRecovered(texture)
+      }
+    })
+
+    return () => {
+      listeners.delete(onRecovered)
+      if (listeners.size > 0) return
+      this.textureRecoveryListenersByKey.delete(unifiedResourceKey)
+      const timer = this.textureRetryTimersByKey.get(unifiedResourceKey)
+      if (timer !== undefined) clearTimeout(timer)
+      this.textureRetryTimersByKey.delete(unifiedResourceKey)
+      this.textureRetryAttemptsByKey.delete(unifiedResourceKey)
+    }
+  }
+
+  private scheduleTextureRetry(unifiedResourceKey: string): void {
+    if (this.destroyed || this.textureRetryTimersByKey.has(unifiedResourceKey)
+      || !this.textureRecoveryListenersByKey.has(unifiedResourceKey)) return
+    const attempt = this.textureRetryAttemptsByKey.get(unifiedResourceKey) ?? 0
+    const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5))
+    this.textureRetryAttemptsByKey.set(unifiedResourceKey, attempt + 1)
+    const timer = setTimeout(() => {
+      this.textureRetryTimersByKey.delete(unifiedResourceKey)
+      if (this.destroyed || !this.textureRecoveryListenersByKey.has(unifiedResourceKey)) return
+      this.texturePromisesByKey.delete(unifiedResourceKey)
+      void this.getTexture(unifiedResourceKey).then((texture) => {
+        if (this.destroyed) return
+        if (isFallbackTexture(texture)) {
+          this.scheduleTextureRetry(unifiedResourceKey)
+          return
+        }
+        this.textureRetryAttemptsByKey.delete(unifiedResourceKey)
+        const listeners = this.textureRecoveryListenersByKey.get(unifiedResourceKey)
+        this.textureRecoveryListenersByKey.delete(unifiedResourceKey)
+        for (const listener of listeners ?? []) listener(texture)
+      })
+    }, delayMs)
+    this.textureRetryTimersByKey.set(unifiedResourceKey, timer)
   }
 
   public destroy(): void {
@@ -175,6 +238,11 @@ class TextureActionsImpl implements TextureActions {
     this.logisticsMaterials.destroy()
     this.disposeResolutionReaction?.()
     this.texturePromisesByKey.clear()
+    for (const timer of this.textureRetryTimersByKey.values()) clearTimeout(timer)
+    this.textureRetryTimersByKey.clear()
+    this.textureRetryAttemptsByKey.clear()
+    this.textureRecoveryListenersByKey.clear()
+    this.loggedTextureFailures.clear()
     this.trackedBitmapTextures.clear()
   }
 
@@ -229,10 +297,15 @@ class TextureActionsImpl implements TextureActions {
           return texture
         }
         this.trackedBitmapTextures.add(texture)
+        this.loggedTextureFailures.delete(key)
         return applyBitmapTextureConfig(texture, this.textureConfig)
-      } catch {
+      } catch (error) {
         // Try next candidate
         // AI-CORRECTION 2026-08-31: published raster 已收敛为单一 WebP 候选；失败后直接进入既有 fallback texture。
+        if (!this.loggedTextureFailures.has(key)) {
+          this.loggedTextureFailures.add(key)
+          console.warn("Texture load failed; retrying while visible", { key, path, error })
+        }
       }
     }
 
@@ -254,7 +327,10 @@ class TextureActionsImpl implements TextureActions {
         }
       }
       return aliases as Record<string, string>
-    })()
+    })().catch((error) => {
+      this.bodyAliases = null
+      throw error
+    })
     const aliases = await this.bodyAliases
     return aliases[spriteId] ?? spriteId
   }

@@ -8,11 +8,16 @@ const numbers = { "--local-evaluations": "localEvaluations", "--width": "width",
 for (let index = 0; index < args.length; index += 2) {
   const key = args[index], value = args[index + 1];
   if (key === "--help") {
-    console.log("npm run test:eda -- --plan <配置.json> (--attempts X | --seconds X) [--profile 参数.json] [--local-evaluations X] [--width W --height H] [--engine dense-v2] [--start-variant N] [--candidate-seconds X] [--verification-seconds X]；固定 Dense 2 tick/秒");
+    console.log("npm run test:eda -- --plan <配置.json> (--attempts X | --seconds X) [--strategy compact|baseline] [--seed search-seed.json] [--profile 参数.json] [--local-evaluations X] [--width W --height H] [--engine dense-v2] [--start-variant N] [--candidate-seconds X] [--verification-seconds X]；固定 Dense 2 tick/秒");
     process.exit(0);
   }
   if (value === undefined) throw new Error(`缺少参数值：${key}`);
   if (key === "--plan") plan = value;
+  else if (key === "--strategy") {
+    if (!["compact", "baseline"].includes(value)) throw new Error("strategy 必须为 compact 或 baseline。");
+    options.strategy = value;
+  }
+  else if (key === "--seed") options.seed = JSON.parse(readFileSync(value, "utf8"));
   else if (key === "--profile") {
     const input = JSON.parse(readFileSync(value, "utf8"));
     options.profile = input.profile ?? input;

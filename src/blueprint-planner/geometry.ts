@@ -6,6 +6,7 @@ import { hasDomain, ItemDomainFlag } from "@/domain/shared/item-domain-flags";
 import { LOGISTICS_KIND, type LogisticsKind, type LogisticsRole } from "@/domain/shared/logistics";
 import { BELT_TRANSPORT_DURATION_SECONDS, PIPE_TRANSPORT_DURATION_SECONDS } from "@/domain/registry";
 import { resolveRotatedPortGeometry, rotateGridEdge } from "@/shared/geometry/port";
+import { INSPECTOR_TYPE } from "@/domain/registry/types/entity-inspector";
 
 export const ROTATIONS: readonly GridRotation[] = [0, 90, 180, 270];
 export const EDGES: readonly GridEdge[] = ["NORTH", "EAST", "SOUTH", "WEST"];
@@ -32,6 +33,15 @@ export function transportCapacity(kind: LogisticsKind): number {
   return 60 / (kind === LOGISTICS_KIND.belt ? BELT_TRANSPORT_DURATION_SECONDS : PIPE_TRANSPORT_DURATION_SECONDS);
 }
 
+/** 只采用 Registry 明确允许的双向异族重叠，不把同族交叉或设备本体视为空地。 */
+export function allowsPlannerOverlap(registry: RegistryContract, left: EntityDefinition, right: EntityDefinition): boolean {
+  if (registry.queries.isPipeFamily(left.id) === registry.queries.isPipeFamily(right.id)) return false;
+  const permits = (host: EntityDefinition, type: "allow-belt-overlap" | "allow-pipe-overlap") =>
+    host.placementBehaviors.some(behavior => behavior.type === type);
+  return permits(left, "allow-belt-overlap") && permits(right, "allow-pipe-overlap")
+    || permits(left, "allow-pipe-overlap") && permits(right, "allow-belt-overlap");
+}
+
 export function acceptsItem(registry: RegistryContract, rule: EntityAcceptRuleDefinition, itemId: string): boolean {
   if (rule.exclude.includes(itemId)) return false;
   if (rule.base.kind === "item") return rule.base.itemId === itemId;
@@ -51,7 +61,12 @@ export function getPlannerPorts(
     if (storageGroupIds !== undefined && !definition.portStorageBindings.some((binding) =>
       binding.portGroupId === group.id && storageGroupIds.includes(binding.storageSlotGroupId))) return [];
     return group.ports.flatMap((port, portIndex) => {
-      if (itemId !== undefined && !acceptsItem(registry, port.acceptRule, itemId)) return [];
+      // 可配置输出口的默认 none 表示尚未选物品，不表示没有物理运力；实际启用仍由 restrictPort 写入配置。
+      const configurableOutput = direction === "output" && definition.inspectors.some(inspector =>
+        inspector.type === INSPECTOR_TYPE.portOutputConfig && inspector.portGroupIds.includes(group.id));
+      if (itemId !== undefined && !acceptsItem(registry, port.acceptRule, itemId)
+        && !(configurableOutput && port.acceptRule.base.kind === "none"
+          && hasDomain(group.kind, registry.queries.resolveItemDomain(itemId) ?? 0))) return [];
       const geometry = resolveRotatedPortGeometry({ footprint: definition.footprint, port, rotation: entity.rotation });
       const cell = { x: entity.position.x + geometry.cell.x, y: entity.position.y + geometry.cell.y };
       return [{

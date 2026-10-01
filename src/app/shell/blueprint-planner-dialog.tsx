@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
-import type { BlueprintPlannerOptions } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerOptions, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
 import { DialogShell } from "./shared/dialog-shell";
+import { PlannerTaskFlow } from "./production-planning";
 import styles from "./blueprint-planner-dialog.module.scss";
 
-const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "budgetMs" | "evaluationsPerRound">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
+const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "evaluationsPerRound">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
   { key: "solidSupply", label: "eda.solidSupply", choices: [["external", "eda.externalBelt"], ["warehouse", "eda.warehouseSupply"]] },
   { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
   { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["free", "eda.free"]] },
-  { key: "solidOutput", label: "eda.solidOutput", choices: [["warehouse", "eda.warehouseOutput"], ["stash", "eda.stashOutput"]] },
+  { key: "solidOutput", label: "eda.solidOutput", choices: [["auto", "eda.autoOutput"], ["warehouse", "eda.warehouseOutput"], ["stash", "eda.stashOutput"]] },
   { key: "byproducts", label: "eda.byproducts", choices: [["output", "eda.output"], ["destroy", "eda.destroy"]] },
   { key: "plantStartup", label: "eda.plantStartup", choices: [["preload", "eda.preload"], ["warehouse", "eda.warehouseStartup"]] },
 ];
@@ -22,33 +23,41 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const t = appHost.actions.translate;
   const [, refresh] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [fileBusy, setFileBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!controller.dialogState.visible) return;
-    const interval = setInterval(() => refresh((value) => value + 1), 250);
+    const interval = setInterval(() => refresh(value => value + 1), 500);
     return () => clearInterval(interval);
   }, [controller.dialogState.visible]);
-  const latest = planner?.queries.getTask() ?? null;
-  const progress = latest?.taskId === controller.viewTaskId ? latest : null;
-  const plannerRevision = planner?.state.revision ?? 0;
+  const revision = planner?.state.revision ?? 0;
+  const selectedId = controller.viewTaskId;
+  const progress = selectedId === null ? null : planner?.queries.getTask(selectedId) ?? null;
   const result = useMemo(() => {
-    void plannerRevision;
-    return progress === null ? null : planner?.queries.getResult(progress.taskId) ?? null;
-  }, [planner, plannerRevision, progress]);
+    void revision;
+    return selectedId === null ? null : planner?.queries.getResult(selectedId) ?? null;
+  }, [planner, revision, selectedId]);
+  const history = useMemo(() => {
+    void revision;
+    return planner?.queries.listTasks().map(task => ({ ...task, name: planner.queries.getLastRequest(task.taskId)?.plan.name ?? task.taskId })) ?? [];
+  }, [planner, revision]);
   if (!controller.dialogState.visible) return null;
   const busy = progress !== null && ["running", "saving"].includes(progress.status);
+  const anyBusy = planner?.state.activeTaskId != null;
   const compact = appHost.state.screenProfile.deviceClass === "mobile";
   const plan = controller.plan;
-  const validRoundSettings = Number.isFinite(controller.options.budgetMs) && controller.options.budgetMs > 0
-    && Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 1_000
-    && controller.options.evaluationsPerRound % 1_000 === 0;
-  const act = (action: () => void) => {
+  const validRoundSettings = Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 10_000
+    && controller.options.evaluationsPerRound % 10_000 === 0;
+  const act = (action: () => void | Promise<void>) => {
     setError(null);
-    try { action(); } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
+    try { void Promise.resolve(action()).catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
   };
-  const start = () => act(() => {
-    if (planner === null) throw new Error(t("eda.unavailable"));
-    controller.selectTask(planner.actions.start(controller.getRequest()));
-  });
+  const select = (id: string) => {
+    const request = planner?.queries.getLastRequest(id);
+    controller.selectTask(id, request ?? undefined);
+    setError(null);
+  };
   const openProductionPlanning = () => {
     controller.close();
     appHost.internalActions.setDialogTab("toolbox", "production-planning");
@@ -57,87 +66,286 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const place = (source: "mouse" | "touch") => act(() => {
     const editor = appHost.workspace.editor;
     if (result === null || editor === null) return;
-    const entered = enterBlueprintPlacement({
-      appHost, editor, record: { ...result.blueprint, parentFolderId: result.folderId },
-      source, initialMousePosition: null,
-    });
-    if (entered.status === "handled") controller.close();
-    else setError(t("eda.placeFailed"));
+    const entered = enterBlueprintPlacement({ appHost, editor,
+      record: { ...result.blueprint, parentFolderId: result.folderId }, source, initialMousePosition: null });
+    if (entered.status === "handled") controller.close(); else setError(t("eda.placeFailed"));
+  });
+  const download = () => act(() => {
+    if (!planner || selectedId === null) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(planner.queries.exportTask(selectedId))], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = `${(plan?.name || "eda-task").replace(/[/\\:*?"<>|]/g, "-")}.eda-task.json`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
   const elapsed = Math.floor((progress?.elapsedMs ?? 0) / 1000);
-  return (
-    <DialogShell dialogKey="blueprint-planner" dialogState={controller.dialogState}
-      title={t("eda.title")} titleId="blueprint-planner-title" closeTitle={t("action.close")}
-      maximizeTitle={t("dialog.maximize")} restoreTitle={t("dialog.restore")}
-      onClose={controller.close} onToggleMaximized={controller.toggleMaximized}
-      onOffsetChange={controller.setOffset} onResize={compact ? undefined : controller.setSize}
-      compactMobileLayout={compact} immersiveMaximized={controller.dialogState.maximized && appHost.state.screenProfile.deviceClass !== "desktop"}
-      shellStyle={controller.dialogState.width === null ? { width: "min(660px, 100%)", height: "min(600px, 100%)" } : undefined}>
-      <div className={`${styles.content} ${compact ? styles.compact : ""}`}>
+  const statusLabel = (status: string) => t(status === "running" ? "eda.running" : status === "saving" ? "eda.saving"
+    : status === "failed" || status === "save-failed" ? "eda.failed" : status === "completed" ? "eda.saved" : "eda.paused");
+  return <DialogShell dialogKey="blueprint-planner" dialogState={controller.dialogState}
+    title={t("eda.title")} titleId="blueprint-planner-title" closeTitle={t("action.close")}
+    maximizeTitle={t("dialog.maximize")} restoreTitle={t("dialog.restore")}
+    onClose={controller.close} onToggleMaximized={controller.toggleMaximized}
+    onOffsetChange={controller.setOffset} onResize={compact ? undefined : controller.setSize}
+    compactMobileLayout={compact} immersiveMaximized={controller.dialogState.maximized && appHost.state.screenProfile.deviceClass !== "desktop"}
+    shellStyle={controller.dialogState.width === null ? { width: "min(1080px, 100%)", height: "min(760px, 100%)" } : undefined}>
+    <div className={`${styles.content} ${compact ? styles.compact : ""}`}>
+      <aside className={styles.history} aria-label={t("eda.history")}>
+        <strong>{t("eda.history")}</strong>
+        <button type="button" onClick={openProductionPlanning}>{t("eda.newTask")}</button>
+        <button type="button" disabled={fileBusy} onClick={() => inputRef.current?.click()}>{t("eda.importTask")}</button>
+        <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+          const file = event.target.files?.[0]; event.target.value = "";
+          if (!file || !planner) return;
+          act(async () => {
+            setFileBusy(true);
+            try {
+              if (file.size > 100 * 1024 * 1024) throw new Error(t("eda.fileTooLarge"));
+              const id = await planner.actions.importTask(JSON.parse(await file.text()) as BlueprintPlannerTaskFile);
+              select(id);
+            } finally { setFileBusy(false); }
+          });
+        }} />
+        <div className={styles.taskList}>
+          {history.length === 0 ? <p>{t("eda.noHistory")}</p> : history.map(task => <button type="button" key={task.taskId}
+            className={styles.task} aria-pressed={selectedId === task.taskId} onClick={() => select(task.taskId)}>
+            <strong>{task.name}</strong><span>{t("eda.productionMode")} · {statusLabel(task.status)}</span>
+            <time>{new Date(task.startedAt).toLocaleString()}</time>
+          </button>)}
+        </div>
+      </aside>
+      <div className={styles.main}>
         <div className={styles.scroll}>
-          {plan === null ? <div className={styles.empty}>
-            <p>{t("eda.noPlan")}</p>
-            <button type="button" onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button>
-          </div> : <>
-            <p className={styles.target}>{plan.name || plan.targets.map((flow) => {
-              const item = appHost.workspace.registry.queries.findItemDefinition(flow.itemId);
-              return `${item === null ? flow.itemId : t(item.nameKey)} ${flow.perMinute}/min`;
-            }).join(" · ")}</p>
-            <fieldset className={styles.options} disabled={progress?.status === "running" || progress?.status === "saving"}>
-              {OPTION_FIELDS.map((field) => <label key={field.key}>
-                <span>{t(field.label)}</span>
-                <select disabled={busy || progress !== null} value={controller.options[field.key]} onChange={(event) => controller.updateOptions({ [field.key]: event.target.value })}>
+              {selectedId !== null ? <div className={styles.taskActions}>
+                <button type="button" onClick={download}>{t("eda.downloadTask")}</button>
+                <button type="button" disabled={busy || fileBusy} onClick={() => act(async () => {
+                  if (!planner || !window.confirm(t("eda.confirmDelete"))) return;
+                  setFileBusy(true);
+                  try {
+                    await planner.actions.deleteTask(selectedId);
+                    const next = planner.queries.listTasks()[0];
+                    if (next) select(next.taskId); else controller.selectTask(null);
+                  } finally { setFileBusy(false); }
+                })}>{t("eda.deleteTask")}</button>
+              </div> : null}
+          {plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
+            <button type="button" onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
+            <div className={styles.heading}><div><span>{t("eda.productionMode")}</span><p className={styles.target}>{plan.name}</p></div>
+
+            </div>
+            <div className={styles.flow} aria-label={t("productionPlanning.modeDevice")}>
+              <PlannerTaskFlow key={selectedId ?? "draft"} plan={plan} registry={appHost.workspace.registry} t={t} />
+            </div>
+            <fieldset className={styles.options} disabled={busy}>
+              {OPTION_FIELDS.map(field => <label key={field.key}><span>{t(field.label)}</span>
+                <select disabled={progress !== null} value={controller.options[field.key]}
+                  onChange={event => controller.updateOptions({ [field.key]: event.target.value })}>
                   {field.choices.map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
-                </select>
-              </label>)}
-              <label><span>{t("eda.budget")}</span>
-                <input type="number" min="10" step="10" value={controller.options.budgetMs / 1000}
-                  onChange={(event) => controller.updateOptions({ budgetMs: Number(event.target.value) * 1000 })} />
-              </label>
-              <label><span>{t("eda.evaluationsPerRound")}</span>
-                <input type="number" min="1000" step="1000" value={controller.options.evaluationsPerRound}
-                  onChange={(event) => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) })} />
-              </label>
+                </select></label>)}
+              {/* AI-REMOVED 2026-09-30: 用户批准删除时间预算；替代：下方提案预算。Risk: Low。Human Review: Required
+              <label><span>{t("eda.budget")}</span><input type="number" min="10" step="10" value={controller.options.budgetMs / 1000}
+                onChange={event => controller.updateOptions({ budgetMs: Number(event.target.value) * 1000 })} /></label>
+              */}
+              <label><span>{t("eda.evaluationsPerRound")}</span><input type="number" min="1" step="1" value={controller.options.evaluationsPerRound / 10_000}
+                onChange={event => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) * 10_000 })} /></label>
             </fieldset>
             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
-          </>}
+          </> : null}
           {progress !== null ? <section className={styles.progress} aria-live="polite">
             <div className={styles.statistics}>
+              <span>{statusLabel(progress.status)}</span>
               <span>{t("eda.elapsed")} <strong>{`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`}</strong></span>
               <span>{t("eda.candidates")} <strong>{progress.candidateCount}</strong></span>
               {progress.bestArea !== null ? <span>{t("eda.bestArea")} <strong>{progress.bestArea}</strong></span> : null}
             </div>
             {busy ? <progress aria-label={t("eda.progress")} max={1} value={progress.estimatedProgress ?? undefined} /> : null}
+            <div className={styles.statistics}>
+              <span>{t("eda.roundProposals")} <strong>{progress.roundEvaluatedProposals.toLocaleString()} / {planner?.queries.getLastRequest(progress.taskId)?.options.evaluationsPerRound.toLocaleString()}</strong></span>
+              <span>{t("eda.totalProposals")} <strong>{progress.evaluatedProposals.toLocaleString()}</strong></span>
+            </div>
             <p>{progress.message}</p>
             {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}</p> : null}
           </section> : null}
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
         </div>
         <footer className={styles.footer}>
-          {progress?.status === "running" || progress?.status === "waiting" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("action.cancel")}</button> : null}
-          {progress !== null && ["waiting", "completed"].includes(progress.status) ? <button type="button"
-            disabled={!validRoundSettings}
-            onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId, controller.options.budgetMs, controller.options.evaluationsPerRound))}>{t("eda.continue")}</button> : null}
-          {progress?.bestArea !== null && progress?.bestArea !== undefined ? <button type="button" className={styles.primary}
-            disabled={progress.status !== "waiting"}
-            onClick={() => {
-              setError(null);
-              void planner?.actions.save(progress.taskId).catch((failure: unknown) => setError(String(failure)));
-            }}>{t("eda.save")}</button> : null}
-          {progress?.status === "save-failed" ? <button type="button" className={styles.primary} onClick={() => {
-            setError(null);
-            void planner?.actions.retrySave(progress.taskId).catch((failure: unknown) => setError(String(failure)));
-          }}>{t("eda.retrySave")}</button> : null}
-          {!busy && plan !== null && (progress === null || ["cancelled", "failed"].includes(progress.status)) ? <button type="button"
-            disabled={plan.containsModules || planner === null || !validRoundSettings}
-            className={result === null ? styles.primary : undefined} onClick={start}>{t(progress === null ? "eda.start" : "eda.replan")}</button> : null}
-          {result !== null ? <button type="button" className={styles.primary}
-            onPointerUp={(event) => place(event.pointerType === "mouse" ? "mouse" : "touch")}
-            onClick={(event) => { if (event.detail === 0) place("mouse"); }}>
-            {t("eda.place")}
-          </button> : null}
+          {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
+          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
+            onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId, controller.options.evaluationsPerRound))}>{t("eda.continue")}</button> : null}
+          {result !== null ? <>
+            <button type="button" onClick={() => {
+              appHost.blueprintPreview.open({ ...result.blueprint, parentFolderId: result.folderId }, { canDelete: false });
+              // AI-REMOVED 2026-09-30:
+              // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
+              // Trigger: 用户批准本轮接口与交互调整。
+              // Evidence: 原实现使用时间截止或关闭任务面板。
+              // Replacement: 保留规划面板，由预览窗口管理自身关闭
+              // Risk: Low。Human Review: Required
+              // Original code:
+              // controller.close();
+
+            }}>{t("eda.preview")}</button>
+            <button type="button" className={styles.primary} disabled={anyBusy || result.folderId !== null}
+              onClick={() => act(() => planner?.actions.save(result.taskId))}>{t(progress?.status === "save-failed" ? "eda.retrySave" : "eda.save")}</button>
+            <button type="button" onPointerUp={event => place(event.pointerType === "mouse" ? "mouse" : "touch")}
+              onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
+          </> : null}
+          {progress === null && plan !== null ? <button type="button" className={styles.primary}
+            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings} onClick={() => act(() => {
+              if (planner) select(planner.actions.start(controller.getRequest()));
+            })}>{t("eda.start")}</button> : null}
         </footer>
       </div>
-    </DialogShell>
-  );
+    </div>
+  </DialogShell>;
 });
+
+// AI-REMOVED 2026-09-30:
+// Reason: 单面板改为任务历史、设备流向图与未保存结果操作。
+// Trigger: 用户授权任务化规划界面。
+// Evidence: 原组件只展示 latest 单任务，不支持历史选择与导入导出。
+// Replacement: 本文件 BlueprintPlannerDialog。
+// Risk: Low；沿用 DialogShell 和规划契约。
+// Human Review: Required
+// Original code:
+// import { useEffect, useMemo, useState } from "react";
+// import { observer } from "mobx-react-lite";
+// import type { BlueprintPlannerOptions } from "@/domain/blueprint-planner";
+// import type { UiKey } from "@/shared/i18n";
+// import type { AppHost } from "../host";
+// import { enterBlueprintPlacement } from "../input";
+// import { DialogShell } from "./shared/dialog-shell";
+// import styles from "./blueprint-planner-dialog.module.scss";
+//
+// const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "budgetMs" | "evaluationsPerRound">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
+//   { key: "solidSupply", label: "eda.solidSupply", choices: [["external", "eda.externalBelt"], ["warehouse", "eda.warehouseSupply"]] },
+//   { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
+//   { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["free", "eda.free"]] },
+//   { key: "solidOutput", label: "eda.solidOutput", choices: [["auto", "eda.autoOutput"], ["warehouse", "eda.warehouseOutput"], ["stash", "eda.stashOutput"]] },
+//   { key: "byproducts", label: "eda.byproducts", choices: [["output", "eda.output"], ["destroy", "eda.destroy"]] },
+//   { key: "plantStartup", label: "eda.plantStartup", choices: [["preload", "eda.preload"], ["warehouse", "eda.warehouseStartup"]] },
+// ];
+//
+// export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({ appHost }: { appHost: AppHost }) {
+//   const controller = appHost.blueprintPlannerDialog;
+//   const planner = appHost.workspace.blueprintPlanner;
+//   const t = appHost.actions.translate;
+//   const [, refresh] = useState(0);
+//   const [error, setError] = useState<string | null>(null);
+//   useEffect(() => {
+//     if (!controller.dialogState.visible) return;
+//     const interval = setInterval(() => refresh((value) => value + 1), 250);
+//     return () => clearInterval(interval);
+//   }, [controller.dialogState.visible]);
+//   const latest = planner?.queries.getTask() ?? null;
+//   const progress = latest?.taskId === controller.viewTaskId ? latest : null;
+//   const plannerRevision = planner?.state.revision ?? 0;
+//   const result = useMemo(() => {
+//     void plannerRevision;
+//     return progress === null ? null : planner?.queries.getResult(progress.taskId) ?? null;
+//   }, [planner, plannerRevision, progress]);
+//   if (!controller.dialogState.visible) return null;
+//   const busy = progress !== null && ["running", "saving"].includes(progress.status);
+//   const compact = appHost.state.screenProfile.deviceClass === "mobile";
+//   const plan = controller.plan;
+//   const validRoundSettings = Number.isFinite(controller.options.budgetMs) && controller.options.budgetMs > 0
+//     && Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 1_000
+//     && controller.options.evaluationsPerRound % 1_000 === 0;
+//   const act = (action: () => void) => {
+//     setError(null);
+//     try { action(); } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
+//   };
+//   const start = () => act(() => {
+//     if (planner === null) throw new Error(t("eda.unavailable"));
+//     controller.selectTask(planner.actions.start(controller.getRequest()));
+//   });
+//   const openProductionPlanning = () => {
+//     controller.close();
+//     appHost.internalActions.setDialogTab("toolbox", "production-planning");
+//     appHost.internalActions.openDialog("toolbox");
+//   };
+//   const place = (source: "mouse" | "touch") => act(() => {
+//     const editor = appHost.workspace.editor;
+//     if (result === null || editor === null) return;
+//     const entered = enterBlueprintPlacement({
+//       appHost, editor, record: { ...result.blueprint, parentFolderId: result.folderId },
+//       source, initialMousePosition: null,
+//     });
+//     if (entered.status === "handled") controller.close();
+//     else setError(t("eda.placeFailed"));
+//   });
+//   const elapsed = Math.floor((progress?.elapsedMs ?? 0) / 1000);
+//   return (
+//     <DialogShell dialogKey="blueprint-planner" dialogState={controller.dialogState}
+//       title={t("eda.title")} titleId="blueprint-planner-title" closeTitle={t("action.close")}
+//       maximizeTitle={t("dialog.maximize")} restoreTitle={t("dialog.restore")}
+//       onClose={controller.close} onToggleMaximized={controller.toggleMaximized}
+//       onOffsetChange={controller.setOffset} onResize={compact ? undefined : controller.setSize}
+//       compactMobileLayout={compact} immersiveMaximized={controller.dialogState.maximized && appHost.state.screenProfile.deviceClass !== "desktop"}
+//       shellStyle={controller.dialogState.width === null ? { width: "min(660px, 100%)", height: "min(600px, 100%)" } : undefined}>
+//       <div className={`${styles.content} ${compact ? styles.compact : ""}`}>
+//         <div className={styles.scroll}>
+//           {plan === null && progress === null ? <div className={styles.empty}>
+//             <p>{t("eda.noPlan")}</p>
+//             <button type="button" onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button>
+//           </div> : <>
+//             <p className={styles.target}>{plan.name || plan.targets.map((flow) => {
+//               const item = appHost.workspace.registry.queries.findItemDefinition(flow.itemId);
+//               return `${item === null ? flow.itemId : t(item.nameKey)} ${flow.perMinute}/min`;
+//             }).join(" · ")}</p>
+//             <fieldset className={styles.options} disabled={progress?.status === "running" || progress?.status === "saving"}>
+//               {OPTION_FIELDS.map((field) => <label key={field.key}>
+//                 <span>{t(field.label)}</span>
+//                 <select disabled={busy || progress !== null} value={controller.options[field.key]} onChange={(event) => controller.updateOptions({ [field.key]: event.target.value })}>
+//                   {field.choices.map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
+//                 </select>
+//               </label>)}
+//               <label><span>{t("eda.budget")}</span>
+//                 <input type="number" min="10" step="10" value={controller.options.budgetMs / 1000}
+//                   onChange={(event) => controller.updateOptions({ budgetMs: Number(event.target.value) * 1000 })} />
+//               </label>
+//               <label><span>{t("eda.evaluationsPerRound")}</span>
+//                 <input type="number" min="1000" step="1000" value={controller.options.evaluationsPerRound}
+//                   onChange={(event) => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) })} />
+//               </label>
+//             </fieldset>
+//             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
+//           </>}
+//           {progress !== null ? <section className={styles.progress} aria-live="polite">
+//             <div className={styles.statistics}>
+//               <span>{t("eda.elapsed")} <strong>{`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`}</strong></span>
+//               <span>{t("eda.candidates")} <strong>{progress.candidateCount}</strong></span>
+//               {progress.bestArea !== null ? <span>{t("eda.bestArea")} <strong>{progress.bestArea}</strong></span> : null}
+//             </div>
+//             {busy ? <progress aria-label={t("eda.progress")} max={1} value={progress.estimatedProgress ?? undefined} /> : null}
+//             <p>{progress.message}</p>
+//             {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}</p> : null}
+//           </section> : null}
+//           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
+//         </div>
+//         <footer className={styles.footer}>
+//           {progress?.status === "running" || progress?.status === "waiting" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("action.cancel")}</button> : null}
+//           {progress !== null && ["waiting", "completed"].includes(progress.status) ? <button type="button"
+//             disabled={!validRoundSettings}
+//             onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId, controller.options.budgetMs, controller.options.evaluationsPerRound))}>{t("eda.continue")}</button> : null}
+//           {progress?.bestArea !== null && progress?.bestArea !== undefined ? <button type="button" className={styles.primary}
+//             disabled={progress.status !== "waiting"}
+//             onClick={() => {
+//               setError(null);
+//               void planner?.actions.save(progress.taskId).catch((failure: unknown) => setError(String(failure)));
+//             }}>{t("eda.save")}</button> : null}
+//           {progress?.status === "save-failed" ? <button type="button" className={styles.primary} onClick={() => {
+//             setError(null);
+//             void planner?.actions.retrySave(progress.taskId).catch((failure: unknown) => setError(String(failure)));
+//           }}>{t("eda.retrySave")}</button> : null}
+//           {!busy && plan !== null && (progress === null || ["cancelled", "failed"].includes(progress.status)) ? <button type="button"
+//             disabled={plan.containsModules || planner === null || !validRoundSettings}
+//             className={result === null ? styles.primary : undefined} onClick={start}>{t(progress === null ? "eda.start" : "eda.replan")}</button> : null}
+//           {result !== null ? <button type="button" className={styles.primary}
+//             onPointerUp={(event) => place(event.pointerType === "mouse" ? "mouse" : "touch")}
+//             onClick={(event) => { if (event.detail === 0) place("mouse"); }}>
+//             {t("eda.place")}
+//           </button> : null}
+//         </footer>
+//       </div>
+//     </DialogShell>
+//   );
+// });

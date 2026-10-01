@@ -54,8 +54,8 @@ function resolvePrecacheFilePath(entryUrl: string): string {
 
 function rewriteOAuthCallbackPath(requestUrl: string | undefined): string | undefined {
   return requestUrl?.replace(
-    /^\/auth\/callback(?=\?|$)/u,
-    "/auth/callback/",
+    /^\/(auth|oauth)\/callback(?=\?|$)/u,
+    "/$1/callback/",
   );
 }
 
@@ -69,6 +69,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        yituliuOAuthCallback: fileURLToPath(new URL("./oauth/callback/index.html", import.meta.url)),
         oauthCallback: fileURLToPath(
           new URL("./auth/callback/index.html", import.meta.url),
         ),

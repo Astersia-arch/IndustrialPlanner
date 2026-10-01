@@ -297,6 +297,37 @@ describe("GasDiffusionRangeDecoration", () => {
     expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
   });
 
+  it("keeps the body-colored rectangle in blueprint style and restores animation after switching back", () => {
+    let blueprintStyle = true;
+    animationTestState.ready = true;
+    const activeRange = createRange(0, 0, "device:working");
+    const ctx = createContext({
+      itemDefinitions: [],
+      findItemDefinition: () => ({ fluidColors: { body: "#00d5ff" } }),
+      getRanges: () => [activeRange],
+      getBlueprintStyle: () => blueprintStyle,
+      entities: [createEntity("working", 0)],
+    });
+    const decoration = createGasDiffusionRangeDecoration();
+    const fallback = graphicsTestState.instances[1]!;
+    const animation = animationTestState.instances[0]!;
+
+    decoration.sync(ctx);
+    expect(fallback.fill).toHaveBeenLastCalledWith({ color: 0x00d5ff, alpha: 0.07 });
+    expect(animation.prepare).not.toHaveBeenCalled();
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+
+    blueprintStyle = false;
+    decoration.sync(ctx);
+    expect(fallback.clear).toHaveBeenCalledTimes(1);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, [activeRange]);
+
+    blueprintStyle = true;
+    decoration.sync(ctx);
+    expect(fallback.rect).toHaveBeenCalledTimes(2);
+    expect(animation.sync).toHaveBeenLastCalledWith(ctx, []);
+  });
+
   it("hides only the moved machine and keeps other working animations", () => {
     let moveKind: "ordinary" | "batch" = "ordinary";
     const selected = createRange(0, 0, "device:selected");
@@ -352,6 +383,7 @@ function createContext(options: {
   getPreviewIds?: () => readonly string[];
   getRunningState?: () => "start" | "stop";
   getSupportsAnimation?: () => boolean;
+  getBlueprintStyle?: () => boolean;
   entities?: readonly ReturnType<typeof createEntity>[];
 }): DecorationSyncContext {
   return {
@@ -377,6 +409,11 @@ function createContext(options: {
       workspace: {
         app: {
           state: {
+            settings: {
+              get gameUseBlueprintStyleDeviceImages() {
+                return options.getBlueprintStyle?.() ?? false;
+              },
+            },
             get moveKind() {
               return options.getMoveKind?.() ?? null;
             },

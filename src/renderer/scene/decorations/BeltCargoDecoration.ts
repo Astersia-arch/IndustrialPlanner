@@ -395,14 +395,18 @@ export function createBeltCargoDecoration(): DecorationLayer {
       const boxSize = resolveBeltCargoBoxSize(ctx.viewportState.gridCellPixelSize)
       const boxHalfSize = boxSize / 2
       const boxTextureSize = Math.max(1, Math.round(boxSize))
-      ensureTexture(ctx, BELT_CARGO_BOX_TEXTURE_KEY)
+      if (!simplifiedDeviceIcons) {
+        ensureTexture(ctx, BELT_CARGO_BOX_TEXTURE_KEY)
+      }
       const publishedBoxTexture = resolvedTextures.get(BELT_CARGO_BOX_TEXTURE_KEY)
-      const activeBoxTexture = publishedBoxTexture && !isFallbackTexture(publishedBoxTexture)
+      const activeBoxTexture = !simplifiedDeviceIcons
+        && publishedBoxTexture && !isFallbackTexture(publishedBoxTexture)
         ? publishedBoxTexture : null
 
       // 共享 box 纹理：只在 zoom 变化时重新烘焙
       // AI-CORRECTION 2026-08-19: 纹理按整数像素尺寸分桶，主体显示尺寸仍使用精确世界比例，避免连续缩放反复重建纹理。
       // AI-CORRECTION 2026-09-26: 网站烘焙盒子加载后直接复用源纹理；原有绘制只用于加载期间的首帧。
+      // AI-CORRECTION 2026-10-01: 蓝图外观固定使用白底圆角框；网站烘焙盒子仅用于普通外观。
       if (!activeBoxTexture && sharedBoxTextureSize !== boxTextureSize) {
         const boxCornerRadius = boxTextureSize * BOX_CORNER_RADIUS_RATIO
         const temp = new Graphics({ roundPixels: true })

@@ -22,7 +22,7 @@ interface Connection {
   readonly amounts: Map<string, number>;
 }
 
-export async function wireProductionNetwork(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, checkBudget: () => void = () => {}): Promise<PlannerWire[]> {
+export async function wireProductionNetwork(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, checkBudget: () => void = () => {}, compact = false): Promise<PlannerWire[]> {
   const outputs = allocatePorts(registry, network.nodes, "output");
   const inputs = allocatePorts(registry, network.nodes, "input");
   const connections: Connection[] = [];
@@ -88,6 +88,19 @@ export async function wireProductionNetwork(registry: RegistryContract, network:
       if (remaining > 1e-6) throw new PlannerCandidateError(`物料不足：${itemId}，缺少 ${remaining.toFixed(2)}/min`);
     }
   }
+  // 同一库存组的空闲输出口优先直连，避免先合并再分流引入限速、缓冲和额外占地。
+  if (compact) for (const group of groupConnections(connections, "source").values()) {
+    const node = network.nodes.find(entry => entry.entity.id === group[0]!.source.entityId)!;
+    const original = group[0]!.source;
+    for (const connection of group.slice(1)) {
+      const items = [...connection.amounts.keys()];
+      const spare = getPlannerPorts(registry, node.entity, node.definition, "output", items[0])
+        .filter(port => port.groupIndex === original.groupIndex && !connections.some(other => samePort(other.source, port))
+          && items.every(item => getPlannerPorts(registry, node.entity, node.definition, "output", item).some(other => samePort(other, port))))
+        .sort((a, b) => distance(a, connection.target) - distance(b, connection.target))[0];
+      if (spare) connection.source = spare;
+    }
+  }
   const extraConnections: Connection[] = [];
   for (const input of inputs) {
     checkBudget();
@@ -140,6 +153,10 @@ export async function wireProductionNetwork(registry: RegistryContract, network:
     }
   }
   for (const allocation of [...outputs, ...inputs]) restrictPort(registry, allocation.node, allocation.port, [...allocation.amounts.keys()]);
+  if (compact) for (const group of groupConnections(connections, "source").values()) {
+    const node = network.nodes.find(entry => entry.entity.id === group[0]!.source.entityId)!;
+    restrictPort(registry, node, group[0]!.source, [...new Set(group.flatMap(connection => [...connection.amounts.keys()]))]);
+  }
   const graph = buildLayoutGraph(network.nodes.map((node) => node.entity.id), connections.map((connection) => ({ from: connection.source.entityId, to: connection.target.entityId })));
   for (const connection of connections) {
     const group = graph.groupIndexByNodeId.get(connection.source.entityId)!;

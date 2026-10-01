@@ -194,6 +194,9 @@ vi.mock("pixi.js", () => {
   class MockTexture {
     public static readonly EMPTY = { id: "empty-texture", width: 0 }
     public static readonly WHITE = { id: "white-texture", width: 0 }
+    public static from(): object {
+      return { id: "resource-fallback-texture", width: 16, height: 16 }
+    }
   }
 
   const MockAssets = {
@@ -214,6 +217,7 @@ vi.mock("pixi.js", () => {
 })
 
 import { AYU_DARK_THEME, AYU_LIGHT_THEME } from "@/app/theme"
+import { Assets } from "pixi.js"
 import { EntityCollectionType } from "@/domain/editor/types/editor-types"
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition"
 import {
@@ -223,6 +227,7 @@ import {
 } from "@/domain/shared/item-domain-flags"
 import { BeltSprite } from "@/renderer/sprites/belt-sprite"
 import { GenericDeviceSprite } from "@/renderer/sprites/generic-device-sprite"
+import { createTextureActions } from "@/renderer/texture/texture-manager"
 import { PipeSprite } from "@/renderer/sprites/pipe-sprite"
 import { createRegistryContract } from "@/registry"
 import { WORLD_GRID_CELL_PIXEL_SIZE } from "@/shared/geometry/viewport-transform"
@@ -402,6 +407,100 @@ describe("GenericDeviceSprite", () => {
     expect(attachedSprite.width).toBe(32)
     expect(attachedSprite.height).toBe(48)
     expect(attachedSprite.rotation).toBeCloseTo(Math.PI / 2)
+  })
+
+  it("restores a failed blueprint body and label avatar after their shared texture retries", async () => {
+    vi.useFakeTimers()
+    const assetsLoad = vi.mocked(Assets.load)
+    const originalLoad = assetsLoad.getMockImplementation()
+    const attempts = new Map<string, number>()
+    const spriteId = "item_port_sp_sub_hub_1"
+    const bodyPath = `/blueprint-view/sprites/${spriteId}.webp`
+    const maskPath = `/blueprint-view/sprite-masks/${spriteId}.webp`
+    const avatarPath = `/3d-top-view/avatar/${spriteId}.webp`
+    const bodyTexture = createLoadedTextureMock("recovered-core-body")
+    const maskTexture = createLoadedTextureMock("core-mask")
+    const avatarTexture = createLoadedTextureMock("recovered-core-avatar")
+    assetsLoad.mockImplementation((path) => {
+      const url = String(path)
+      const attempt = (attempts.get(url) ?? 0) + 1
+      attempts.set(url, attempt)
+      if ((url.endsWith(bodyPath) || url.endsWith(avatarPath)) && attempt === 1) {
+        return Promise.reject(new Error("temporary asset failure"))
+      }
+      return Promise.resolve(url.endsWith(bodyPath) ? bodyTexture
+        : url.endsWith(maskPath) ? maskTexture
+          : url.endsWith(avatarPath) ? avatarTexture
+            : createLoadedTextureMock(url)) as never
+    })
+
+    const manager = createTextureActions({ renderer: {} as never, app: null })
+    const renderHost = createRenderHostStub({}, {
+      gameUseBlueprintStyleDeviceImages: true,
+      gameShowDeviceIcons: true,
+    })
+    Object.assign(renderHost, { textureManager: manager })
+    const definition = {
+      ...createEntityDefinitionStub(),
+      id: "sp_sub_hub_1",
+      spriteId,
+      footprint: { width: 9, height: 9 },
+    }
+    const sprite = new GenericDeviceSprite("recovering-core", definition, renderHost as never)
+    const fallbackBody = createLoadedTextureMock("photo-fallback")
+    const internals = sprite as unknown as {
+      body: RenderedSpriteSnapshot;
+      deviceIcon: RenderedSpriteSnapshot;
+      staticBodyTexture: ReturnType<typeof createLoadedTextureMock> | null;
+      staticMaskTexture: ReturnType<typeof createLoadedTextureMock> | null;
+      isTextureReady: boolean;
+      applyDevicePresentationTextures: () => void;
+      loadFallbackTexture: (version: number, onlyWhileMissing?: boolean) => Promise<boolean>;
+    }
+    internals.loadFallbackTexture = vi.fn(async () => {
+      internals.staticBodyTexture = fallbackBody
+      internals.applyDevicePresentationTextures()
+      internals.isTextureReady = true
+      internals.body.visible = true
+      return true
+    })
+
+    try {
+      sprite.attach({
+        background: {} as never,
+        entityLow: {} as never,
+        entityHigh: {} as never,
+        logisticsBelt: {} as never,
+        logisticsPipe: {} as never,
+        draft: {} as never,
+        entity: createLayerStub() as never,
+        overlay: createLayerStub() as never,
+      })
+      const context = createRenderContextStub({ selectionIds: [], previewIds: [] })
+      Object.assign(context.workspace, { app: createRenderContextAppStub(renderHost) })
+      const layout = { x: 16, y: 24, width: 144, height: 144, rotation: 0 as const }
+      sprite.syncLayout(layout, context)
+      await flushMicrotasks(12)
+      sprite.syncRuntime(layout, context)
+      await flushMicrotasks(12)
+
+      expect(internals.body.texture).toBe(fallbackBody)
+      expect(internals.staticMaskTexture).toBe(maskTexture)
+      expect(internals.deviceIcon.visible).toBe(false)
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushMicrotasks(12)
+      expect(internals.body.texture).toBe(bodyTexture)
+      expect(internals.staticMaskTexture).toBe(maskTexture)
+      expect(internals.deviceIcon.texture).toBe(avatarTexture)
+      expect(internals.deviceIcon.visible).toBe(true)
+      expect(attempts.get(bodyPath)).toBe(2)
+      expect(attempts.get(avatarPath)).toBe(2)
+    } finally {
+      sprite.destroy()
+      manager.destroy()
+      if (originalLoad !== undefined) assetsLoad.mockImplementation(originalLoad)
+      vi.useRealTimers()
+    }
   })
 
   it("独立静态素材延迟时使用缺图 fallback，不借用 atlas 首帧", async () => {
@@ -3657,6 +3756,7 @@ function createRenderHostStub(
       }),
       supportsLogisticsAnimation: () => false,
       getTexture,
+      watchTextureRecovery: vi.fn(() => () => undefined),
     },
   }
 }

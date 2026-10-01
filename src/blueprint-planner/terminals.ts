@@ -4,10 +4,11 @@ import { LOGISTICS_KIND } from "@/domain/shared/logistics";
 import { resolveEntityGridRect } from "@/shared/geometry/power-range";
 import { CONSUMPTION_RECIPE_TAG } from "@/shared/consumption-channel";
 import { isRecipeAvailableByActivity } from "@/shared/registry/activity-availability";
-import { itemLogisticsKind, transportCapacity } from "./geometry";
+import { getPlannerPorts, itemLogisticsKind, transportCapacity } from "./geometry";
 import { PlannerCandidateError, sumMaterial, type PlannerNetwork, type PlannerNode } from "./model";
 import { createPlainNode, type PlannerPlacement } from "./placement";
 import { createRecipeNode } from "./production-network";
+import { restrictPort } from "./wiring";
 
 export function materialBalance(network: PlannerNetwork): Map<string, number> {
   const result = sumMaterial(network.nodes.flatMap((node) => node.outputs));
@@ -17,7 +18,8 @@ export function materialBalance(network: PlannerNetwork): Map<string, number> {
   return result;
 }
 
-export function addTerminals(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, separateOperatingSupply = false, fluidGroupSize = 64): void {
+export function addTerminals(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, separateOperatingSupply = false, fluidGroupSize = 64, compact = false, stashPackingVariant = 0): void {
+  if (!Number.isSafeInteger(stashPackingVariant) || stashPackingVariant < 0) throw new Error("储存箱分组序号必须为非负整数。");
   const available = new Set([...network.request.plan.infiniteItemIds, ...network.request.plan.externalSupplies.map((entry) => entry.itemId)]);
   const balance = materialBalance(network);
   const sources: BlueprintPlannerFlow[] = [];
@@ -73,7 +75,8 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
     for (const delivery of deliveries) {
       const rate = delivery.perMinute;
       const definitionId = mode === "external" ? registry.queries.resolveLogisticsDefinitionId(kind, "straight")
-        : mode === "warehouse" ? "unloader_1" : rate > transportCapacity(kind) ? "udpipe_unloader_2" : "udpipe_unloader_1";
+        : mode === "warehouse" ? "unloader_1" : rate > transportCapacity(kind) || (compact && (delivery.targets?.length ?? 0) > 1)
+          ? "udpipe_unloader_2" : "udpipe_unloader_1";
       const base = { ...createPlainNode(registry, definitionId, `eda-source-${network.nodes.length}`, "supply"), supplyTargets: delivery.targets };
       const node: PlannerNode = mode === "external" ? { ...base, external: true } : delivery.consumer === undefined ? base
         : { ...base, supplyTarget: { entityId: delivery.consumer.entity.id, storageGroupIds: delivery.storageGroupIds } };
@@ -83,7 +86,7 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
       else if (mode === "warehouse") {
         const group = node.definition.storageSlotGroups[0]!;
         const slot = group.slots[0]!;
-        configureSource(node, flow.itemId, false);
+        configureSource(node, flow.itemId, true);
         const link = registry.queries.buildWarehouseSlotLinkForEntity({ entityId: node.entity.id, storageSlotGroupId: group.id, slotId: slot.id, itemId: flow.itemId });
         network.slotLinks.push({ ...link, id: `eda-warehouse-${network.slotLinks.length}` });
         network.initialSlots.push({ entityId: node.entity.id, storageGroupId: group.id, slotId: slot.id, itemType: flow.itemId, count: slot.capacity, ignoreStock: true });
@@ -95,6 +98,7 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
       }
     }
   }
+  let stashPackingChoice = stashPackingVariant;
   for (const [itemId, rate] of outputs) {
     if (rate <= 1e-6) continue;
     const target = network.request.plan.targets.some((flow) => flow.itemId === itemId);
@@ -137,14 +141,42 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
       ? clusterTerminalDemands(network.nodes.flatMap(node => node.outputs.filter(output => output.itemId === itemId)
         .map(output => ({ node, perMinute: output.perMinute, storageGroupIds: output.storageGroupIds }))), fluidGroupSize)
       : [{ rate, targets: undefined }];
-    for (const group of outputGroups) for (let remaining = group.rate; remaining > 1e-6; remaining -= outputCapacity) {
-      deliveries.push({ perMinute: Math.min(outputCapacity, remaining), targets: group.targets });
+    if (definitionId === "storager_1") {
+      const template = createPlainNode(registry, definitionId, "eda-output-capacity", "product");
+      const lanes = getPlannerPorts(registry, template.entity, template.definition, "input", itemId).length;
+      if (!lanes) throw new PlannerCandidateError(`储存箱没有可接收物品的端口：${itemId}`);
+      const requiredLanes = Math.max(1, Math.ceil(rate / outputCapacity - 1e-6));
+      const minimum = Math.ceil(requiredLanes / lanes);
+      const alternatives = requiredLanes - minimum + 1;
+      const count = minimum + stashPackingChoice % alternatives;
+      stashPackingChoice = Math.floor(stashPackingChoice / alternatives);
+      let remaining = rate;
+      for (let index = 0; index < count; index++) {
+        const portCount = Math.max(1, Math.ceil(Math.ceil(remaining / outputCapacity - 1e-6) / (count - index)));
+        const perMinute = Math.min(remaining, portCount * outputCapacity);
+        deliveries.push({ perMinute });
+        remaining -= perMinute;
+      }
+    } else {
+      for (const group of outputGroups) for (let remaining = group.rate; remaining > 1e-6; remaining -= outputCapacity) {
+        deliveries.push({ perMinute: Math.min(outputCapacity, remaining), targets: group.targets });
+      }
     }
     for (const delivery of deliveries) {
       const base = { ...createPlainNode(registry, definitionId === "udpipe_loader_1" && delivery.perMinute > transportCapacity(kind) ? "udpipe_loader_2" : definitionId, `eda-output-${network.nodes.length}`, target ? "product" : "byproduct"), outputSources: delivery.targets };
       const node: PlannerNode = delivery.producer === undefined ? base : { ...base,
         outputSource: { entityId: delivery.producer.entity.id, storageGroupIds: delivery.storageGroupIds } };
       node.inputs.push({ itemId, perMinute: delivery.perMinute });
+      if (definitionId === "storager_1") {
+        // 2026-09-30：一箱一种物品，多条线按独立端口接入；未接线端口也不能混入其他物品。
+        node.definition.storageSlotGroups.forEach((group, groupIndex) => group.slots.forEach((_, slotIndex) => {
+          node.entity.config[`storageSlotGroups[${groupIndex}].slots[${slotIndex}].lock`] = itemId;
+        }));
+        const drains = getPlannerStashDrainPorts(registry, node);
+        for (const direction of ["input", "output"] as const) for (const port of getPlannerPorts(registry, node.entity, node.definition, direction)) {
+          restrictPort(registry, node, port, direction === "input" || drains.some(drain => drain.groupIndex === port.groupIndex && drain.portIndex === port.portIndex) ? [itemId] : []);
+        }
+      }
       network.nodes.push(node);
       if (definitionId === "loader_1") dockNodes.push(node);
       else placement.placeAnywhere(node, 0, delivery.producer?.entity.position
@@ -161,6 +193,17 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
     const node = externalSources[index]!;
     placement.place(node, { x: boundaryX, y: placement.minimumY + index * 3 }, 180);
   }
+}
+
+/** 验收排空与布局预留共用，按接收速率开启足量独立出口，不能靠箱内库存掩盖瓶颈。 */
+export function getPlannerStashDrainPorts(registry: RegistryContract, node: PlannerNode) {
+  if (node.definition.id !== "storager_1" || (node.purpose !== "product" && node.purpose !== "byproduct")) return [];
+  const items = new Set(node.inputs.map(flow => flow.itemId));
+  if (items.size !== 1) throw new PlannerCandidateError("协议储存箱只能接收同一种物品。");
+  const ports = getPlannerPorts(registry, node.entity, node.definition, "output", node.inputs[0]!.itemId);
+  const count = Math.max(1, Math.ceil(node.inputs.reduce((sum, flow) => sum + flow.perMinute, 0) / transportCapacity("belt") - 1e-6));
+  if (count > ports.length) throw new PlannerCandidateError("储存箱持续排空运力不足。");
+  return ports.slice(0, count);
 }
 
 /** 按初始几何邻近性分组，使一个供排设施服务一个局部区域，避免所有支路集中到同一狭窄入口。 */

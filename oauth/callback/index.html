@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="dark" />
+    <title>一图流登录</title>
+  </head>
+  <body>
+    <main id="oauth-callback-root">
+      <section class="oauth-callback-card">
+        <h1>一图流同步</h1>
+        <p id="oauth-status" role="status">正在完成登录…</p>
+        <button id="oauth-close" type="button">关闭页面</button>
+      </section>
+    </main>
+    <script type="module" src="/src/app/oauth-callback/yituliu-callback-main.ts"></script>
+  </body>
+</html>

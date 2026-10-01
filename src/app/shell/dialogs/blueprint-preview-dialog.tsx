@@ -826,7 +826,8 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
   };
   const showDeleteAction = controller.canDelete;
   const showMoveAction = controller.canDelete;
-  const defaultActionCount = 3 + (showMoveAction ? 1 : 0) + (showDeleteAction ? 1 : 0);
+  const defaultActionCount = 3 + (showMoveAction ? 1 : 0) + (showDeleteAction ? 1 : 0)
+    + (appHost.blueprintPlannerDialog.enabled ? 1 : 0);
   const actionsClassName = isDeleteConfirming
     ? "blueprint-preview-actions is-dual-action"
     : defaultActionCount >= 3
@@ -1154,6 +1155,9 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
                       >
                         {t("workbench.button.copyBlueprintToClipboard")}
                       </button>
+                      {appHost.blueprintPlannerDialog.enabled ? <button type="button" disabled
+                        className={cm(styles, "save-blueprint-secondary-button")}
+                        data-ui-button-id="blueprint-preview-optimize-button">{t("eda.optimize")}</button> : null}
                       {showMoveAction ? (
                         <button
                           className={cm(styles, "save-blueprint-secondary-button")}

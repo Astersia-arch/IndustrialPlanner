@@ -1,3 +1,4 @@
+import { YituliuSyncStatusDialog } from "./yituliu-sync-status-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
 import { makeAutoObservable, runInAction } from "mobx";
@@ -358,6 +359,8 @@ export const SettingsDialog = observer(function SettingsDialog({
     activeTab: null,
   }), []);
 
+  const [yituliuStatusVisible, setYituliuStatusVisible] = useState(false);
+
   const cloudflareStatusDialogState = useMemo(() => makeAutoObservable<DialogStateReadWrite>({
     visible: false,
     maximized: false,
@@ -644,6 +647,7 @@ export const SettingsDialog = observer(function SettingsDialog({
 
   const handleSelectSettingValue = useCallback((settingId: string, value: string) => {
     controller.updateSelectValue(settingId, value);
+    if (settingId === "sync-provider") setYituliuStatusVisible(value === "yituliu");
     if (settingId !== "sync-provider") {
       return;
     }
@@ -1375,6 +1379,10 @@ export const SettingsDialog = observer(function SettingsDialog({
                         t={t}
                       />
                     ) : null}
+                    {controller.getValue("sync-provider") === "yituliu" ? (
+                      <SettingsActionCard title={t("settingsOption.syncProvider.yituliu")} description={t("yituliu.scope")}
+                        buttonLabel={t("cloudflareStatus.open")} onClick={() => setYituliuStatusVisible(true)} />
+                    ) : null}
                     <StorageUsageCard
                       onClearStorage={handleClearStorage}
                       storageBytes={storageBytes}
@@ -1595,6 +1603,9 @@ export const SettingsDialog = observer(function SettingsDialog({
         state={sync.state}
         t={t}
       />
+    ) : null}
+    {yituliuStatusVisible && sync !== null ? (
+      <YituliuSyncStatusDialog sync={sync} compactMobileLayout={isNonDesktop} onClose={() => setYituliuStatusVisible(false)} t={t} />
     ) : null}
     {cloudflareStatusDialogState.visible && sync !== null ? (
       <CloudflareSyncStatusDialog

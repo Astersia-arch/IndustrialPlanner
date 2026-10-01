@@ -72,6 +72,7 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
 
   // ---- 活跃气体范围渲染（实色，仿真中） ----
   // AI-CORRECTION 2026-09-26：工作中的范围仅在动画素材尚未就绪或不支持 WebGL2 时使用实色矩形兜底。
+  // AI-CORRECTION 2026-10-01：蓝图外观下始终使用同一 body 色实色矩形，不加载或播放气体环境动画。
 
   function syncActiveGasRanges(
     ctx: DecorationSyncContext,
@@ -193,7 +194,9 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
       entityDefinitionMap,
       gasDiffusionRangeByMachineId,
     );
-    if (previewRanges.length > 0 && ctx.renderHost.textureManager.supportsLogisticsAnimation()) {
+    if (previewRanges.length > 0
+      && ctx.renderHost.workspace.app?.state.settings.gameUseBlueprintStyleDeviceImages !== true
+      && ctx.renderHost.textureManager.supportsLogisticsAnimation()) {
       animation.prepare(ctx);
     }
 
@@ -301,7 +304,8 @@ export function createGasDiffusionRangeDecoration(): DecorationLayer {
           (range) => !hiddenDeviceIds.has(range.sourceDeviceId),
         )
         : [];
-      const supportsAnimation = ctx.renderHost.textureManager.supportsLogisticsAnimation();
+      const supportsAnimation = workspace.app?.state.settings.gameUseBlueprintStyleDeviceImages !== true
+        && ctx.renderHost.textureManager.supportsLogisticsAnimation();
       const animatedRanges = supportsAnimation ? activeGasDiffusions : [];
       const activeDeviceIds = new Set(activeGasDiffusions.map((range) => range.sourceDeviceId));
 

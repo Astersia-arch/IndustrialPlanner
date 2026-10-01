@@ -1,0 +1,62 @@
+{
+  "fixtureVersion": 1,
+  "request": {
+    "options": {
+      "solidSupply": "warehouse",
+      "fluidSupply": "conduit",
+      "warehouseBus": "straight",
+      "solidOutput": "stash",
+      "byproducts": "output",
+      "plantStartup": "preload",
+      "budgetMs": 60000,
+      "evaluationsPerRound": 50000
+    },
+    "plan": {
+      "name": "EDA 批量规划",
+      "sourceBaseId": "wuling_protocol_core",
+      "targets": [
+        {
+          "itemId": "item_copper_cmpt",
+          "perMinute": 30
+        }
+      ],
+      "externalSupplies": [
+        {
+          "itemId": "item_copper_nugget",
+          "perMinute": 30
+        }
+      ],
+      "infiniteItemIds": [
+        "item_copper_nugget"
+      ],
+      "byproductItemIds": [],
+      "containsModules": false,
+      "unresolvedPerMinute": 0,
+      "activeActivityIds": [],
+      "recipes": [
+        {
+          "recipeId": "r_component_copper_cmpt_from_copper_nugget_basic",
+          "cyclesPerMinute": 30,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_copper_nugget",
+              "perMinute": 30
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_copper_cmpt",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        }
+      ]
+    }
+  },
+  "outline": {
+    "width": 13,
+    "height": 4
+  }
+}

@@ -89,6 +89,83 @@ describe("TextureActions", () => {
     manager.destroy()
   })
 
+  it("retries a failed texture once for all active viewers and replaces the cached fallback", async () => {
+    vi.useFakeTimers()
+    try {
+      const recoveredTexture = createLoadedTextureMock("recovered-avatar")
+      loadTexture.mockRejectedValueOnce(new Error("temporary outage"))
+        .mockResolvedValueOnce(recoveredTexture)
+      const manager = createTextureActions({ renderer: {} as never, app: null })
+      const key = "top-view-avatar-item_port_udpipe_unloader_1"
+      const first = await manager.getTexture(key)
+      expect(isFallbackTexture(first)).toBe(true)
+
+      const firstViewer = vi.fn()
+      const secondViewer = vi.fn()
+      const stopFirst = manager.watchTextureRecovery(key, firstViewer)
+      const stopSecond = manager.watchTextureRecovery(key, secondViewer)
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(firstViewer).toHaveBeenCalledExactlyOnceWith(recoveredTexture)
+      expect(secondViewer).toHaveBeenCalledExactlyOnceWith(recoveredTexture)
+      expect(await manager.getTexture(key)).toBe(recoveredTexture)
+      expect(loadTexture).toHaveBeenCalledTimes(2)
+      stopFirst()
+      stopSecond()
+      manager.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops texture retries after the last viewer leaves", async () => {
+    vi.useFakeTimers()
+    try {
+      loadTexture.mockRejectedValue(new Error("offline"))
+      const manager = createTextureActions({ renderer: {} as never, app: null })
+      const key = "blueprint-sprite-item_port_sp_sub_hub_1"
+      const viewer = vi.fn()
+      const stop = manager.watchTextureRecovery(key, viewer)
+      await Promise.resolve()
+      await Promise.resolve()
+      stop()
+      await vi.advanceTimersByTimeAsync(3000)
+
+      expect(loadTexture).toHaveBeenCalledTimes(1)
+      expect(viewer).not.toHaveBeenCalled()
+      manager.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reloads body aliases after a temporary request failure", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal("fetch", vi.fn()
+        .mockRejectedValueOnce(new Error("alias request failed"))
+        .mockResolvedValueOnce({ ok: true, json: async () => ({}) }))
+      const recoveredTexture = createLoadedTextureMock("recovered-3d-body")
+      loadTexture.mockResolvedValue(recoveredTexture)
+      const manager = createTextureActions({ renderer: {} as never, app: null })
+      const key = "device-sprite-item_port_sp_sub_hub_1"
+      const fallback = await manager.getTexture(key)
+      expect(isFallbackTexture(fallback)).toBe(true)
+
+      const recovered = vi.fn()
+      manager.watchTextureRecovery(key, recovered)
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(recovered).toHaveBeenCalledExactlyOnceWith(recoveredTexture)
+      expect(fetch).toHaveBeenCalledTimes(2)
+      expect(loadTexture).toHaveBeenCalledWith("/3d-top-view/sprites/item_port_sp_sub_hub_1.webp")
+      manager.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("returns a red fallback texture for unknown key prefixes", async () => {
     const manager = createTextureActions({
       renderer: {} as never,

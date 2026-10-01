@@ -79,32 +79,33 @@ describe("EDA Host 多轮规划", () => {
       registry: createRegistryContract(), simulation, audio: null, blueprintPlanner: null,
       state: {}, app: null, editor: null, render: null, sync: null,
     } as unknown as WorkspaceContract;
-    const host = createBlueprintPlannerHost(workspace);
+    const host = createBlueprintPlannerHost(workspace, { storage: null });
     const request = readPlanningInput(workspace.registry, plant);
 
     try {
       const taskId = host.actions.start(request);
       await vi.waitFor(() => expect(host.queries.getTask()?.status).toBe("waiting"));
       expect(host.queries.getTask()?.bestArea).toBe(100);
-      expect(host.queries.getResult(taskId)).toBeNull();
+      expect(host.queries.getResult(taskId)?.folderId).toBeNull();
+      expect(host.queries.getResult(taskId)?.metrics.area).toBe(100);
 
       await host.actions.save(taskId);
       expect(host.queries.getTask()?.status).toBe("completed");
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(100);
       await expect(host.actions.save(taskId)).rejects.toThrow("当前没有可保存的新结果");
 
-      host.actions.continuePlanning(taskId, 1_000, 2_000);
+      host.actions.continuePlanning(taskId, 20_000);
       await vi.waitFor(() => expect(host.queries.getTask()?.status).toBe("completed"));
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(100);
 
-      host.actions.continuePlanning(taskId, 1_000, 3_000);
+      host.actions.continuePlanning(taskId, 30_000);
       await vi.waitFor(() => expect(host.queries.getTask()?.status).toBe("waiting"));
       expect(host.queries.getTask()?.bestArea).toBe(90);
       await host.actions.save(taskId);
       expect(host.queries.getTask()?.status).toBe("completed");
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(90);
 
-      expect(workerBuild.mock.calls.map((call) => call[3])).toEqual([50_000, 50_000, 2_000, 2_000, 3_000, 3_000]);
+      expect(workerBuild.mock.calls.map((call) => call[3])).toEqual([50_000, 49_999, 20_000, 19_999, 30_000, 29_999]);
       expect(new Set(workerBuild.mock.calls.map((call) => call[0]))).toEqual(new Set([workerBuild.mock.calls[0]![0]]));
       expect(saveBlueprintDocument).toHaveBeenCalledTimes(2);
     } finally {

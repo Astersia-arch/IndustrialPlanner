@@ -190,5 +190,11 @@
     "title": "雪凇幽梦-功能更新1-v1.5.1",
     "version": "1.5.1",
     "kind": "main"
+  },
+  {
+    "file": "incremental/1.5.1/1.5.1.1.md",
+    "title": "增量更新-v1.5.1.1",
+    "version": "1.5.1.1",
+    "kind": "incremental"
   }
 ]

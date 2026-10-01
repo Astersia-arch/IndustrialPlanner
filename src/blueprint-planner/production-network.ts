@@ -80,9 +80,18 @@ export function createRecipeNode(
 
 export function validatePlannerRequest(registry: RegistryContract, request: BlueprintPlannerRequest): void {
   const { plan, options } = request;
+  if (!["warehouse", "stash", "auto"].includes(options.solidOutput)) throw new Error("未知固体输出方式。");
   if (plan.containsModules) throw new Error("包含模块的规划不能自动规划产线。");
   if (!Number.isFinite(plan.unresolvedPerMinute) || plan.unresolvedPerMinute < 0 || plan.unresolvedPerMinute > EPSILON) throw new Error("产线规划仍有未满足需求，请先补齐生产方案。");
-  if (!Number.isFinite(options.budgetMs) || options.budgetMs <= 0) throw new Error("规划时间必须大于零。");
+  // AI-REMOVED 2026-09-30:
+  // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
+  // Trigger: 用户批准本轮接口与交互调整。
+  // Evidence: 原实现使用时间截止或关闭任务面板。
+  // Replacement: src/blueprint-planner/production-network.ts
+  // Risk: Low。Human Review: Required
+  // Original code:
+  //   if (!Number.isFinite(options.budgetMs) || options.budgetMs <= 0) throw new Error("规划时间必须大于零。");
+
   if (!Number.isSafeInteger(options.evaluationsPerRound) || options.evaluationsPerRound < 1_000
     || options.evaluationsPerRound % 1_000 !== 0) throw new Error("每轮计算次数必须是大于零的 1000 整数倍。");
   if (!plan.targets.length || plan.targets.some((flow) => !Number.isFinite(flow.perMinute) || flow.perMinute <= 0)) {

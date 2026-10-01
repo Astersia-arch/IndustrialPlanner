@@ -1,3 +1,4 @@
+import { completeYituliuCallback } from "@/shared/storage/yituliu-session";
 import { CanvasNotices } from "./canvas/canvas-notices";
 import { BlueprintPlannerDialog } from "./blueprint-planner-dialog";
 import { action, runInAction } from "mobx";
@@ -788,7 +789,7 @@ export const WorkbenchApp = observer(function WorkbenchApp({
         readValue: () => readSelectedSyncProvider(),
         writeValue: action((value) => {
           requestSyncProvider(
-            value === "webdav" || value === "cloudflare" ? value : "none",
+            value === "webdav" || value === "cloudflare" || value === "yituliu" ? value : "none",
           );
           // AI-CORRECTION 2026-08-24: provider 订阅会主动更新宿主；此调用仅兼容初始化期间尚未注册订阅的场景。
           appHost.workspace.sync?.actions.updateSettings({});
@@ -909,6 +910,12 @@ export const WorkbenchApp = observer(function WorkbenchApp({
       window.removeEventListener("click", unlock);
     };
   }, [appHost]);
+  useEffect(() => {
+    void completeYituliuCallback().catch(() => {
+      // 回调窗口关闭后，由发起窗口展示登录失败，避免记录授权码或令牌。
+    });
+  }, []);
+
   useEffect(() => pwaController.bindDeviceAudio(() => appHost.internalState.settings.gamePlayDeviceAudio), [appHost, pwaController]);
 
   useEffect(() => {

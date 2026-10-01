@@ -1,7 +1,9 @@
-import type { BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerResult } from "./types/blueprint-planner-types";
+import type { BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerResult, BlueprintPlannerTaskFile } from "./types/blueprint-planner-types";
 
 export interface BlueprintPlannerQuery {
-  getTask(): BlueprintPlannerProgress | null;
-  getLastRequest(): BlueprintPlannerRequest | null;
+  listTasks(): readonly BlueprintPlannerProgress[];
+  exportTask(taskId: string): BlueprintPlannerTaskFile;
+  getTask(taskId?: string): BlueprintPlannerProgress | null;
+  getLastRequest(taskId?: string): BlueprintPlannerRequest | null;
   getResult(taskId: string): BlueprintPlannerResult | null;
 }

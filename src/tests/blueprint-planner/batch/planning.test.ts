@@ -5,6 +5,7 @@ import { createRegistryContract } from "@/registry";
 import { readPlanningInput } from "@/scripts/eda/planning-input";
 import { runPlannerBatch, type PlannerBatchOptions } from "@/scripts/eda/planner-runner";
 import { edaOutputPath } from "@/scripts/eda/artifact-paths";
+import { saveProposalCurve } from "@/scripts/eda/proposal-curve";
 
 it("按给定预算执行规划并保存成功蓝图与统计", async () => {
   const path = process.env.EDA_PLAN ?? "src/tests/blueprint-planner/fixtures/pyrrolite-nugget.json";
@@ -14,6 +15,7 @@ it("按给定预算执行规划并保存成功蓝图与统计", async () => {
   const directory = edaOutputPath("runs", `${Date.now()}-${process.pid}`);
   await mkdir(directory, { recursive: true });
   await writeFile(resolve(directory, "report.json"), JSON.stringify(result, null, 2));
+  await saveProposalCurve(directory, result.proposalCurve);
   if (process.env.EDA_REPORT_PATH) {
     const reportPath = resolve(process.env.EDA_REPORT_PATH);
     if (!reportPath.startsWith(edaOutputPath() + "/")) throw new Error("批量报告只能写入 .temp/eda。");

@@ -39,7 +39,7 @@ export function preparePlantStartups(registry: RegistryContract, network: Planne
       continue;
     }
     const source = createPlainNode(registry, "unloader_1", `eda-startup-source-${network.nodes.length}`, "startup");
-    configureSource(source, input.itemId, false);
+    configureSource(source, input.itemId, true);
     network.nodes.push(source);
     const storage = source.definition.storageSlotGroups[0]!, slot = storage.slots[0]!;
     const link = registry.queries.buildWarehouseSlotLinkForEntity({ entityId: source.entity.id, storageSlotGroupId: storage.id, slotId: slot.id, itemId: input.itemId });

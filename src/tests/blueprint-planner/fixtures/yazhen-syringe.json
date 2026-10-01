@@ -1,0 +1,214 @@
+{
+  "fixtureVersion": 1,
+  "provenance": "系统芽针蓝图相同九台生产设备；显式配平采种/水培循环；固体仓库、流体暗管、直线存取线、成品储存箱、50 个预置启动",
+  "request": {
+    "options": {
+      "solidSupply": "warehouse",
+      "fluidSupply": "conduit",
+      "warehouseBus": "straight",
+      "solidOutput": "stash",
+      "byproducts": "output",
+      "plantStartup": "preload",
+      "budgetMs": 60000,
+      "evaluationsPerRound": 50000
+    },
+    "plan": {
+      "name": "赤铜块外供优质芽针针剂6每分钟",
+      "sourceBaseId": "wuling_protocol_core",
+      "targets": [
+        {
+          "itemId": "item_bottled_rec_hp_5",
+          "perMinute": 6
+        }
+      ],
+      "externalSupplies": [
+        {
+          "itemId": "item_copper_nugget",
+          "perMinute": 120
+        }
+      ],
+      "infiniteItemIds": [
+        "item_copper_nugget"
+      ],
+      "byproductItemIds": [],
+      "containsModules": false,
+      "unresolvedPerMinute": 0,
+      "activeActivityIds": [],
+      "recipes": [
+        {
+          "recipeId": "r_component_copper_cmpt_from_copper_nugget_basic",
+          "cyclesPerMinute": 60,
+          "deviceCount": 2,
+          "inputs": [
+            {
+              "itemId": "item_copper_nugget",
+              "perMinute": 60
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_copper_cmpt",
+              "perMinute": 60
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_liquid_filling_copper_bottle_grass_2_hidden",
+          "cyclesPerMinute": 30,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_copper_bottle",
+              "perMinute": 30
+            },
+            {
+              "itemId": "item_liquid_plant_grass_2",
+              "perMinute": 30
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_copper_bottle_filled_liquid_plant_grass_2",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_crusher_grass_powder_2_from_grass_2_basic",
+          "cyclesPerMinute": 15,
+          "deviceCount": 0.5,
+          "inputs": [
+            {
+              "itemId": "item_plant_grass_2",
+              "perMinute": 15
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_plant_grass_powder_2",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_mix_pool_liquid_plant_grass_2_from_powder_and_water_basic",
+          "cyclesPerMinute": 30,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_plant_grass_powder_2",
+              "perMinute": 30
+            },
+            {
+              "itemId": "item_liquid_water",
+              "perMinute": 30
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_liquid_plant_grass_2",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_hydro_planter_grass_2_from_seed_2_and_water_basic",
+          "cyclesPerMinute": 15.0,
+          "deviceCount": 0.5,
+          "inputs": [
+            {
+              "itemId": "item_plant_grass_seed_2",
+              "perMinute": 15.0
+            },
+            {
+              "itemId": "item_liquid_water",
+              "perMinute": 15.0
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_plant_grass_2",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_seedcol_grass_seed_2_from_grass_2_basic",
+          "cyclesPerMinute": 15.0,
+          "deviceCount": 0.5,
+          "inputs": [
+            {
+              "itemId": "item_plant_grass_2",
+              "perMinute": 15.0
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_plant_grass_seed_2",
+              "perMinute": 15.0
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_shaper_copper_bottle_from_copper_nugget_basic",
+          "cyclesPerMinute": 30,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_copper_nugget",
+              "perMinute": 60
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_copper_bottle",
+              "perMinute": 30
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_packaging_bottled_rec_hp_5_from_copper_cmpt_and_copper_bottle_filled_grass_2_basic",
+          "cyclesPerMinute": 6,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_copper_cmpt",
+              "perMinute": 60
+            },
+            {
+              "itemId": "item_copper_bottle_filled_liquid_plant_grass_2",
+              "perMinute": 30
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_bottled_rec_hp_5",
+              "perMinute": 6
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_pump_water_basic",
+          "cyclesPerMinute": 45,
+          "deviceCount": 0.75,
+          "inputs": [],
+          "outputs": [
+            {
+              "itemId": "item_liquid_water",
+              "perMinute": 45
+            }
+          ],
+          "runningInputs": []
+        }
+      ]
+    }
+  }
+}

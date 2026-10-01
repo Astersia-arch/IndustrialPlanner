@@ -6,11 +6,11 @@ export interface PlannerWorkerRequest {
   readonly id: number;
   readonly request: BlueprintPlannerRequest;
   readonly variant: number;
-  readonly budgetMs: number;
+  readonly budgetMs: number | null;
   readonly search?: PlannerSearchOptions;
 }
 
 export type PlannerWorkerResponse =
-  | { readonly id: number; readonly type: "progress"; readonly phase: BlueprintPlannerPhase; readonly message: string }
+  | { readonly id: number; readonly type: "progress"; readonly phase: BlueprintPlannerPhase; readonly message: string; readonly evaluations: number }
   | { readonly id: number; readonly type: "completed"; readonly candidate: PlannerCandidate }
-  | { readonly id: number; readonly type: "failed"; readonly kind: "candidate" | "timeout" | "fatal"; readonly message: string; readonly search?: PlannerSearchStatistics };
+  | { readonly id: number; readonly type: "failed"; readonly kind: "candidate" | "timeout" | "fatal"; readonly message: string; readonly search?: PlannerSearchStatistics; readonly evaluations: number };

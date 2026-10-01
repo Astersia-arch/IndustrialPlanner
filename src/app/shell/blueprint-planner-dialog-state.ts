@@ -13,8 +13,8 @@ export class BlueprintPlannerDialogController {
   plan: BlueprintPlannerProductionPlan | null = null;
   viewTaskId: string | null = null;
   options: BlueprintPlannerOptions = {
-    solidSupply: "external", fluidSupply: "external", warehouseBus: "straight",
-    solidOutput: "warehouse", byproducts: "output", plantStartup: "preload", budgetMs: 60_000, evaluationsPerRound: 50_000,
+    solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
+    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", evaluationsPerRound: 500_000,
   };
 
   constructor() {
@@ -23,13 +23,21 @@ export class BlueprintPlannerDialogController {
       for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
         const choices = {
           solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "free"],
-          solidOutput: ["warehouse", "stash"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"],
+          solidOutput: ["warehouse", "stash", "auto"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"],
         };
         if (saved[key] !== undefined && choices[key].includes(saved[key]!)) this.options = { ...this.options, [key]: saved[key] };
       }
-      if (typeof saved.budgetMs === "number" && Number.isFinite(saved.budgetMs) && saved.budgetMs > 0) this.options = { ...this.options, budgetMs: saved.budgetMs };
+      // AI-REMOVED 2026-09-30:
+      // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
+      // Trigger: 用户批准本轮接口与交互调整。
+      // Evidence: 原实现使用时间截止或关闭任务面板。
+      // Replacement: src/app/shell/blueprint-planner-dialog-state.ts
+      // Risk: Low。Human Review: Required
+      // Original code:
+      //       if (typeof saved.budgetMs === "number" && Number.isFinite(saved.budgetMs) && saved.budgetMs > 0) this.options = { ...this.options, budgetMs: saved.budgetMs };
+
       if (typeof saved.evaluationsPerRound === "number" && Number.isSafeInteger(saved.evaluationsPerRound)
-        && saved.evaluationsPerRound >= 1_000 && saved.evaluationsPerRound % 1_000 === 0) {
+        && saved.evaluationsPerRound >= 10_000 && saved.evaluationsPerRound % 10_000 === 0) {
         this.options = { ...this.options, evaluationsPerRound: saved.evaluationsPerRound };
       }
     }
@@ -47,7 +55,11 @@ export class BlueprintPlannerDialogController {
     this.dialogState.visible = true;
   }
 
-  selectTask(taskId: string): void { this.viewTaskId = taskId; }
+  selectTask(taskId: string | null, request?: BlueprintPlannerRequest): void {
+    this.viewTaskId = taskId;
+    if (taskId === null || !request) this.plan = null;
+    if (request) { this.plan = structuredClone(request.plan); this.options = structuredClone(request.options); }
+  }
 
   close(): void { this.dialogState.visible = false; }
   toggleMaximized(): void { this.dialogState.maximized = !this.dialogState.maximized; }
