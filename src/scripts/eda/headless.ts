@@ -42,7 +42,7 @@ export async function runHeadlessPlanner(args: readonly string[]): Promise<void>
       async dispose() { try { await Promise.all([...this.planners].map(planner => planner.dispose())); } finally { simulation.dispose(); } } };
     const input = parsePlannerTaskFile(JSON.parse(await readFile(taskPath, "utf8")), session.workspace.registry);
     const count = values.has("--shard-count") ? Number(values.get("--shard-count"))
-      : input.checkpoint.parallel?.count ?? input.request.options.concurrency ?? 1;
+      : input.checkpoint.parallel?.count ?? (input.request.options.concurrency === "auto" ? 32 : input.request.options.concurrency ?? 1);
     const range = values.get("--shard-range") ?? `0:${count}`;
     const match = /^(\d+):(\d+)$/.exec(range);
     const start = Number(match?.[1]), end = Number(match?.[2]);

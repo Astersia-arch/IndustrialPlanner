@@ -20,6 +20,7 @@ import { resolveSearchProfile } from "./search-profile";
 import { boundedPlannerScore, measurePlannerQuality } from "./quality";
 import { auditPlannerSupply, type PlannerSupplyAudit } from "./supply-audit";
 import type { PlannerDiagnosticPhase, PlannerSearchDiagnostics, PlannerSearchExperiment, PlannerSearchOptions, PlannerSearchStatistics } from "./search-types";
+import type { PlannerRoutingBackend } from "./routing-backend";
 import { constructCompactLayout } from "./constructive-layout";
 import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "./search-seed";
 import { resolvePlannerAttempt } from "./search-portfolio";
@@ -38,6 +39,7 @@ export async function createPlannerCandidate(
   registry: RegistryContract, request: BlueprintPlannerRequest, variant: number,
   checkBudget: () => void, update: (phase: BlueprintPlannerPhase, message: string) => void,
   options: PlannerSearchOptions = {}, reportEvaluations: (count: number) => void = () => undefined,
+  routing?: PlannerRoutingBackend,
 ): Promise<PlannerCandidate> {
   ({ request, variant } = resolvePlannerAttempt(request, variant));
   // 独立重启轮换箱数；紧凑失败后的预算内重排必须保持本轮拓扑选择。
@@ -46,7 +48,7 @@ export async function createPlannerCandidate(
   const reserve = !options.seed && options.strategy !== "baseline" && total >= 20_000;
   const firstBudget = reserve ? Math.floor(total / 4) : total;
   try {
-    const result = await createPlannerAttempt(registry, request, variant, checkBudget, update, { ...options, maxEvaluations: firstBudget }, reportEvaluations);
+    const result = await createPlannerAttempt(registry, request, variant, checkBudget, update, { ...options, maxEvaluations: firstBudget }, reportEvaluations, routing);
     return { ...result, search: { ...result.search, evaluationLimit: total } };
   } catch (error) {
     if (!reserve || !(error instanceof PlannerCandidateError) || !error.search) throw error;
@@ -75,7 +77,7 @@ export async function createPlannerCandidate(
       // 重排使用有限的初排尺度，长会话不能因轮号增加而无限放大搜索框。
       const result = await createPlannerAttempt(registry, request, variant % 9, checkBudget, update,
         { ...options, strategy: "baseline", maxEvaluations: total - first.evaluations, coolingEvaluations: total },
-        count => reportEvaluations(first.evaluations + count));
+        count => reportEvaluations(first.evaluations + count), routing);
       return { ...result, search: combine(result.search) };
     } catch (failure) {
       if (failure instanceof PlannerCandidateError && failure.search) throw new PlannerCandidateError(failure.message, combine(failure.search));
@@ -89,6 +91,7 @@ async function createPlannerAttempt(
   registry: RegistryContract, request: BlueprintPlannerRequest, variant: number,
   assertBudget: () => void, update: (phase: BlueprintPlannerPhase, message: string) => void,
   options: PlannerSearchOptions, reportEvaluations: (count: number) => void,
+  routing?: PlannerRoutingBackend,
 ): Promise<PlannerCandidate> {
   let readEvaluations = () => 0;
   const checkBudget = () => { reportEvaluations(readEvaluations()); assertBudget(); };
@@ -419,7 +422,7 @@ async function createPlannerAttempt(
           minimumX: network.nodes.some(node => node.purpose === "bus") ? 4 : 0,
           minimumY: network.nodes.some(node => node.purpose === "bus") && request.options.warehouseBus === "free" ? 4 : 0,
           maximumX: outline.width - 1, maximumY: outline.height - 1, escapeLength: 0, history,
-        });
+        }, routing);
       if (retry === 0 && experiments.includes("constrained-routing")) {
         const freedom = wires.map(wire => candidateRouter.estimateEndpointFreedom(wire.source, wire.target));
         order.sort((a, b) => freedom[a]! - freedom[b]! || lengths[a]! - lengths[b]!);

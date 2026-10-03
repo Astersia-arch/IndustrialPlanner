@@ -6,6 +6,7 @@ import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
 import { DialogShell } from "./shared/dialog-shell";
 import { PlannerTaskFlow } from "./production-planning";
+import { plannerAreaTicks, plannerProposalRate, samplePlannerProposalRate } from "./blueprint-planner-statistics";
 import styles from "./blueprint-planner-dialog.module.scss";
 
 const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "evaluationsPerRound" | "concurrency">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
@@ -18,7 +19,9 @@ const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "eva
 ];
 
 function AreaCurve({ points, proposals, label }: { points: readonly BlueprintPlannerAreaPoint[]; proposals: number; label: string }) {
-  const width = 600, height = 160, left = 46, right = 588, top = 12, bottom = 132;
+  const width = 600, left = 46, right = 588, top = 12, bottom = 132;
+  const ticks = plannerAreaTicks(points, proposals, left, right);
+  const height = bottom + 28;
   const maxX = Math.max(1, proposals);
   const minArea = Math.min(...points.map(point => point.bestArea));
   const maxArea = Math.max(...points.map(point => point.bestArea));
@@ -34,18 +37,28 @@ function AreaCurve({ points, proposals, label }: { points: readonly BlueprintPla
   path.push(`H ${x(maxX)}`);
   return <figure className={styles.areaCurve}>
     <figcaption>{label}</figcaption>
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}: ${maxX.toLocaleString()}, ${points.at(-1)!.bestArea}`}>
+    <div className={styles.areaPlot}><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}: ${maxX.toLocaleString()}, ${points.at(-1)!.bestArea}`}>
       <path className={styles.areaAxis} d={`M ${left} ${top} V ${bottom} H ${right}`} />
       <path className={styles.areaLine} d={path.join(" ")} />
       {points.map(point => <circle key={`${point.evaluatedProposals}-${point.bestArea}`}
         className={styles.areaPoint} cx={x(point.evaluatedProposals)} cy={y(point.bestArea)} r="3.5">
         <title>{`${point.evaluatedProposals.toLocaleString()} · ${point.bestArea}`}</title>
       </circle>)}
-      <text x={left} y={height - 4} textAnchor="start">0</text>
-      <text x={right} y={height - 4} textAnchor="end">{maxX.toLocaleString()}</text>
+      {/* AI-REMOVED 2026-10-03:
+        Reason: 仅首尾刻度不能标注每次面积下降。Trigger: 用户要求 X 轴记录下降时的提案次数。
+        Evidence: 原图仅绘制 0 与累计总数。Replacement: 下方 ticks，密集标签错行。
+        Risk: 下降点密集时图表增高。Human Review: Required
+        Original code:
+        <text x={left} y={height - 4} textAnchor="start">0</text>
+        <text x={right} y={height - 4} textAnchor="end">{maxX.toLocaleString()}</text>
+      */}
+      {ticks.map(tick => <g key={tick.value}>
+        <path className={styles.areaTick} d={`M ${tick.x} ${bottom} V ${bottom + 5}`} />
+        <text x={tick.labelX} y={bottom + 18} textAnchor="start">{tick.label}</text>
+      </g>)}
       <text x={left - 5} y={y(maxArea) + 4} textAnchor="end">{maxArea}</text>
       {minArea !== maxArea ? <text x={left - 5} y={y(minArea) + 4} textAnchor="end">{minArea}</text> : null}
-    </svg>
+    </svg></div>
   </figure>;
 }
 
@@ -56,14 +69,25 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const [, refresh] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [fileBusy, setFileBusy] = useState(false);
+  const [recentRate, setRecentRate] = useState<ReturnType<typeof samplePlannerProposalRate>>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const selectedId = controller.viewTaskId;
   useEffect(() => {
     if (!controller.dialogState.visible) return;
-    const interval = setInterval(() => refresh(value => value + 1), 500);
+    const interval = setInterval(() => {
+      const current = selectedId === null ? null : planner?.queries.getTask(selectedId) ?? null;
+      setRecentRate(previous => samplePlannerProposalRate(previous, current));
+      refresh(value => value + 1);
+    }, 500);
     return () => clearInterval(interval);
-  }, [controller.dialogState.visible]);
+  }, [controller.dialogState.visible, planner, selectedId]);
   const revision = planner?.state.revision ?? 0;
-  const selectedId = controller.viewTaskId;
+  // AI-REMOVED 2026-10-03:
+  // Reason: 采样定时器必须跟随选中任务重建。Trigger: 新增提案速度。
+  // Evidence: effect 需要 selectedId 作为依赖。Replacement: 上方 effect 前的同名声明。
+  // Risk: Low。Human Review: Required
+  // Original code:
+  // const selectedId = controller.viewTaskId;
   const progress = selectedId === null ? null : planner?.queries.getTask(selectedId) ?? null;
   const result = useMemo(() => {
     void revision;
@@ -80,8 +104,15 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const plan = controller.plan;
   const validRoundSettings = Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 10_000
     && controller.options.evaluationsPerRound % 10_000 === 0;
-  const validConcurrency = Number.isSafeInteger(controller.options.concurrency) && controller.options.concurrency! >= 1
-    && controller.options.concurrency! <= 32;
+  // AI-REMOVED 2026-10-03:
+  // Reason: 界面不再输入数字，校验与核心数告警由自动调度替代。
+  // Trigger: 用户授权自动 CPU 并发。Evidence: Host 按吞吐和响应调节。
+  // Replacement: 下方只读自动状态。Risk: Low。Human Review: Required
+  // Original code:
+  //   const validConcurrency = Number.isSafeInteger(controller.options.concurrency) && controller.options.concurrency! >= 1
+  //     && controller.options.concurrency! <= 32;
+  //   const hardwareConcurrency = typeof navigator === "undefined" ? undefined : navigator.hardwareConcurrency;
+  //   const warnConcurrency = shouldWarnPlannerConcurrency(controller.options.concurrency ?? 1, hardwareConcurrency);
   const act = (action: () => void | Promise<void>) => {
     setError(null);
     try { void Promise.resolve(action()).catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); }
@@ -112,6 +143,8 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
   const elapsed = Math.floor((progress?.elapsedMs ?? 0) / 1000);
+  const rate = progress?.status !== "running" ? 0 : recentRate?.taskId === progress.taskId
+    && recentRate.roundStart === progress.evaluatedProposals - progress.roundEvaluatedProposals ? recentRate.rate : null;
   const statusLabel = (status: string) => t(status === "running" ? "eda.running" : status === "saving" ? "eda.saving"
     : status === "failed" || status === "save-failed" ? "eda.failed" : status === "completed" ? "eda.saved" : "eda.paused");
   return <DialogShell dialogKey="blueprint-planner" dialogState={controller.dialogState}
@@ -180,9 +213,32 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               */}
               <label><span>{t("eda.evaluationsPerRound")}</span><input type="number" min="1" step="1" value={controller.options.evaluationsPerRound / 10_000}
                 onChange={event => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) * 10_000 })} /></label>
+              {/* AI-REMOVED 2026-10-03:
+                Reason: 并发数不再由用户手填。Trigger: 用户确认自动并发。
+                Evidence: Planner 自动调度与 activeWorkerCount 契约。
+                Replacement: 下方自动状态输出。Risk: Low。Human Review: Required
+                Original code:
               <label><span>{t("eda.concurrency")}</span><input type="number" min="1" max="32" step="1"
                 value={controller.options.concurrency ?? 1}
-                onChange={event => controller.updateOptions({ concurrency: Number(event.target.value) })} /></label>
+                aria-describedby={warnConcurrency ? "eda-concurrency-warning" : undefined}
+                onChange={event => controller.updateOptions({ concurrency: Number(event.target.value) })} />
+                {warnConcurrency ? <span id="eda-concurrency-warning" role="status" className={styles.error}>
+                  {t("eda.concurrencyWarning").replace("{cores}", String(hardwareConcurrency))}
+                </span> : null}</label>
+              */}
+              {/* AI-REMOVED 2026-10-03:
+                Reason: 只读并发数不能切换单 Worker，而且搜索与验证交替会显示 0/1。
+                Trigger: 用户要求 CPU+GPU 复选框。Evidence: Windows 真机决策记录。
+                Replacement: 下方复选框。Risk: Low。Human Review: Required
+                Original code:
+              <label><span>{t("eda.concurrency")}</span><output>
+                {progress?.status === "running" ? t("eda.activeConcurrency").replace("{count}", String(progress.activeWorkerCount ?? 0))
+                  : t("eda.autoConcurrency")}
+              </output></label>
+              */}
+              <label className={styles.parallel}><input type="checkbox" checked={controller.options.concurrency === "auto"}
+                onChange={event => controller.updateOptions({ concurrency: event.target.checked ? "auto" : 1 })} />
+                <span>{t("eda.concurrency")}</span></label>
             </fieldset>
             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
           </> : null}
@@ -195,8 +251,10 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
             </div>
             {busy ? <progress aria-label={t("eda.progress")} max={1} value={progress.estimatedProgress ?? undefined} /> : null}
             <div className={styles.statistics}>
-              <span>{t("eda.roundProposals")} <strong>{progress.roundEvaluatedProposals.toLocaleString()} / {planner?.queries.getLastRequest(progress.taskId)?.options.evaluationsPerRound.toLocaleString()}</strong></span>
-              <span>{t("eda.totalProposals")} <strong>{progress.evaluatedProposals.toLocaleString()}</strong></span>
+              <span>{t("eda.roundProposals")} <strong>{progress.roundEvaluatedProposals.toLocaleString()} / {planner?.queries.getLastRequest(progress.taskId)?.options.evaluationsPerRound.toLocaleString()}</strong>{" "}
+                <span className={styles.proposalRate} title={t("eda.recentRate")}>({rate === null ? "—" : rate.toLocaleString()} {t("eda.proposalsPerSecond")})</span></span>
+              <span>{t("eda.totalProposals")} <strong>{progress.evaluatedProposals.toLocaleString()}</strong>{" "}
+                <span className={styles.proposalRate} title={t("eda.averageRate")}>({plannerProposalRate(progress.evaluatedProposals, progress.elapsedMs).toLocaleString()} {t("eda.proposalsPerSecond")})</span></span>
             </div>
             <p>{progress.message}</p>
             {progress.areaHistory?.length ? <AreaCurve points={progress.areaHistory}
@@ -207,7 +265,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
         </div>
         <footer className={styles.footer}>
           {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
-          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || !validConcurrency || anyBusy}
+          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
             onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
               controller.options.evaluationsPerRound, controller.options.concurrency))}>{t("eda.continue")}</button> : null}
           {result !== null ? <>
@@ -229,7 +287,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
           </> : null}
           {progress === null && plan !== null ? <button type="button" className={styles.primary}
-            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings || !validConcurrency} onClick={() => act(() => {
+            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings} onClick={() => act(() => {
               if (planner) select(planner.actions.start(controller.getRequest()));
             })}>{t("eda.start")}</button> : null}
         </footer>

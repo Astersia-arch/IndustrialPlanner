@@ -54,6 +54,18 @@ it("拒绝不兼容版本、错误计数与无效选项，不能降级为从头�
   expect(() => parsePlannerTaskFile({ ...file, request: { ...file.request, options: { ...file.request.options, solidSupply: "invalid" } } }, registry)).toThrow("规划选项");
 });
 
+it("自动任务可以跨机器恢复，活动 Worker 数不会随文件恢复", () => {
+  const registry = createRegistryContract(), file = taskFile();
+  const input = { ...file, request: { ...file.request, options: { ...file.request.options, concurrency: "auto" as const } },
+    progress: { ...file.progress, activeWorkerCount: 3 } };
+  const restored = parsePlannerTaskFile(JSON.parse(JSON.stringify(input)), registry);
+  expect(restored.request.options.concurrency).toBe("auto");
+  expect(restored.progress.activeWorkerCount).toBe(0);
+  expect(restored.checkpoint).toEqual(file.checkpoint);
+  expect(input.progress.activeWorkerCount).toBe(3);
+  expect(() => parsePlannerTaskFile({ ...input, progress: { ...input.progress, activeWorkerCount: -1 } }, registry)).toThrow("并行状态无效");
+});
+
 it("真实 Worker 与仿真 Host 支持多任务导入、续算检查点与删除隔离", async () => {
   const session = new PlannerBatchSession();
   const host = createBlueprintPlannerHost(session.workspace, { storage: null, roundLimit: () => 10,

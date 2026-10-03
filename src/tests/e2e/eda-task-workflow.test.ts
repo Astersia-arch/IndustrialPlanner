@@ -36,6 +36,18 @@ for (const profile of profiles) {
     } }));
     const scenario = `async page => {
       const assert = (condition, message) => { if (!condition) throw Error(message); };
+      if (${JSON.stringify(profile.name)} === 'desktop') await page.addInitScript(() => {
+        const nativeMatchMedia = window.matchMedia.bind(window);
+        window.matchMedia = query => {
+          const result = nativeMatchMedia(query);
+          if (query !== '(pointer: coarse)' && query !== '(hover: none)') return result;
+          return new Proxy(result, {get(target, property) {
+            if (property === 'matches') return false;
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          }});
+        };
+      });
       await page.goto(${JSON.stringify(baseURL ?? "http://127.0.0.1:4174")});
       await page.waitForFunction(() => window.__industrialPlannerAppHost?.workspace.blueprintPlanner != null);
       await page.evaluate(() => {
@@ -58,8 +70,29 @@ for (const profile of profiles) {
       const dialog = page.getByRole('dialog').filter({has:page.locator('#blueprint-planner-title')});
       const proposals = dialog.getByRole('spinbutton',{name:'提案次数（万次）'});
       assert(await proposals.inputValue() === '50', '默认必须为五十万次');
-      assert(await dialog.getByRole('spinbutton',{name:'并发计算数'}).inputValue() === '1', '默认并发数必须为 1');
-      assert(await dialog.getByRole('spinbutton').count() === 2, '任务参数必须提供提案预算和并发数');
+      // AI-REMOVED 2026-10-03:
+      // Reason: 用户要求 CPU 并发自动调节，界面不再提供数字输入。
+      // Trigger: 已授权的自动并发界面变更。
+      // Evidence: 三种 Screen Profile 开发验证通过，旧偏好切换为 auto。
+      // Replacement: 下方自动状态与单一预算输入断言。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // assert(await dialog.getByRole('spinbutton',{name:'并发计算数'}).inputValue() === '1', '默认并发数必须为 1');
+      // assert(await dialog.getByRole('spinbutton').count() === 2, '任务参数必须提供提案预算和并发数');
+      // AI-REMOVED 2026-10-03:
+      // Reason: 用户要求把只读自动状态改成 CPU+GPU 并行计算复选框。
+      // Trigger: 已通过 Windows 三种 Screen Profile 的开关、续算和恢复验证。
+      // Evidence: eda-hybrid-20261003 浏览器证据。Replacement: 下方真实复选框操作。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // assert(await dialog.locator('output').textContent() === '自动', '默认自动调节并发');
+      const parallel = dialog.getByRole('checkbox', {name:'CPU+GPU 并行计算'});
+      assert(await parallel.isChecked(), '默认启用自动混合调度');
+      await parallel.uncheck();
+      assert(await page.evaluate(() => window.__industrialPlannerAppHost.blueprintPlannerDialog.options.concurrency) === 1,
+        '关闭并行固定单 Worker');
+      await parallel.check();
+      assert(await dialog.getByRole('spinbutton').count() === 1, '任务参数只允许手填提案预算');
       for (const [label, value] of [['固体外部供给','warehouse'],['流体外部供给','conduit'],
         ['存取线形态','straight'],['固体成品去向','auto'],['副产物处理','destroy'],['植物循环启动','preload']]) {
         assert(await dialog.getByRole('combobox',{name:label}).inputValue() === value, '默认选项 '+label);
@@ -67,7 +100,12 @@ for (const profile of profiles) {
       await proposals.fill('0');
       assert(await dialog.getByRole('button',{name:'开始规划',exact:true}).isDisabled(), '不能低于一万次');
       await proposals.fill('2');
-      await dialog.getByRole('spinbutton',{name:'并发计算数'}).fill('2');
+      // AI-REMOVED 2026-10-03:
+      // Reason: 并发输入已移除。Trigger: 用户授权自动调节 CPU 并发。
+      // Evidence: 界面只保留提案预算输入。Replacement: Host 自动调度。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // await dialog.getByRole('spinbutton',{name:'并发计算数'}).fill('2');
       await dialog.getByRole('combobox',{name:'固体外部供给'}).selectOption('warehouse');
       await dialog.getByRole('combobox',{name:'流体外部供给'}).selectOption('conduit');
       await dialog.getByRole('combobox',{name:'固体成品去向'}).selectOption('stash');
@@ -79,11 +117,25 @@ for (const profile of profiles) {
       await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.state.activeTaskId === null, null, {timeout:60000});
       const progress = await page.evaluate(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.queries.getTask());
       assert(progress.evaluatedProposals === 20000 && progress.roundEvaluatedProposals === 20000, '按真实提案计数完成一轮');
+      assert(progress.activeWorkerCount === 0, '结束后活动并发必须归零');
+      assert(await page.evaluate(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.queries.getLastRequest().options.concurrency) === 'auto', '浏览器请求必须使用自动并发');
       const checkpoint = await page.evaluate(() => {
         const h=window.__industrialPlannerAppHost;
         return h.workspace.blueprintPlanner.queries.exportTask(h.blueprintPlannerDialog.viewTaskId).checkpoint;
       });
-      assert(checkpoint.parallel.count === 2 && checkpoint.parallel.shards.every(shard => shard.attempts > 0), '两个分片均须完成搜索');
+      // AI-REMOVED 2026-10-03:
+      // Reason: 并发 Worker 数不再等于虚拟分片总数，单批预算也不保证所有 Worker 领取任务。
+      // Trigger: E2E 在固定 32 分片的当前实现下错误断言总数为 2。
+      // Evidence: prepareParallel 固定 32 分片；架构文档允许预算不足时实际并行数低于设置值。
+      // Replacement: 下方验证固定分片、实际搜索与尝试数守恒。
+      // Risk: Low
+      // Human Review: Required
+      //
+      // Original code:
+      // assert(checkpoint.parallel.count === 2 && checkpoint.parallel.shards.every(shard => shard.attempts > 0), '两个分片均须完成搜索');
+      assert(checkpoint.parallel.count === 32 && checkpoint.parallel.shards.some(shard => shard.attempts > 0)
+        && checkpoint.parallel.shards.reduce((total, shard) => total + shard.attempts, 0) === checkpoint.attempt,
+      '固定虚拟分片必须记录实际搜索且总尝试数一致');
       assert(progress.areaHistory.length > 0, '已验证面积曲线必须记录下降点');
       assert(await dialog.getByRole('img',{name:/提案次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
       const before = await page.evaluate(() => {
@@ -129,6 +181,14 @@ for (const profile of profiles) {
         return h.workspace.blueprintPlanner.queries.getTask(h.blueprintPlannerDialog.viewTaskId);
       });
       assert(restoredProgress.areaHistory.length === progress.areaHistory.length, '刷新保留面积曲线');
+      await parallel.uncheck();
+      await proposals.fill('1');
+      await dialog.getByRole('button',{name:'继续规划',exact:true}).click();
+      await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.state.activeTaskId === null, null, {timeout:60000});
+      const continued = await page.evaluate(() => {const h=window.__industrialPlannerAppHost, p=h.workspace.blueprintPlanner;
+        return {request:p.queries.getLastRequest(h.blueprintPlannerDialog.viewTaskId),progress:p.queries.getTask(h.blueprintPlannerDialog.viewTaskId)};});
+      assert(continued.request.options.concurrency === 1, '续算保留关闭并行的选择');
+      assert(continued.progress.evaluatedProposals === progress.evaluatedProposals + 10000, '切换执行模式不丢累计预算');
       await page.screenshot({path:${JSON.stringify(resolve(output, "history.png"))}});
       return {passed:true, savedBlueprintId:before.blueprint.blueprintId, screen, snapshot:await page.locator('body').ariaSnapshot()};
     }`;

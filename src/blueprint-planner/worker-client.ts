@@ -12,6 +12,8 @@ export class PlannerWorkerClient {
   private pending: ((error: Error) => void) | null = null;
   private disposed = false;
 
+  constructor(private readonly allowGpu = false) {}
+
   build(request: BlueprintPlannerRequest, variant: number, budgetMs: number | null, evaluationsPerRound: number, signal: AbortSignal,
     update: (phase: BlueprintPlannerPhase, message: string, evaluations: number) => void, seed?: PlannerSearchSeed, continuationStep?: number,
     maximumArea?: number, targetOutline?: { readonly width: number; readonly height: number }): Promise<PlannerCandidate> {
@@ -54,7 +56,7 @@ export class PlannerWorkerClient {
       worker.addEventListener("messageerror", messageFault);
       signal.addEventListener("abort", abort, { once: true });
       const timer = budgetMs === null ? undefined : setTimeout(() => fail(new PlanningBudgetExhausted("布局达到时间预算"), true), Math.max(1, budgetMs) + 1000);
-      try { worker.postMessage({ id, request, variant, budgetMs,
+      try { worker.postMessage({ id, request, variant, budgetMs, gpu: this.allowGpu && request.options.concurrency === "auto",
         search: { maxEvaluations: evaluationsPerRound, seed, continuationStep, maximumArea, targetOutline } } satisfies PlannerWorkerRequest); }
       catch (error) { fail(error instanceof Error ? error : new Error(String(error)), true); }
     });

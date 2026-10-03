@@ -19,6 +19,8 @@ import { breadthOutlineKey, breadthOutlines, fixedOutlineMinimum, selectBreadthO
 import { createProductionNetwork } from "./production-network";
 import { emptyPlannerCheckpoint, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint, type PlannerParallelCheckpoint, type PlannerShardCheckpoint } from "./task-checkpoint";
 import { plannerRequestKey } from "./search-seed";
+import { browserPlannerResources, observePlannerPressure, plannerConcurrencyLimit, PlannerAutomaticConcurrency,
+  type PlannerResourceHints, type PlannerConcurrencySample } from "./automatic-concurrency";
 
 interface PlannerTask {
   file: BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
@@ -39,6 +41,7 @@ export interface BlueprintPlannerHost extends BlueprintPlannerContract { dispose
 
 /** 浏览器与无头客户端只替换 IO，任务状态机、检查点与验收共用。 */
 export interface PlannerHostOptions {
+  readonly resourceHints?: PlannerResourceHints;
   readonly worker?: Pick<PlannerWorkerClient, "build" | "dispose">;
   readonly workerFactory?: () => Pick<PlannerWorkerClient, "build" | "dispose">;
   readonly storage?: typeof edaTaskStorage | null;
@@ -64,7 +67,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const workerFor = (index: number) => {
     const existing = workers.get(index);
     if (existing) return existing;
-    const created = workers.size === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient();
+    const created = workers.size === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient(index === 1);
     workers.set(index, created);
     return created;
   };
@@ -72,18 +75,41 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   let disposed = false, loaded = storage === null;
   let latestId: string | undefined;
   let writes: Promise<void> = Promise.resolve();
+  const pendingWrites = new Set<PlannerTask>();
+  let writing = false;
   const notify = () => runInAction(() => { state.revision++; });
   const elapsed = (task: PlannerTask) => task.file.progress.elapsedMs + (task.resumedAt === null ? 0 : performance.now() - task.resumedAt);
   // 只保存已完成的搜索阶段；运行中的计数没有可恢复的退火状态，刷新后必须从安全边界重做。
   const snapshot = (task: PlannerTask): BlueprintPlannerTaskFile => structuredClone({ ...task.file,
     progress: { ...task.file.progress, elapsedMs: elapsed(task), evaluatedProposals: task.file.checkpoint.evaluations,
       candidateCount: task.file.checkpoint.attempt,
-      roundEvaluatedProposals: Math.max(0, task.file.checkpoint.evaluations - task.roundStartedEvaluations) },
+      roundEvaluatedProposals: Math.max(0, task.file.checkpoint.evaluations - task.roundStartedEvaluations), activeWorkerCount: 0 },
     checkpoint: { ...task.file.checkpoint, portfolio: task.portfolio.snapshot() } });
   const persist = (task: PlannerTask) => {
     if (storage === null) return;
-    const file = snapshot(task);
-    writes = writes.then(() => storage.save(file)).catch(error => reportStorageFailure("eda-task", error));
+    // AI-REMOVED 2026-10-03:
+    // Reason: 写入较慢时，Promise 链会无限保留每个批次的完整 32 分片快照。
+    // Trigger: 用户报告 12 和 8 并发快速 OOM。
+    // Evidence: checkpoint-memory.test.ts 阻塞首次写入后，32 个真实 Worker 批次仍逐次深拷贝任务。
+    // Replacement: 下方待写任务集合与单写入循环；取出任务时才复制最新已提交状态。
+    // Risk: 中间检查点合并；最终结算仍等待全部待写任务。Human Review: Required
+    // Original code:
+    // const file = snapshot(task);
+    // writes = writes.then(() => storage.save(file)).catch(error => reportStorageFailure("eda-task", error));
+    pendingWrites.add(task);
+    if (writing) return;
+    writing = true;
+    writes = Promise.resolve().then(async () => {
+      try {
+        while (pendingWrites.size > 0) {
+          const next = pendingWrites.values().next().value!;
+          pendingWrites.delete(next);
+          // 等待期间只保留任务引用；写入中的独立快照不会随继续搜索而变化。
+          try { await storage.save(snapshot(next)); }
+          catch (error) { reportStorageFailure("eda-task", error); }
+        }
+      } finally { writing = false; }
+    });
   };
   const publish = (task: PlannerTask, patch: Partial<BlueprintPlannerProgress>) => {
     const spent = elapsed(task);
@@ -118,7 +144,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       resumedAt: null, roundStartedEvaluations: parsed.checkpoint.evaluations - parsed.progress.roundEvaluatedProposals, remaining: 0, running: null };
   };
   const settle = async (task: PlannerTask) => {
-    publish(task, { estimatedProgress: null });
+    publish(task, { estimatedProgress: null, activeWorkerCount: 0 });
     task.resumedAt = null;
     persist(task);
     await writes;
@@ -139,7 +165,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
 
   };
 
-  const prepareParallel = (task: PlannerTask, concurrency: number): PlannerParallelCheckpoint => {
+  const prepareParallel = (task: PlannerTask, concurrency: number | "auto"): PlannerParallelCheckpoint => {
     const point = task.file.checkpoint;
     const requested = options.shardSelection;
     // AI-REMOVED 2026-10-02:
@@ -151,7 +177,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     // Original code:
     // const count = requested?.count ?? Math.max(point.parallel?.count ?? 0, concurrency);
     const count = requested?.count ?? 32;
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+    if (concurrency !== "auto" && (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32)) {
       throw new Error("并发计算数必须介于 1 到 32。");
     }
     if (!Number.isSafeInteger(count) || count < 1 || count > 32
@@ -222,7 +248,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       portfolio.restore(shard.portfolio);
       task.portfolios.set(shard.index, portfolio);
     }
-    const workerCount = Math.min(concurrency, ownedShards.length);
+    const workerCount = Math.min(concurrency === "auto" ? 1 : concurrency, ownedShards.length);
     for (const [index, current] of workers) if (index >= workerCount) {
       current.dispose();
       workers.delete(index);
@@ -237,11 +263,16 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     let lastFailure = "尚未找到通过验证的布局";
     let interruption: unknown = null;
     let verificationTail: Promise<void> = Promise.resolve();
+    let pendingVerifications = 0;
+    const verifying = new Set<number>();
+    let wake: (() => void) | null = null;
+    let stopMonitoring = () => {};
+    const active = new Map<number, Promise<void>>();
     const live = (phase?: BlueprintPlannerProgress["phase"], message?: string) => {
       const inFlight = [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0);
       const total = point.evaluations + inFlight;
       const round = total - task.roundStartedEvaluations;
-      publish(task, { evaluatedProposals: total, roundEvaluatedProposals: round,
+      publish(task, { evaluatedProposals: total, roundEvaluatedProposals: round, activeWorkerCount: task.activeShards.size,
         candidateCount: point.attempt + task.activeShards.size,
         estimatedProgress: Math.min(1, round / task.file.request.options.evaluationsPerRound),
         ...(phase ? { phase } : {}), ...(message ? { message } : {}) });
@@ -287,7 +318,12 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       persist(task);
     };
     const queueVerification = (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
-      const pending = verificationTail.then(() => verify(shard, portfolio));
+      pendingVerifications++;
+      verifying.add(shard.index);
+      const pending = verificationTail.then(() => verify(shard, portfolio)).catch(error => {
+        if (interruption === null) interruption = error;
+        task.abort.abort();
+      }).finally(() => { pendingVerifications--; verifying.delete(shard.index); wake?.(); });
       verificationTail = pending.catch(() => undefined);
       return pending;
     };
@@ -413,18 +449,54 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           // AI-CORRECTION 2026-10-02: 广度轮换可能遇到多个固定设施无法容纳的盒子，按整轮计数。
           if (zeroAttempts >= 64) throw new Error("连续零提案搜索，任务已停止。");
         }
-        if (shard.pendingCandidate !== null) await queueVerification(shard, portfolio);
+        // AI-REMOVED 2026-10-03:
+        // Reason: 已结束计算的 Worker 不应占着通道等待串行仿真。
+        // Trigger: 自动并发 0/1 抖动。Evidence: Windows 验证队列积压时所有通道空闲。
+        // Replacement: verifying 分片集合与 claim 背压，末尾统一等待 verificationTail。
+        // Risk: 取消必须同时结算验证与搜索。Human Review: Required
+        // Original code:
+        // if (shard.pendingCandidate !== null) await queueVerification(shard, portfolio);
+        if (shard.pendingCandidate !== null) void queueVerification(shard, portfolio);
         await new Promise<void>(resolve => setTimeout(resolve, 0));
         break;
       }
       return quota - remaining;
     };
     try {
-      const workerCount = Math.min(owned.length, task.file.request.options.concurrency ?? 1);
+      const concurrency = task.file.request.options.concurrency ?? 1;
+      const maximum = Math.min(owned.length, concurrency === "auto"
+        ? plannerConcurrencyLimit(options.resourceHints ?? browserPlannerResources()) : concurrency);
+      const controller = concurrency === "auto" ? new PlannerAutomaticConcurrency(maximum, performance.now(), point.evaluations) : null;
+      let target = controller?.target ?? maximum;
+      // AI-REMOVED 2026-10-03: wake 移至验证队列同级，允许验证完成唤醒派发。
+      // Trigger: 验证与搜索解耦。Evidence: queueVerification.finally。Replacement: run 局部 wake。
+      // Risk: Low。Human Review: Required
+      // let wake: (() => void) | null = null;
+      const retire = () => {
+        for (const [index, current] of workers) if (index >= target && !active.has(index)) {
+          current.dispose(); workers.delete(index);
+        }
+      };
+      if (controller) {
+        let expected = performance.now() + 1000;
+        let pressure: PlannerConcurrencySample["pressure"];
+        const stopPressure = observePlannerPressure(value => { pressure = value; });
+        const timer = setInterval(() => {
+          const at = performance.now();
+          const lagMs = typeof document !== "undefined" && document.visibilityState !== "visible" ? 0 : Math.max(0, at - expected);
+          expected = at + 1000;
+          target = controller.observe({ at, lagMs, pressure, pendingVerifications, activeWorkers: task.activeShards.size,
+            evaluations: point.evaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0) });
+          retire(); wake?.();
+        }, 1000);
+        stopMonitoring = () => { clearInterval(timer); stopPressure(); };
+      }
       const claim = () => {
+        // 队列有界，背压只暂停新批次；不把串行验收误报为整机 CPU 满载。
+        if (pendingVerifications >= Math.max(2, target)) return null;
         for (let step = 0; step < parallel.count; step++) {
           const index = (parallel.nextShard + step) % parallel.count;
-          if (!owned.includes(index) || leased.has(index)) continue;
+          if (!owned.includes(index) || leased.has(index) || verifying.has(index)) continue;
           const shard = parallel.shards[index]!;
           if (available <= 0 && shard.pendingCandidate === null) continue;
           const quota = shard.pendingCandidate !== null ? 0 : Math.min(available, point.best ? 5_000 : 20_000);
@@ -435,28 +507,60 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         }
         return null;
       };
-      const outcomes = await Promise.allSettled(Array.from({ length: workerCount }, (_, workerIndex) => (async () => {
-        // AI-REMOVED 2026-10-02:
-        // Reason: 固定分片循环会阻止空闲 Worker 领取其他尺寸批次。
-        // Trigger: 用户要求多 Worker 在长宽比例广度上协同搜索。
-        // Evidence: 原循环把单个 Worker 固定到 owned 的模数子集。
-        // Replacement: claim 按全局剩余提案与空闲虚拟分片动态领取；Risk: 调度顺序改变；Human Review: Required。
-        // Original code:
-        // for (let offset = workerIndex; offset < owned.length; offset += workerCount) {
-        //   await lane(parallel.shards[owned[offset]!]!, quotas[offset]!, laneWorker);
-        // }
-        while (true) {
+      // 同一批预算、分片租约与验证队列由主线程统一管理；缩容只阻止后续领批。
+      while (!task.abort.signal.aborted) {
+        for (let index = 0; index < target; index++) {
+          if (active.has(index)) continue;
           const job = claim();
           if (job === null) break;
-          try {
-            const used = await lane(job.shard, job.quota, workerFor(workerIndex));
+          const running = lane(job.shard, job.quota, workerFor(index)).then(used => {
             // 2026-10-02：await 期间其他 Worker 会领取额度；必须在 await 返回后读取最新 available。
             available += job.quota - used;
-          }
-          finally { leased.delete(job.shard.index); }
+          }).catch(error => {
+            if (interruption === null) interruption = error;
+            task.abort.abort();
+          }).finally(() => {
+            leased.delete(job.shard.index); active.delete(index); retire(); wake?.();
+          });
+          active.set(index, running);
         }
-      })().catch(error => { if (interruption === null) interruption = error; task.abort.abort(); throw error; })));
-      void outcomes;
+        if (active.size === 0 && pendingVerifications === 0) break;
+        await new Promise<void>(resolve => { wake = resolve; });
+        wake = null;
+      }
+      await Promise.allSettled(active.values());
+      await verificationTail;
+      target = 1; retire();
+      // AI-REMOVED 2026-10-03:
+      // Reason: 固定 Promise 池无法在本轮运行中增减执行容量，也不能重新唤醒提前退出的空闲通道。
+      // Trigger: 用户授权自动 CPU 并发。
+      // Evidence: 原 workerCount 只在启动时读取，退出的循环不会在其他批次退还额度时恢复。
+      // Replacement: 上方动态派发循环，复用 claim、lane 和分片租约。
+      // Risk: 暂停、验证等待和计数守恒须回归验证。
+      // Human Review: Required
+      // Original code:
+      //       const outcomes = await Promise.allSettled(Array.from({ length: workerCount }, (_, workerIndex) => (async () => {
+      //         // AI-REMOVED 2026-10-02:
+      //         // Reason: 固定分片循环会阻止空闲 Worker 领取其他尺寸批次。
+      //         // Trigger: 用户要求多 Worker 在长宽比例广度上协同搜索。
+      //         // Evidence: 原循环把单个 Worker 固定到 owned 的模数子集。
+      //         // Replacement: claim 按全局剩余提案与空闲虚拟分片动态领取；Risk: 调度顺序改变；Human Review: Required。
+      //         // Original code:
+      //         // for (let offset = workerIndex; offset < owned.length; offset += workerCount) {
+      //         //   await lane(parallel.shards[owned[offset]!]!, quotas[offset]!, laneWorker);
+      //         // }
+      //         while (true) {
+      //           const job = claim();
+      //           if (job === null) break;
+      //           try {
+      //             const used = await lane(job.shard, job.quota, workerFor(workerIndex));
+      //             // 2026-10-02：await 期间其他 Worker 会领取额度；必须在 await 返回后读取最新 available。
+      //             available += job.quota - used;
+      //           }
+      //           finally { leased.delete(job.shard.index); }
+      //         }
+      //       })().catch(error => { if (interruption === null) interruption = error; task.abort.abort(); throw error; })));
+      //       void outcomes;
       if (interruption !== null && !(interruption instanceof DOMException && interruption.name === "AbortError")) throw interruption;
       publish(task, { status: idleStatus(), message: task.abort.signal.aborted ? "计算已暂停，可以继续。"
         : point.best ? "本轮计算完成，可以预览、保存蓝图或继续计算。" : `本轮计算结束；${lastFailure}。可以继续计算。` });
@@ -464,7 +568,13 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       publish(task, { status: error instanceof PlanningBudgetExhausted || error instanceof DOMException && error.name === "AbortError"
         ? idleStatus() : "failed", message: error instanceof PlanningBudgetExhausted
         ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
-    } finally { await settle(task); }
+    } finally {
+      stopMonitoring();
+      if (active.size > 0) { task.abort.abort(); await Promise.allSettled(active.values()); }
+      await verificationTail;
+      for (const [index, current] of workers) if (index > 0) { current.dispose(); workers.delete(index); }
+      await settle(task);
+    }
   }
 
   // AI-REMOVED 2026-10-01:
@@ -566,7 +676,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   //           ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
   //     } finally { settle(task); }
   //   }
-  function launch(task: PlannerTask, evaluations: number, concurrency = task.file.request.options.concurrency ?? 1): void {
+  function launch(task: PlannerTask, evaluations: number, concurrency: number | "auto" = task.file.request.options.concurrency ?? 1): void {
     if (state.activeTaskId !== null) throw new Error("已有任务正在计算或保存。");
     // AI-REMOVED 2026-09-30:
     // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
@@ -589,7 +699,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     workspace.simulation.actions.stop();
     latestId = task.file.taskId;
     runInAction(() => { state.activeTaskId = task.file.taskId; });
-    publish(task, { status: "running", message: "正在计算", estimatedProgress: 0,
+    publish(task, { status: "running", message: "正在计算", estimatedProgress: 0, activeWorkerCount: 0,
       evaluatedProposals: task.file.checkpoint.evaluations, roundEvaluatedProposals: 0 });
     persist(task);
     task.running = Promise.resolve().then(() => run(task));

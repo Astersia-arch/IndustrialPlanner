@@ -9,7 +9,7 @@ import { PlannerBatchSession } from "@/scripts/eda/planner-runner";
 import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
 import yazhen from "./fixtures/yazhen-syringe.json";
 
-function originalTask(concurrency = 1): BlueprintPlannerTaskFile {
+function originalTask(concurrency: number | "auto" = 1): BlueprintPlannerTaskFile {
   const request = structuredClone(yazhen.request) as BlueprintPlannerRequest;
   return { formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: "collaboration-origin",
     request: { ...request, options: { ...request.options, concurrency } }, checkpoint: emptyPlannerCheckpoint(),
@@ -58,6 +58,14 @@ it("真实 Node Worker 在分片内执行有界批次，并保存可恢复计数
   expect(point.parallel?.shards.some(shard => shard.attempts > 0)).toBe(true);
   expect(point.evaluations).toBe(40);
   expect(file.progress.evaluatedProposals).toBe(point.evaluations);
+}, 90_000);
+
+it("自动模式通过真实 Worker 运行，导出不携带上次机器的活动并发", async () => {
+  const { file } = await runRange(0, 2, 2, originalTask("auto"));
+  expect(file.request.options.concurrency).toBe("auto");
+  expect(file.progress.activeWorkerCount).toBe(0);
+  expect(file.checkpoint.evaluations).toBe(40);
+  expect(file.checkpoint.parallel?.count).toBe(2);
 }, 90_000);
 
 it("独立分片能从同一旧任务出发并合并，重叠和缺失均拒绝", async () => {

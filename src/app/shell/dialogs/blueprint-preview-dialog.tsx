@@ -25,6 +25,7 @@ import { preventTouchPointerCompatibilityMouseEvents } from "@/app/shell/shared/
 import type { BlueprintPreviewHandle, BlueprintPreviewViewport } from "@/domain/renderer";
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition";
 import { resolveEntityGridGeometry } from "@/shared/geometry/entity-grid-geometry";
+import { createLogger } from "@/shared/logging/logger";
 import {
   createEmptyBlueprintLibraryDirectory,
   type BlueprintLibraryDirectoryListing,
@@ -49,6 +50,7 @@ const DEFAULT_BLUEPRINT_PREVIEW_VIEWPORT: BlueprintPreviewViewport = {
 const BLUEPRINT_PREVIEW_ZOOM_FACTOR = 1.12;
 const MIN_BLUEPRINT_PREVIEW_ZOOM = 0.25;
 const MAX_BLUEPRINT_PREVIEW_ZOOM = 6;
+const previewLogger = createLogger("blueprint-preview");
 
 interface PreviewTouchPointerSnapshot {
   clientX: number;
@@ -551,6 +553,24 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
     let active = true;
     let mountedHandle: BlueprintPreviewHandle | null = null;
     const previewStageSize = resolveBlueprintPreviewStageSize(previewCanvasHost);
+    const startedAt = performance.now();
+    const diagnostics = () => ({
+      blueprintId: record.blueprintId,
+      entityCount: record.entityOrder.length,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      stageSize: resolveBlueprintPreviewStageSize(previewCanvasHost),
+      initialStageSize: previewStageSize,
+      mountedHandle,
+      canvasAttached: previewCanvasHost.querySelector("canvas") !== null,
+      pageVisibility: document.visibilityState,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      plannerTask: appHost.workspace.blueprintPlanner?.queries.getTask() ?? null,
+    });
+    previewLogger.debug("开始初始化预览画布", diagnostics());
+    const slowMountTimer = setTimeout(() => {
+      if (active && mountedHandle === null) previewLogger.warn("预览画布初始化超过 5 秒", diagnostics());
+    }, 5000);
+    let detachContextListeners: (() => void) | null = null;
 
     void renderHost.actions.mountBlueprintPreview({
       blueprint: record,
@@ -569,13 +589,30 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
 
       if (canvas !== null) {
         mountBlueprintPreviewCanvas(previewCanvasHost, canvas);
+        const contextLost = () => previewLogger.error("预览 WebGL 上下文丢失", diagnostics());
+        const contextRestored = () => previewLogger.warn("预览 WebGL 上下文已恢复", diagnostics());
+        canvas.addEventListener("webglcontextlost", contextLost);
+        canvas.addEventListener("webglcontextrestored", contextRestored);
+        detachContextListeners = () => {
+          canvas.removeEventListener("webglcontextlost", contextLost);
+          canvas.removeEventListener("webglcontextrestored", contextRestored);
+        };
+      } else {
+        previewLogger.error("预览初始化返回成功，但未取得画布", diagnostics());
       }
 
       renderHost.actions.updateBlueprintPreviewViewport(handle, previewViewportRef.current);
+      clearTimeout(slowMountTimer);
+      previewLogger.debug("预览画布已挂载", diagnostics());
+    }).catch((error: unknown) => {
+      clearTimeout(slowMountTimer);
+      if (active) previewLogger.error("预览画布初始化失败", { error, ...diagnostics() });
     });
 
     return () => {
       active = false;
+      clearTimeout(slowMountTimer);
+      detachContextListeners?.();
       stopPreviewDrag();
       resetPreviewTouchGestures();
       previewHandleRef.current = null;
@@ -585,7 +622,7 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
         renderHost.actions.disposeBlueprintPreview(mountedHandle);
       }
     };
-  }, [dialogState.visible, record, renderHost]);
+  }, [appHost, dialogState.visible, record, renderHost]);
 
   useEffect(() => {
     const previewCanvasHost = previewCanvasHostRef.current;

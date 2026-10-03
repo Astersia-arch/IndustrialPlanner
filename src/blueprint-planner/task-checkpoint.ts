@@ -169,7 +169,10 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
           || !Number.isSafeInteger(shard.pendingCandidate.search?.evaluations))) throw new Error("分片候选无效。");
       }
     }
-    return { ...file, progress: { ...progress, evaluatedProposals, roundEvaluatedProposals, areaHistory: history } };
+    if (progress.activeWorkerCount !== undefined && (!Number.isSafeInteger(progress.activeWorkerCount)
+      || progress.activeWorkerCount < 0 || progress.activeWorkerCount > 32)) throw new Error("并行状态无效。");
+    return { ...file, progress: { ...progress, evaluatedProposals, roundEvaluatedProposals, areaHistory: history,
+      ...(progress.activeWorkerCount === undefined ? {} : { activeWorkerCount: 0 }) } };
   } catch (error) {
     throw new Error(`无法读取计算任务：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -177,7 +180,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
 
 export function validateTaskRequest(registry: RegistryContract, request: BlueprintPlannerRequest): void {
   const { plan, options } = request;
-  if (options.concurrency !== undefined && (!Number.isSafeInteger(options.concurrency)
+  if (options.concurrency !== undefined && options.concurrency !== "auto" && (!Number.isSafeInteger(options.concurrency)
     || options.concurrency < 1 || options.concurrency > 32)) throw new Error("并发计算数必须介于 1 到 32。");
   if (typeof plan.name !== "string" || typeof plan.sourceBaseId !== "string" || typeof plan.containsModules !== "boolean") throw new Error("产线信息无效。");
   for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {

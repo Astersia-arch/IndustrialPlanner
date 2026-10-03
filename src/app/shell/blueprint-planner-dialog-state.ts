@@ -14,7 +14,7 @@ export class BlueprintPlannerDialogController {
   viewTaskId: string | null = null;
   options: BlueprintPlannerOptions = {
     solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
-    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", evaluationsPerRound: 500_000, concurrency: 1,
+    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", evaluationsPerRound: 500_000, concurrency: "auto",
   };
 
   constructor() {
@@ -40,8 +40,15 @@ export class BlueprintPlannerDialogController {
         && saved.evaluationsPerRound >= 10_000 && saved.evaluationsPerRound % 10_000 === 0) {
         this.options = { ...this.options, evaluationsPerRound: saved.evaluationsPerRound };
       }
-      if (typeof saved.concurrency === "number" && Number.isSafeInteger(saved.concurrency)
-        && saved.concurrency >= 1 && saved.concurrency <= 32) this.options = { ...this.options, concurrency: saved.concurrency };
+      // AI-REMOVED 2026-10-03:
+      // Reason: 浏览器并发统一自动调节，旧手填值不能限制恢复后的自动模式。
+      // Trigger: 用户授权取消手填并发。Evidence: 默认选项及继续规划改用 auto。
+      // Replacement: options.concurrency = "auto"。Risk: Low。Human Review: Required
+      // Original code:
+      // if (typeof saved.concurrency === "number" && Number.isSafeInteger(saved.concurrency)
+      //   && saved.concurrency >= 1 && saved.concurrency <= 32) this.options = { ...this.options, concurrency: saved.concurrency };
+      // AI-CORRECTION 2026-10-03：复选框关闭保存为 1；旧多 Worker 数字仍迁移为自动。
+      if (saved.concurrency === 1) this.options = { ...this.options, concurrency: 1 };
     }
     makeAutoObservable(this, { plan: observable.ref }, { autoBind: true });
   }
@@ -60,7 +67,9 @@ export class BlueprintPlannerDialogController {
   selectTask(taskId: string | null, request?: BlueprintPlannerRequest): void {
     this.viewTaskId = taskId;
     if (taskId === null || !request) this.plan = null;
-    if (request) { this.plan = structuredClone(request.plan); this.options = structuredClone(request.options); }
+    if (request) { this.plan = structuredClone(request.plan); this.options = {
+      ...structuredClone(request.options), concurrency: request.options.concurrency === 1 ? 1 : "auto",
+    }; }
   }
 
   close(): void { this.dialogState.visible = false; }
@@ -69,7 +78,8 @@ export class BlueprintPlannerDialogController {
   setSize(width: number, height: number): void { this.dialogState.width = width; this.dialogState.height = height; }
 
   updateOptions(options: Partial<BlueprintPlannerOptions>): void {
-    this.options = { ...this.options, ...options };
+    this.options = { ...this.options, ...options,
+      concurrency: (options.concurrency ?? this.options.concurrency) === 1 ? 1 : "auto" };
     runStorageEffect("planner-options", () => saveToLocalStorage(OPTIONS_KEY, toJS(this.options)));
   }
 

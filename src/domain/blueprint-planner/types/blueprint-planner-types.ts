@@ -45,7 +45,7 @@ export interface BlueprintPlannerOptions {
   //   readonly budgetMs: number;
 
   readonly evaluationsPerRound: number;
-  readonly concurrency?: number;
+  readonly concurrency?: number | "auto";
 }
 
 export interface BlueprintPlannerRequest {
@@ -76,6 +76,7 @@ export interface BlueprintPlannerAreaPoint {
 }
 
 export interface BlueprintPlannerProgress {
+  readonly activeWorkerCount?: number;
   readonly taskId: string;
   readonly status: BlueprintPlannerTaskStatus;
   readonly phase: BlueprintPlannerPhase;

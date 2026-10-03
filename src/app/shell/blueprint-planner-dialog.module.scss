@@ -4,8 +4,11 @@
 .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; padding: 0; margin: 0; }
 .options label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .options select, .options input { width: 100%; min-height: 34px; box-sizing: border-box; padding: 6px 9px; color: var(--text-0); background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
+.options output { min-height: 34px; box-sizing: border-box; display: flex; align-items: center; color: var(--text-0); }
 .options input:not(:disabled) { background: var(--surface-1); border-color: var(--accent-strong); }
 .options input:disabled, .options select:disabled { opacity: 0.5; }
+.options label.parallel { flex-direction: row; align-items: center; align-self: end; min-height: 34px; gap: 8px; }
+.options .parallel input { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent-strong); }
 .content button { min-height: 34px; padding: 7px 14px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-0); background: var(--surface-2); cursor: pointer; }
 .content button:disabled { opacity: 0.5; cursor: default; }
 .content .primary { color: var(--surface-1); background: var(--accent-strong); border-color: var(--accent-strong); }
@@ -38,8 +41,11 @@
 .compact .footer { gap: 6px; }
 .areaCurve { margin: 16px 0 0; padding: 10px 12px 4px; border: 1px solid var(--line); border-radius: 8px; }
 .areaCurve figcaption { font-size: 12px; color: var(--text-1); }
-.areaCurve svg { display: block; width: 100%; height: 150px; overflow: visible; }
+.areaCurve svg { display: block; width: 100%; min-width: 520px; max-width: 900px; height: auto; overflow: visible; }
 .areaCurve text { fill: var(--text-1); font-size: 11px; }
 .areaAxis { fill: none; stroke: var(--line); stroke-width: 1; }
 .areaLine { fill: none; stroke: var(--accent-strong); stroke-width: 2; stroke-linejoin: round; }
 .areaPoint { fill: var(--accent-strong); }
+.areaPlot { overflow-x: auto; }
+.areaTick { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 2; }
+.proposalRate { display: inline-block; white-space: nowrap; font-variant-numeric: tabular-nums; }
