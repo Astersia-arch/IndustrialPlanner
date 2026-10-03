@@ -22,7 +22,7 @@ interface Connection {
   readonly amounts: Map<string, number>;
 }
 
-export async function wireProductionNetwork(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, checkBudget: () => void = () => {}, compact = false): Promise<PlannerWire[]> {
+export async function wireProductionNetwork(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, checkBudget: () => void = () => {}, compact = false, preferSharedAdmission = true): Promise<PlannerWire[]> {
   const outputs = allocatePorts(registry, network.nodes, "output");
   const inputs = allocatePorts(registry, network.nodes, "input");
   const connections: Connection[] = [];
@@ -102,11 +102,38 @@ export async function wireProductionNetwork(registry: RegistryContract, network:
     }
   }
   const extraConnections: Connection[] = [];
+  const incomingByPort = groupConnections(connections, "target");
+  const inputsByPort = new Map(inputs.map(input => [portKey(input.port), input]));
+  const sharedAdmissions = [...groupConnections(connections, "source").values()].filter(group => {
+    if (!preferSharedAdmission) return false;
+    if (group.length < 2 || group.some(connection => connection.amounts.size !== 1)) return false;
+    const itemId = [...group[0]!.amounts.keys()][0]!;
+    if (group.some(connection => !connection.amounts.has(itemId))) return false;
+    const source = group[0]!.source;
+    const total = group.reduce((sum, connection) => sum + connection.amounts.get(itemId)!, 0);
+    // 管道准入口在游戏中至多配置 60/min；限速窗口必须能精确表达该流量。
+    if (total > Math.min(transportCapacity(source.kind), source.kind === LOGISTICS_KIND.pipe ? 60 : Infinity) + 1e-6
+      || Math.abs(total / 6 - Math.round(total / 6)) > 1e-6) return false;
+    if (group.some(connection => {
+      const target = portKey(connection.target);
+      const input = inputsByPort.get(target);
+      return !input?.consumption || input.amounts.size !== 1 || incomingByPort.get(target)?.length !== 1
+        || input.amounts.get(itemId) === undefined
+        || Math.abs(input.amounts.get(itemId)! - connection.amounts.get(itemId)!) > 1e-6;
+    })) return false;
+    const splitter = findLogisticsDevice(registry, source.kind, "splitter");
+    const branchCount = splitter.portGroups.filter(portGroup => portGroup.direction === "output")
+      .reduce((sum, portGroup) => sum + portGroup.ports.length, 0);
+    return matchesSplitShares(group, total, branchCount);
+  });
+  const sharedTargets = new Set(sharedAdmissions.flatMap(group => group.map(connection => portKey(connection.target))));
   for (const input of inputs) {
     checkBudget();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const exportedRate = [...input.amounts.values()].reduce((sum, rate) => sum + rate, 0);
     if (!input.consumption && (input.node.purpose !== "product" || exportedRate >= transportCapacity(input.port.kind))) continue;
+    // AI-CORRECTION 2026-10-02: 下方原“每个运行消耗通道无条件放准入口”只在没有精确等分的共享上游限速时适用。
+    if (sharedTargets.has(portKey(input.port))) continue;
 // AI-REMOVED 2026-09-16:
 // Reason: 每个运行消耗通道都必须经过准入口，背压不能替代限速。
 // Trigger: 用户要求供料硬约束、紧凑布局和无人值守调参。
@@ -133,6 +160,22 @@ export async function wireProductionNetwork(registry: RegistryContract, network:
     extraConnections.push({ source: outlet, target: input.port, amounts: new Map(input.amounts) });
   }
   connections.push(...extraConnections);
+  for (const group of sharedAdmissions) {
+    const source = group[0]!.source;
+    const [itemId] = group[0]!.amounts.keys();
+    const rate = group.reduce((sum, connection) => sum + connection.amounts.get(itemId!)!, 0);
+    const definition = findLogisticsDevice(registry, source.kind, "admission");
+    const limiter = createPlainNode(registry, definition.id, `eda-shared-limiter-${network.nodes.length}`, "logistics");
+    placement.placeAnywhere(limiter, 0, source.outside);
+    network.nodes.push(limiter);
+    const inlet = getPlannerPorts(registry, limiter.entity, definition, "input", itemId)[0]!;
+    const outlet = getPlannerPorts(registry, limiter.entity, definition, "output", itemId)[0]!;
+    limiter.entity.config[`portGroups[${inlet.groupIndex}].ports[${inlet.portIndex}].admissionRule`] = {
+      itemId, limit: null, perMinuteLimit: rate,
+    };
+    for (const connection of group) connection.source = outlet;
+    connections.push({ source, target: inlet, amounts: new Map([[itemId!, rate]]) });
+  }
 
   const outputGroups = groupConnections(connections, "source");
   for (const group of outputGroups.values()) {
@@ -330,6 +373,16 @@ function isSink(node: PlannerNode): boolean { return node.purpose === "product" 
 function portKey(port: PlannerPort): string { return `${port.entityId}/${port.groupIndex}/${port.portIndex}`; }
 function samePort(left: PlannerPort, right: PlannerPort): boolean { return portKey(left) === portKey(right); }
 function distance(left: PlannerPort, right: PlannerPort): number { return Math.abs(left.cell.x - right.cell.x) + Math.abs(left.cell.y - right.cell.y); }
+
+/** 按即将生成的分流树逐层均分，只有每个末端份额都等于需求时才允许入口共用限速。 */
+function matchesSplitShares(leaves: readonly Connection[], incomingRate: number, branchCount: number): boolean {
+  const rate = (leaf: Connection) => [...leaf.amounts.values()].reduce((sum, amount) => sum + amount, 0);
+  if (leaves.length === 1) return Math.abs(rate(leaves[0]!) - incomingRate) < 1e-6;
+  if (branchCount < 2) return false;
+  const groups = partitionEqualFlows(leaves, rate, branchCount).filter(group => group.length);
+  if (groups.length < 2) return false;
+  return groups.every(group => matchesSplitShares(group, incomingRate / groups.length, branchCount));
+}
 
 function expandSplitTree(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement,
   connections: Connection[], leaves: Connection[], root: PlannerPort, meteringRequired: boolean): void {

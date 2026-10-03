@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -32,6 +33,7 @@ function listJsonFiles(directory: string): string[] {
 }
 
 describe("versioned blueprint fixtures", () => {
+  // 远程文件系统上同步核对完整蓝图目录实测耗时 40–92 秒，仅此用例使用较长上限。
   it("indexes every scene and records fixture revisions", () => {
     expect(manifest.formatVersion).toBe(1);
     expect(manifest.fixtureRevision).toBeGreaterThan(0);
@@ -41,7 +43,7 @@ describe("versioned blueprint fixtures", () => {
     });
     expect(manifest.entries.map((entry) => entry.file).sort()).toEqual(actualFiles.sort());
     expect(new Set(manifest.entries.map((entry) => entry.file)).size).toBe(manifest.entries.length);
-  });
+  }, 120_000);
 
   it.each(manifest.entries)("validates schema, references and registry requirements: $file", (entry) => {
     const raw = JSON.parse(readFileSync(entry.file, "utf8")) as BlueprintDocument;

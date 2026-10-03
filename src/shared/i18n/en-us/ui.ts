@@ -65,6 +65,8 @@ const UI: Record<string, string> = {
     "eda.warehouseStartup": "Depot supply through admission ports",
     "eda.budget": "Search budget (seconds)",
     "eda.evaluationsPerRound": "Proposals (×10,000)",
+    "eda.concurrency": "Concurrent searches",
+    "eda.areaCurve": "Proposals and best verified area",
     "eda.noPlan": "Calculate a production plan first.",
     "eda.openProductionPlanning": "Open production planning",
     "eda.elapsed": "Elapsed",

@@ -9,7 +9,10 @@ import {
   type ProductionPlanningSourceConfig,
 } from "@/app/shell/production-planning/production-planning-model";
 import { buildProductionPlanningTreeRows } from "@/app/shell/production-planning/production-planning-panel";
+import { createBlueprintPlannerPlan } from "@/app/shell/production-planning/blueprint-planner-adapter";
 import { isProductionPlanningDeviceMinimumConsumptionRecipeId } from "@/app/shell/production-planning/production-planning-ledger";
+import { createProductionNetwork } from "@/blueprint-planner/production-network";
+import { materialBalance } from "@/blueprint-planner/terminals";
 import type { ProductionPlanningPort } from "@/app/shell/production-planning/production-planning-model";
 import type { RecipeDefinition } from "@/domain/registry/types/recipe-definition";
 import { createRegistryContract, WIKI_DEFAULT_CRAFT_DEFINITIONS } from "@/registry";
@@ -530,6 +533,127 @@ describe("production planning model", () => {
     expect(cycleNode?.itemId).toBe("item_plant_moss_seed_3");
     expect(cycleNode?.isCycleSource).toBe(true);
     expect(result.unresolvedPerMinute).toBe(0);
+  });
+
+  it("按净外供量配平芽针回流，而不把缺口当成持续外供", () => {
+    const index = buildProductionPlanningIndex(createRegistryContract());
+    const result = computeProductionPlan({
+      targets: [port("item_plant_grass_powder_2", 30)],
+      supplies: [],
+      infiniteItemIds: baseInfiniteItemIds(index),
+      recipeChoices: new Map(),
+      sourceConfig: DEFAULT_SOURCE_CONFIG,
+    }, index);
+    const picker = result.recipeTotals.find((entry) => entry.recipeId === "r_seedcol_grass_seed_2_from_grass_2_basic");
+    const planter = result.recipeTotals.find((entry) => entry.recipeId === "r_hydro_planter_grass_2_from_seed_2_and_water_basic");
+    const grass = result.itemTotals.find((entry) => entry.itemId === "item_plant_grass_2");
+    const seed = result.itemTotals.find((entry) => entry.itemId === "item_plant_grass_seed_2");
+    const feedback = flattenNodes(result.roots).find((entry) => entry.itemId === "item_plant_grass_2" && entry.isCycleSource);
+
+    expect(picker?.cyclesPerMinute).toBe(15);
+    expect(planter?.cyclesPerMinute).toBe(15);
+    expect(planter?.outputs[0]?.perMinute).toBe(30);
+    expect(grass?.producedPerMinute).toBe(grass?.demandPerMinute);
+    expect(seed?.producedPerMinute).toBe(seed?.demandPerMinute);
+    expect(feedback?.supply.cycle).toBe(0);
+    expect(result.unresolvedPerMinute).toBe(0);
+    const rows = buildProductionPlanningTreeRows(result, "device");
+    const pickerRow = rows.find((row) => row.recipeId === picker?.recipeId);
+    const planterRow = rows.find((row) => row.recipeId === planter?.recipeId);
+    expect(rows.some((row) => row.recipeId === "external-supply:item_plant_grass_2")).toBe(false);
+    expect(rows.some((row) => row.isSharedDemandReference && row.sourceRowId === planterRow?.id
+      && row.parentIds.includes(pickerRow?.id ?? ""))).toBe(true);
+  });
+
+  it("优质芽针针剂目标会生成可持续的植物产量和清水需求", () => {
+    const registry = createRegistryContract();
+    const index = buildProductionPlanningIndex(registry);
+    const targets = [port("item_bottled_rec_hp_5", 6)];
+    const supplies = [port("item_copper_nugget", 240)];
+    const result = computeProductionPlan({
+      targets,
+      supplies,
+      infiniteItemIds: baseInfiniteItemIds(index),
+      recipeChoices: new Map(),
+      sourceConfig: DEFAULT_SOURCE_CONFIG,
+    }, index);
+    const picker = result.recipeTotals.find((entry) => entry.recipeId === "r_seedcol_grass_seed_2_from_grass_2_basic");
+    const planter = result.recipeTotals.find((entry) => entry.recipeId === "r_hydro_planter_grass_2_from_seed_2_and_water_basic");
+    const pump = result.recipeTotals.find((entry) => entry.recipeId === "r_pump_water_basic");
+    const grass = result.itemTotals.find((entry) => entry.itemId === "item_plant_grass_2");
+
+    expect(picker?.cyclesPerMinute).toBe(15);
+    expect(planter?.cyclesPerMinute).toBe(15);
+    expect(pump?.outputs[0]?.perMinute).toBe(45);
+    expect(grass?.producedPerMinute).toBe(grass?.demandPerMinute);
+    expect(result.unresolvedPerMinute).toBe(0);
+
+    const plan = createBlueprintPlannerPlan({ result, targets, supplies, infiniteItemIds: new Set(),
+      activeActivityIds: ["activity-limited-formula-2"], sourceBaseId: "wuling_protocol_core", name: "" });
+    const network = createProductionNetwork(registry, { plan, options: {
+      solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight", solidOutput: "auto",
+      byproducts: "destroy", plantStartup: "preload", evaluationsPerRound: 1000,
+    } });
+    const balance = materialBalance(network);
+    expect(balance.get("item_plant_grass_2")).toBe(0);
+    expect(balance.get("item_plant_grass_seed_2")).toBe(0);
+  });
+
+  it("采种增产时为回流和外供计算两台种植机", () => {
+    const index = buildProductionPlanningIndex(createRegistryContract());
+    const result = computeProductionPlan({
+      targets: [port("item_plant_moss_3", 30)],
+      supplies: [],
+      infiniteItemIds: baseInfiniteItemIds(index),
+      recipeChoices: new Map(),
+      sourceConfig: DEFAULT_SOURCE_CONFIG,
+    }, index);
+    const picker = result.recipeTotals.find((entry) => entry.recipeId === "r_seedcol_moss_seed_from_moss_basic");
+    const planter = result.recipeTotals.find((entry) => entry.recipeId === "r_planter_moss_from_moss_seed_basic");
+    const moss = result.itemTotals.find((entry) => entry.itemId === "item_plant_moss_3");
+    const feedback = flattenNodes(result.roots).find((entry) => entry.itemId === "item_plant_moss_3" && entry.isCycleSource);
+
+    expect(picker?.cyclesPerMinute).toBe(30);
+    expect(picker?.deviceCount).toBe(1);
+    expect(planter?.cyclesPerMinute).toBe(60);
+    expect(planter?.deviceCount).toBe(2);
+    expect(moss?.producedPerMinute).toBe(moss?.demandPerMinute);
+    expect(feedback?.supply.cycle).toBe(0);
+  });
+
+  it("采种增产的低流量仍保留回流与外供两条种植支路", () => {
+    const index = buildProductionPlanningIndex(createRegistryContract());
+    const result = computeProductionPlan({
+      targets: [port("item_plant_moss_3", 15)],
+      supplies: [],
+      infiniteItemIds: baseInfiniteItemIds(index),
+      recipeChoices: new Map(),
+      sourceConfig: DEFAULT_SOURCE_CONFIG,
+    }, index);
+    const picker = result.recipeTotals.find((entry) => entry.recipeId === "r_seedcol_moss_seed_from_moss_basic");
+    const planter = result.recipeTotals.find((entry) => entry.recipeId === "r_planter_moss_from_moss_seed_basic");
+
+    expect(picker?.cyclesPerMinute).toBe(15);
+    expect(planter?.cyclesPerMinute).toBe(30);
+    expect(planter?.deviceCount).toBe(2);
+  });
+
+  it("有限种子外供参与植物回流配平", () => {
+    const index = buildProductionPlanningIndex(createRegistryContract());
+    const result = computeProductionPlan({
+      targets: [port("item_plant_grass_2", 15)],
+      supplies: [port("item_plant_grass_seed_2", 3)],
+      infiniteItemIds: baseInfiniteItemIds(index),
+      recipeChoices: new Map(),
+      sourceConfig: DEFAULT_SOURCE_CONFIG,
+    }, index);
+    const picker = result.recipeTotals.find((entry) => entry.recipeId === "r_seedcol_grass_seed_2_from_grass_2_basic");
+    const planter = result.recipeTotals.find((entry) => entry.recipeId === "r_hydro_planter_grass_2_from_seed_2_and_water_basic");
+    const grass = result.itemTotals.find((entry) => entry.itemId === "item_plant_grass_2");
+
+    expect(picker?.cyclesPerMinute).toBe(9);
+    expect(planter?.cyclesPerMinute).toBe(12);
+    expect(grass?.producedPerMinute).toBe(grass?.demandPerMinute);
   });
 
   it("selects the Wiki default copper-gas recipe and cuts its conversion loop as external supply", () => {

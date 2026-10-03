@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
-import type { BlueprintPlannerOptions, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerAreaPoint, BlueprintPlannerOptions, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
@@ -8,7 +8,7 @@ import { DialogShell } from "./shared/dialog-shell";
 import { PlannerTaskFlow } from "./production-planning";
 import styles from "./blueprint-planner-dialog.module.scss";
 
-const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "evaluationsPerRound">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
+const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "evaluationsPerRound" | "concurrency">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
   { key: "solidSupply", label: "eda.solidSupply", choices: [["external", "eda.externalBelt"], ["warehouse", "eda.warehouseSupply"]] },
   { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
   { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["free", "eda.free"]] },
@@ -16,6 +16,38 @@ const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "eva
   { key: "byproducts", label: "eda.byproducts", choices: [["output", "eda.output"], ["destroy", "eda.destroy"]] },
   { key: "plantStartup", label: "eda.plantStartup", choices: [["preload", "eda.preload"], ["warehouse", "eda.warehouseStartup"]] },
 ];
+
+function AreaCurve({ points, proposals, label }: { points: readonly BlueprintPlannerAreaPoint[]; proposals: number; label: string }) {
+  const width = 600, height = 160, left = 46, right = 588, top = 12, bottom = 132;
+  const maxX = Math.max(1, proposals);
+  const minArea = Math.min(...points.map(point => point.bestArea));
+  const maxArea = Math.max(...points.map(point => point.bestArea));
+  const span = Math.max(1, maxArea - minArea);
+  const x = (value: number) => left + value / maxX * (right - left);
+  const y = (value: number) => bottom - ((value - minArea) / span * (bottom - top - 20) + 10);
+  const first = points[0]!;
+  const path = [`M ${x(first.evaluatedProposals)} ${y(first.bestArea)}`];
+  for (let index = 1; index < points.length; index++) {
+    const point = points[index]!;
+    path.push(`H ${x(point.evaluatedProposals)} V ${y(point.bestArea)}`);
+  }
+  path.push(`H ${x(maxX)}`);
+  return <figure className={styles.areaCurve}>
+    <figcaption>{label}</figcaption>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}: ${maxX.toLocaleString()}, ${points.at(-1)!.bestArea}`}>
+      <path className={styles.areaAxis} d={`M ${left} ${top} V ${bottom} H ${right}`} />
+      <path className={styles.areaLine} d={path.join(" ")} />
+      {points.map(point => <circle key={`${point.evaluatedProposals}-${point.bestArea}`}
+        className={styles.areaPoint} cx={x(point.evaluatedProposals)} cy={y(point.bestArea)} r="3.5">
+        <title>{`${point.evaluatedProposals.toLocaleString()} · ${point.bestArea}`}</title>
+      </circle>)}
+      <text x={left} y={height - 4} textAnchor="start">0</text>
+      <text x={right} y={height - 4} textAnchor="end">{maxX.toLocaleString()}</text>
+      <text x={left - 5} y={y(maxArea) + 4} textAnchor="end">{maxArea}</text>
+      {minArea !== maxArea ? <text x={left - 5} y={y(minArea) + 4} textAnchor="end">{minArea}</text> : null}
+    </svg>
+  </figure>;
+}
 
 export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({ appHost }: { appHost: AppHost }) {
   const controller = appHost.blueprintPlannerDialog;
@@ -48,6 +80,8 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const plan = controller.plan;
   const validRoundSettings = Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 10_000
     && controller.options.evaluationsPerRound % 10_000 === 0;
+  const validConcurrency = Number.isSafeInteger(controller.options.concurrency) && controller.options.concurrency! >= 1
+    && controller.options.concurrency! <= 32;
   const act = (action: () => void | Promise<void>) => {
     setError(null);
     try { void Promise.resolve(action()).catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); }
@@ -146,6 +180,9 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               */}
               <label><span>{t("eda.evaluationsPerRound")}</span><input type="number" min="1" step="1" value={controller.options.evaluationsPerRound / 10_000}
                 onChange={event => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) * 10_000 })} /></label>
+              <label><span>{t("eda.concurrency")}</span><input type="number" min="1" max="32" step="1"
+                value={controller.options.concurrency ?? 1}
+                onChange={event => controller.updateOptions({ concurrency: Number(event.target.value) })} /></label>
             </fieldset>
             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
           </> : null}
@@ -162,14 +199,17 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               <span>{t("eda.totalProposals")} <strong>{progress.evaluatedProposals.toLocaleString()}</strong></span>
             </div>
             <p>{progress.message}</p>
+            {progress.areaHistory?.length ? <AreaCurve points={progress.areaHistory}
+              proposals={progress.evaluatedProposals} label={t("eda.areaCurve")} /> : null}
             {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}</p> : null}
           </section> : null}
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
         </div>
         <footer className={styles.footer}>
           {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
-          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
-            onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId, controller.options.evaluationsPerRound))}>{t("eda.continue")}</button> : null}
+          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || !validConcurrency || anyBusy}
+            onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
+              controller.options.evaluationsPerRound, controller.options.concurrency))}>{t("eda.continue")}</button> : null}
           {result !== null ? <>
             <button type="button" onClick={() => {
               appHost.blueprintPreview.open({ ...result.blueprint, parentFolderId: result.folderId }, { canDelete: false });
@@ -189,7 +229,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
           </> : null}
           {progress === null && plan !== null ? <button type="button" className={styles.primary}
-            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings} onClick={() => act(() => {
+            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings || !validConcurrency} onClick={() => act(() => {
               if (planner) select(planner.actions.start(controller.getRequest()));
             })}>{t("eda.start")}</button> : null}
         </footer>

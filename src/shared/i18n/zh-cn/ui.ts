@@ -65,6 +65,8 @@ const UI: Record<string, string> = {
     "eda.warehouseStartup": "仓库与准入口提供启动物品",
     "eda.budget": "本轮规划时长（秒）",
     "eda.evaluationsPerRound": "提案次数（万次）",
+    "eda.concurrency": "并发计算数",
+    "eda.areaCurve": "提案次数与已验证最优面积",
     "eda.noPlan": "先在产线规划中计算生产方案。",
     "eda.openProductionPlanning": "打开产线规划",
     "eda.elapsed": "已用时间",

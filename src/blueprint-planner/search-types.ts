@@ -26,6 +26,8 @@ export interface PlannerSearchOptions {
   /** 有界重排保持退火日程独立于剩余提案配额；不增加实际评估上限。 */
   readonly coolingEvaluations?: number;
   readonly outline?: { readonly width: number; readonly height: number };
+  /** 调度器指定的单批搜索盒子；与 outline 的显式上限语义分开。 */
+  readonly targetOutline?: { readonly width: number; readonly height: number };
   readonly profile?: Partial<PlannerSearchProfile>;
   /** 离线诊断按布局检查点采样，不改变提案、随机数或验收规则。 */
   readonly diagnostics?: boolean;

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { chromium, expect, test } from "playwright/test";
-import plant from "../blueprint-planner/fixtures/plant-preload.json";
+import plant from "../blueprint-planner/fixtures/plant-preload.json" with { type: "json" };
 
 const execute = promisify(execFile);
 const profiles = [
@@ -58,14 +58,16 @@ for (const profile of profiles) {
       const dialog = page.getByRole('dialog').filter({has:page.locator('#blueprint-planner-title')});
       const proposals = dialog.getByRole('spinbutton',{name:'提案次数（万次）'});
       assert(await proposals.inputValue() === '50', '默认必须为五十万次');
-      assert(await dialog.getByRole('spinbutton').count() === 1, '仅保留提案预算');
+      assert(await dialog.getByRole('spinbutton',{name:'并发计算数'}).inputValue() === '1', '默认并发数必须为 1');
+      assert(await dialog.getByRole('spinbutton').count() === 2, '任务参数必须提供提案预算和并发数');
       for (const [label, value] of [['固体外部供给','warehouse'],['流体外部供给','conduit'],
         ['存取线形态','straight'],['固体成品去向','auto'],['副产物处理','destroy'],['植物循环启动','preload']]) {
         assert(await dialog.getByRole('combobox',{name:label}).inputValue() === value, '默认选项 '+label);
       }
       await proposals.fill('0');
       assert(await dialog.getByRole('button',{name:'开始规划',exact:true}).isDisabled(), '不能低于一万次');
-      await proposals.fill('1');
+      await proposals.fill('2');
+      await dialog.getByRole('spinbutton',{name:'并发计算数'}).fill('2');
       await dialog.getByRole('combobox',{name:'固体外部供给'}).selectOption('warehouse');
       await dialog.getByRole('combobox',{name:'流体外部供给'}).selectOption('conduit');
       await dialog.getByRole('combobox',{name:'固体成品去向'}).selectOption('stash');
@@ -76,7 +78,14 @@ for (const profile of profiles) {
       await dialog.getByRole('button',{name:'开始规划',exact:true}).click();
       await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.state.activeTaskId === null, null, {timeout:60000});
       const progress = await page.evaluate(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.queries.getTask());
-      assert(progress.evaluatedProposals === 10000 && progress.roundEvaluatedProposals === 10000, '按真实提案计数完成一轮');
+      assert(progress.evaluatedProposals === 20000 && progress.roundEvaluatedProposals === 20000, '按真实提案计数完成一轮');
+      const checkpoint = await page.evaluate(() => {
+        const h=window.__industrialPlannerAppHost;
+        return h.workspace.blueprintPlanner.queries.exportTask(h.blueprintPlannerDialog.viewTaskId).checkpoint;
+      });
+      assert(checkpoint.parallel.count === 2 && checkpoint.parallel.shards.every(shard => shard.attempts > 0), '两个分片均须完成搜索');
+      assert(progress.areaHistory.length > 0, '已验证面积曲线必须记录下降点');
+      assert(await dialog.getByRole('img',{name:/提案次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
       const before = await page.evaluate(() => {
         const h = window.__industrialPlannerAppHost;
         return h.workspace.blueprintPlanner.queries.getResult(h.blueprintPlannerDialog.viewTaskId);
@@ -109,11 +118,17 @@ for (const profile of profiles) {
       const importedProgress = await page.evaluate(() => { const h=window.__industrialPlannerAppHost;
         return h.workspace.blueprintPlanner.queries.getTask(h.blueprintPlannerDialog.viewTaskId); });
       assert(importedProgress.evaluatedProposals === progress.evaluatedProposals, '导入保留累计提案');
+      assert(importedProgress.areaHistory.length === progress.areaHistory.length, '导入保留面积曲线');
       assert(imported.folderId === null && imported.blueprint.blueprintId !== before.blueprint.blueprintId, '导入任务不能覆盖原蓝图');
       await page.reload();
       await page.waitForFunction(() => window.__industrialPlannerAppHost?.workspace.blueprintPlanner?.queries.listTasks().length === 2);
       await page.getByRole('button',{name:'规划',exact:true}).click();
       await page.getByRole('button').filter({hasText:${JSON.stringify(plant.request.plan.name)}}).first().click();
+      const restoredProgress = await page.evaluate(() => {
+        const h=window.__industrialPlannerAppHost;
+        return h.workspace.blueprintPlanner.queries.getTask(h.blueprintPlannerDialog.viewTaskId);
+      });
+      assert(restoredProgress.areaHistory.length === progress.areaHistory.length, '刷新保留面积曲线');
       await page.screenshot({path:${JSON.stringify(resolve(output, "history.png"))}});
       return {passed:true, savedBlueprintId:before.blueprint.blueprintId, screen, snapshot:await page.locator('body').ariaSnapshot()};
     }`;

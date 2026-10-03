@@ -22,6 +22,26 @@ export function auditPlannerSupply(registry: RegistryContract, network: PlannerN
     }
     return null;
   };
+  const sharedRateOf = (wire: PlannerWire, itemId: string, visited: Set<string>): { entityId: string; limit: number; share: number } | null => {
+    const source = nodes.get(wire.source.entityId);
+    if (!source || visited.has(source.entity.id) || wire.itemIds.length !== 1 || wire.itemIds[0] !== itemId) return null;
+    const nextVisited = new Set(visited).add(source.entity.id);
+    if (registry.queries.resolveLogisticsRole(source.definition.id) === "admission") {
+      const limit = rateOf(source.entity.id, itemId);
+      return limit === null || Math.abs(wire.perMinute - limit) > 1e-6
+        ? null : { entityId: source.entity.id, limit, share: limit };
+    }
+    if (!splitters.has(source.entity.id)) return null;
+    const outgoing = wires.filter(entry => entry.source.entityId === source.entity.id);
+    const incoming = wires.filter(entry => entry.target.entityId === source.entity.id);
+    if (outgoing.length < 2 || incoming.length !== 1 || !outgoing.includes(wire)
+      || outgoing.some(entry => entry.itemIds.length !== 1 || entry.itemIds[0] !== itemId)) return null;
+    const upstream = sharedRateOf(incoming[0]!, itemId, nextVisited);
+    if (upstream === null) return null;
+    const share = upstream.share / outgoing.length;
+    if (outgoing.some(entry => Math.abs(entry.perMinute - share) > 1e-6)) return null;
+    return { ...upstream, share };
+  };
   const operatingLimits = new Map<string, { entityId: string; itemId: string; perMinute: number }>();
   for (const node of network.nodes) for (const demand of node.inputs) {
     if (!demand.storageGroupIds || !node.definition.recipeChannels.some(channel => channel.type === "consumption-channel"
@@ -31,13 +51,33 @@ export function auditPlannerSupply(registry: RegistryContract, network: PlannerN
         && demand.storageGroupIds!.includes(binding.storageSlotGroupId)));
     if (!incoming.length) throw new PlannerCandidateError(`运行消耗没有供料：${node.entity.id}`);
     let limit = 0;
+    let shared = false;
     for (const wire of incoming) {
       const rate = rateOf(wire.source.entityId, demand.itemId);
-      if (rate === null) throw new PlannerCandidateError(`运行消耗缺少准入口：${node.entity.id}`);
+      // AI-REMOVED 2026-10-02:
+      // Reason: 等流量分支允许在共同上游限速，不能只检查消费端的直接前驱。
+      // Trigger: 用户要求计算分流后各支路实际份额，正确时省去下游准入口。
+      // Evidence: wiring.ts 的 matchesSplitShares 与本文件 sharedRateOf 路径核对。
+      // Replacement: 下方沿分流树追溯准入口并计算份额。
+      // Risk: 只支持单一物料、没有汇流或旁路的可证明分流树。
+      // Human Review: Required
+      // Original code:
+      // if (rate === null) throw new PlannerCandidateError(`运行消耗缺少准入口：${node.entity.id}`);
+      if (rate === null) {
+        const upstream = sharedRateOf(wire, demand.itemId, new Set());
+        if (upstream === null || Math.abs(wire.perMinute - upstream.share) > 1e-6) {
+          throw new PlannerCandidateError(`运行消耗缺少正确的上游准入口：${node.entity.id}`);
+        }
+        limit += upstream.share;
+        shared = true;
+        operatingLimits.set(upstream.entityId, { entityId: upstream.entityId, itemId: demand.itemId, perMinute: upstream.limit });
+        continue;
+      }
       limit += rate;
       operatingLimits.set(wire.source.entityId, { entityId: wire.source.entityId, itemId: demand.itemId, perMinute: rate });
     }
     if (limit > Math.ceil(demand.perMinute / 6 - 1e-6) * 6 + 1e-6) throw new PlannerCandidateError(`运行消耗准入口超出需求：${node.entity.id}`);
+    if (shared && Math.abs(limit - demand.perMinute) > 1e-6) throw new PlannerCandidateError(`上游准入口分流份额不等于运行消耗：${node.entity.id}`);
   }
   let bufferedAdmissions = 0;
   for (const node of network.nodes) {

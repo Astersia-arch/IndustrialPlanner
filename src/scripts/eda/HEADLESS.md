@@ -5,9 +5,14 @@
 ```bash
 node src/scripts/run-eda-task.mjs --task /path/line.eda-task.json --proposals 100000
 node src/scripts/run-eda-task.mjs --task /path/line.eda-task.json
+node src/scripts/run-eda-task.mjs --task /path/line.eda-task.json --proposals 100000 --shard-count 4 --shard-range 0:2 --output /path/part-0-1.json
+node src/scripts/run-eda-task.mjs --task /path/line.eda-task.json --proposals 100000 --shard-count 4 --shard-range 2:4 --output /path/part-2-3.json
+node src/scripts/run-eda-task.mjs merge --output /path/merged.json /path/part-0-1.json /path/part-2-3.json
 ```
 
-`--proposals` 是本次追加计算的提案总上限，单位为次，省略时持续计算。Ctrl+C 暂停并保存检查点。网页和无头客户端均只按提案预算结束一轮，不设规划时长。运行时累计真实提案数；Ctrl+C 协作暂停并结算当前搜索计数。强制杀死进程或断电只能恢复最后落盘的计数和阶段结果。
+`--proposals` 是本次追加计算在全部分片上的提案总上限，单位为次，省略时持续计算。`--shard-count X` 将搜索序号稳定分配给 `X` 个分片；`--shard-range A:B` 只运行从 `A` 到 `B-1` 的分片，编号从 0 开始。Node Worker 按并发数从所选范围动态领取空闲分片；省略范围时运行全部分片。各参与者必须从同一份任务文件出发，使用相同的总分片数与互不重叠的范围，输出到不同文件，再执行 `merge`。重叠或缺失分片会被拒绝。部分分片客户端优先搜索宽度模总分片数等于所选分片编号的尺寸；该分片在当前面积下没有对应宽度或对应尺寸已被本客户端占用时，回退到其他空闲的可行尺寸，因此不同客户端的尺寸分工不保证绝对互斥。网页固定使用 32 个虚拟分片，并发数默认 1，仅控制实际 Worker 数。
+
+Ctrl+C 暂停并保存检查点。网页和无头客户端均只按提案预算结束一轮，不设规划时长。各 Worker 本地计数，在阶段边界汇总；总次数允许少量偏差，不逐提案同步。强制杀死进程、断电或网页刷新只能恢复最后完成阶段的检查点；进行中的局部搜索会重做。合并后的累计提案数和最优结果保留；跨机器没有可信的全局事件时钟，因此曲线只在合并时的准确总计数处记录当前最优面积，后续规划继续积累下降点。
 
 默认输出到输入文件旁的 `.continued.json`，使用 `--output` 指定其他路径。每个已完成阶段以原子替换落盘；相同输出路径用锁文件防止重复写入。异常断电遗留锁文件时，应先确认没有相关进程，再手动移除锁。输出文件可以重新导入网页或继续交给客户端。
 
@@ -15,4 +20,4 @@ node src/scripts/run-eda-task.mjs --task /path/line.eda-task.json
 
 仿真固定使用 dense-v2、每仿真秒两个真实 tick。成功结果及输入、验证报告保存到 `.temp/eda/success/`。网页任务保存在独立 IndexedDB 中，不参与同步；清除网站数据会删除本机任务，下载的任务文件可用于恢复。
 
-本版本逐个执行任务，不支持协作分片、GPU 或多 Worker 并发。
+当前实现支持 CPU Worker 并发与协作分片。GPU 计算后端尚未实现；未来后端可使用相同分片编号协议。

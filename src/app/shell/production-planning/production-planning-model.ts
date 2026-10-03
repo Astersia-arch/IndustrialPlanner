@@ -724,6 +724,7 @@ function resolveDemand(
   demandPerMinute: number,
   context: SolverContext,
   stack: readonly string[],
+  closedPlantCycleItemIds: readonly string[] = [],
 ): ProductionPlanningItemNode {
   const demand = roundFlow(Math.max(0, demandPerMinute));
   const supply = consumeAvailableSupply(itemId, demand, context);
@@ -752,7 +753,7 @@ function resolveDemand(
   }
 
   if (stack.includes(itemId)) {
-    supply.cycle = remaining;
+    supply.cycle = closedPlantCycleItemIds.includes(itemId) ? 0 : remaining;
     return createItemNode({
       itemId,
       demandPerMinute: demand,
@@ -827,10 +828,13 @@ function resolveDemand(
     }, context);
   }
 
-  const cyclesPerMinute = roundFlow(remaining / netOutputPerUnit);
+  const plantCycleRate = recipe === undefined ? null : resolveProductivePlantCycleRate(
+    itemId, remaining, netOutputPerUnit, recipe, context, stack,
+  );
+  const cyclesPerMinute = roundFlow(plantCycleRate?.cyclesPerMinute ?? remaining / netOutputPerUnit);
   const deviceCount = recipe === undefined
     ? cyclesPerMinute
-    : roundFlow(cyclesPerMinute / (60 / recipe.durationSeconds));
+    : roundFlow(Math.max(cyclesPerMinute / (60 / recipe.durationSeconds), plantCycleRate?.minimumDeviceCount ?? 0));
   const candidateInputPorts = recipe === undefined
     ? candidate.inputs.map((input) => ({
       id: `${candidate.id}-in-${input.itemId}`,
@@ -915,12 +919,14 @@ function resolveDemand(
     addSupply(context.globalDemandRemaining, input.itemId, input.perMinute);
   }
   const inputItems = candidateInputPorts.map((input) => (
-    resolveDemand(input.itemId, input.perMinute, context, [...stack, itemId])
+    resolveDemand(input.itemId, input.perMinute, context, [...stack, itemId],
+      input.itemId === plantCycleRate?.partnerItemId
+        ? [...closedPlantCycleItemIds, itemId] : closedPlantCycleItemIds)
   ));
   const deviceMinimumConsumptionItems = deviceConsumptionPorts.map((input) => (
     input.itemId === itemId
       ? createProductionPlanningCycleSupplyItemNode(input.itemId, input.perMinute, context)
-      : resolveDemand(input.itemId, input.perMinute, context, [...stack, itemId])
+      : resolveDemand(input.itemId, input.perMinute, context, [...stack, itemId], closedPlantCycleItemIds)
   ));
   const recipeNode: ProductionPlanningRecipeNode = {
     id: createNodeId(candidate.sourceType === "system-recipe" ? "recipe" : "module", context),
@@ -952,6 +958,58 @@ function resolveDemand(
     isCycleSource: false,
     blockedByCycle: false,
   }, context);
+}
+
+/** 采种与种植的回流属于内部消耗；用净外供量反推两台设备的实际运行速率。 */
+function resolveProductivePlantCycleRate(
+  itemId: string,
+  externalDemand: number,
+  outputPerCycle: number,
+  recipe: RecipeDefinition,
+  context: SolverContext,
+  stack: readonly string[],
+): { cyclesPerMinute: number; partnerItemId: string; minimumDeviceCount: number } | null {
+  const picker = recipe.machineId === "seedcol_1";
+  const planter = recipe.machineId === "planter_1" || recipe.machineId === "planter_1_liquid";
+  if (!picker && !planter) return null;
+
+  for (const input of resolveProductionPlanningRecipeInputs(recipe)) {
+    if (stack.includes(input.itemId) || context.infiniteItemIds.has(input.itemId)) continue;
+    const partner = resolveCandidateForItem(input.itemId, input.amount, context, [...stack, itemId]);
+    if (partner?.sourceType !== "system-recipe" || partner.recipeId === null) continue;
+    const partnerRecipe = context.index.recipeById.get(partner.recipeId);
+    if (partnerRecipe === undefined || !(picker
+      ? partnerRecipe.machineId === "planter_1" || partnerRecipe.machineId === "planter_1_liquid"
+      : partnerRecipe.machineId === "seedcol_1")) continue;
+    const partnerOutput = partnerRecipe.outputs.find((port) => port.itemId === input.itemId);
+    const feedbackInput = resolveProductionPlanningRecipeInputs(partnerRecipe).find((port) => port.itemId === itemId);
+    if (partnerOutput === undefined || feedbackInput === undefined || partnerOutput.amount <= EPSILON) continue;
+
+    const availablePartnerSupply = (context.manualSupplyRemaining.get(input.itemId) ?? 0)
+      + (context.surplusSupplyRemaining.get(input.itemId) ?? 0);
+    if (availablePartnerSupply >= input.amount * externalDemand / outputPerCycle - EPSILON) return null;
+    const feedbackPerCycle = input.amount * feedbackInput.amount / partnerOutput.amount;
+    const netOutputPerCycle = outputPerCycle - feedbackPerCycle;
+    if (netOutputPerCycle <= EPSILON) return null;
+    const cyclesPerMinute = (externalDemand - availablePartnerSupply * feedbackInput.amount / partnerOutput.amount)
+      / netOutputPerCycle;
+    const feedbackPerMinute = (input.amount * cyclesPerMinute - availablePartnerSupply)
+      * feedbackInput.amount / partnerOutput.amount;
+    const outputCapacity = (recipe.outputs.find((port) => port.itemId === itemId)?.amount ?? 0)
+      * 60 / recipe.durationSeconds;
+    // 采种增产时，种植回流与对外输出各占独立设备支路。
+    const minimumDeviceCount = planter && partnerOutput.amount > feedbackInput.amount + EPSILON
+      && outputCapacity > EPSILON
+      ? Math.ceil(feedbackPerMinute / outputCapacity - EPSILON)
+        + Math.ceil(externalDemand / outputCapacity - EPSILON)
+      : 0;
+    return {
+      cyclesPerMinute,
+      partnerItemId: input.itemId,
+      minimumDeviceCount,
+    };
+  }
+  return null;
 }
 
 function resolveDeviceMinimumConsumptionAmountsPerCycle(

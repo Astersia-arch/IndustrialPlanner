@@ -2903,6 +2903,10 @@ function buildLedgerProductionPlanningTreeRows(plan: ProductionPlanningResult): 
       addProducerEdges(parentRow, node.itemId, surplusProducerRowIdsByItem);
     }
 
+    if (node.isCycleSource && node.supply.cycle <= PRODUCTION_PLANNING_EPSILON) {
+      addProducerEdges(parentRow, node.itemId, producerRowIdsByItem);
+    }
+
     if (node.recipeNode !== null) {
       const childRow = ensureRecipeRow(
         node.recipeNode.recipeId ?? node.recipeNode.candidateId,

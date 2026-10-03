@@ -6,7 +6,7 @@ import { createRegistryContract } from "@/registry";
 import { createProductionNetwork } from "@/blueprint-planner/production-network";
 import { capturePlannerSeed } from "@/blueprint-planner/search-seed";
 import { PlannerSearchPortfolio } from "@/blueprint-planner/search-portfolio";
-import { continuationOutline } from "@/blueprint-planner/search-outline";
+import { breadthOutlineKey, breadthOutlines, continuationOutline, selectBreadthOutline } from "@/blueprint-planner/search-outline";
 import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
 import { PlannerCandidateError } from "@/blueprint-planner/model";
 import yazhen from "./fixtures/yazhen-syringe.json";
@@ -27,6 +27,40 @@ it("停滞续搜可交换长宽空间，但总面积、固定设施和显式边�
     expect(shape.height).toBeLessThanOrEqual(23);
     expect(shape.width * shape.height).toBeLessThan(400);
   }
+});
+
+it("面积前沿先覆盖不同长宽比，跳过固定设施无法容纳的尺寸", () => {
+  const shapes = breadthOutlines(399, { width: 10, height: 12 }, { width: 28, height: 30 });
+  const widths = shapes.map(shape => shape.width);
+  expect(new Set(widths).size).toBe(widths.length);
+  expect(widths.slice(0, 4).every((width, index) => widths.slice(0, index).every(other => other !== width))).toBe(true);
+  expect(Math.max(...widths.slice(0, 4)) - Math.min(...widths.slice(0, 4))).toBeGreaterThan(10);
+  expect(shapes.every(shape => shape.width >= 10 && shape.height >= 12
+    && shape.width <= 28 && shape.height <= 30 && shape.width * shape.height <= 399)).toBe(true);
+  expect(new Set(widths)).toEqual(new Set(Array.from({ length: 19 }, (_, index) => index + 10)));
+});
+
+it("并发领取不重复占用同拓扑尺寸，恢复后优先访问较少的比例", () => {
+  const shapes = breadthOutlines(399, { width: 10, height: 12 }, { width: 28, height: 30 });
+  const visits = new Map<string, number>(), occupied = new Set<string>();
+  const count = (key: string) => visits.get(key) ?? 0;
+  const first = selectBreadthOutline(shapes, "stash", count, occupied)!;
+  occupied.add(breadthOutlineKey("stash", first));
+  const second = selectBreadthOutline(shapes, "stash", count, occupied)!;
+  expect(second).not.toEqual(first);
+  occupied.clear();
+  visits.set(breadthOutlineKey("stash", first), 1);
+  expect(selectBreadthOutline(shapes, "stash", count, occupied)).toEqual(second);
+  for (const index of [0, 1]) {
+    const assigned = selectBreadthOutline(shapes, "warehouse", count, occupied, { count: 2, index })!;
+    expect(assigned.width % 2).toBe(index);
+  }
+  const partitioned = shapes.slice(0, 2);
+  const owned = selectBreadthOutline(partitioned, "warehouse", count, occupied,
+    { count: 2, index: partitioned[0]!.width % 2 })!;
+  occupied.add(breadthOutlineKey("warehouse", owned));
+  expect(selectBreadthOutline(partitioned, "warehouse", count, occupied,
+    { count: 2, index: owned.width % 2 })).toEqual(partitioned.find(shape => shape.width !== owned.width));
 });
 
 it("布局池保留同面积的不同摆位、去重、限制容量并在改善后恢复最优分支", () => {
@@ -92,5 +126,20 @@ it("真实 Worker 中新增固定存取口也不能撑破全局面积上限", as
       expect(statistics.outline.width * statistics.outline.height).toBeLessThanOrEqual(440);
       expect(statistics.experiments).toEqual(strategy === "compact" ? ["power-dedup", "partial-rebuild"] : ["power-dedup"]);
     }
+  } finally { await client.dispose(); }
+}, 40_000);
+
+it("真实 Worker 按调度器指定的宽高建立搜索盒子", async () => {
+  const client = new NodePlannerClient();
+  const targetOutline = { width: 20, height: 20 };
+  try {
+    const statistics = await client.build(structuredClone(yazhen.request) as BlueprintPlannerRequest, 7, 30_000,
+      { strategy: "compact", maximumArea: 440, targetOutline, maxEvaluations: 7 })
+      .then(candidate => candidate.search, (error: unknown) => {
+        expect(error).toBeInstanceOf(PlannerCandidateError);
+        return (error as PlannerCandidateError).search!;
+      });
+    expect(statistics.outline).toEqual(targetOutline);
+    expect(statistics.evaluations).toBeLessThanOrEqual(7);
   } finally { await client.dispose(); }
 }, 40_000);

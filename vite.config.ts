@@ -226,15 +226,34 @@ export default defineConfig({
           // // 常规测试包含 Sharp 素材解码与长耗时仿真，限制 worker 数避免资源争用触发默认超时。
           // maxWorkers: 4,
           // AI-CORRECTION 2026-09-16: 用户确认将 normal project 正式限制为 4 个 worker，避免资源争用触发批量超时。
-          maxWorkers: 4,
-          testTimeout: 10_000,
+          // AI-CORRECTION 2026-10-02: 2 个 worker 对照仍触发素材测试的 10 秒超时，单 worker 下相关 49 项通过；常规测试改为串行执行。
+          // AI-CORRECTION 2026-10-02: 单 worker 全量用时 689 秒且仍有 10 秒超时；改为 2 worker 与 30 秒上限，控制检查耗时和偶发 I/O 延迟。
+          maxWorkers: 2,
+          testTimeout: 30_000,
           exclude: [
             "src/tests/e2e/**",
             "src/tests/release/**",
             "src/tests/simulation/blueprint/**",
             "src/tests/simulation/blueprint-slow/**",
             "src/tests/blueprint-planner/batch/**",
+            "src/tests/blueprint-planner/training-worker.test.ts",
+            "src/tests/scripts/unpack-table-source.test.ts",
           ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "dev-tools",
+          environment: "node",
+          include: [
+            "src/tests/blueprint-planner/training-worker.test.ts",
+            "src/tests/scripts/unpack-table-source.test.ts",
+          ],
+          fileParallelism: false,
+          maxWorkers: 1,
+          maxConcurrency: 1,
+          testTimeout: 30_000,
         },
       },
       {

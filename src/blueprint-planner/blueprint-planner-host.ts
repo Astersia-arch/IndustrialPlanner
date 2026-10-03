@@ -10,15 +10,24 @@ import { createUuid } from "@/domain/shared/uuid";
 import { edaTaskStorage } from "@/shared/storage/eda-task-storage";
 import { reportStorageFailure } from "@/shared/storage/storage-failure";
 import { PlannerWorkerClient } from "./worker-client";
+import type { PlannerCandidate } from "./candidate";
 import { PlannerCandidateError, PlanningBudgetExhausted } from "./model";
 import { comparePlannerRanks } from "./quality";
 import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
 import { PlannerSearchPortfolio } from "./search-portfolio";
-import { emptyPlannerCheckpoint, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint } from "./task-checkpoint";
+import { breadthOutlineKey, breadthOutlines, fixedOutlineMinimum, selectBreadthOutline } from "./search-outline";
+import { createProductionNetwork } from "./production-network";
+import { emptyPlannerCheckpoint, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint, type PlannerParallelCheckpoint, type PlannerShardCheckpoint } from "./task-checkpoint";
+import { plannerRequestKey } from "./search-seed";
 
 interface PlannerTask {
   file: BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
+  originTaskId: string;
   portfolio: PlannerSearchPortfolio;
+  portfolios: Map<number, PlannerSearchPortfolio>;
+  liveEvaluations: Map<number, number>;
+  activeShards: Set<number>;
+  activeShapes: Set<string>;
   abort: AbortController;
   resumedAt: number | null;
   roundStartedEvaluations: number;
@@ -31,8 +40,10 @@ export interface BlueprintPlannerHost extends BlueprintPlannerContract { dispose
 /** 浏览器与无头客户端只替换 IO，任务状态机、检查点与验收共用。 */
 export interface PlannerHostOptions {
   readonly worker?: Pick<PlannerWorkerClient, "build" | "dispose">;
+  readonly workerFactory?: () => Pick<PlannerWorkerClient, "build" | "dispose">;
   readonly storage?: typeof edaTaskStorage | null;
   readonly roundLimit?: () => number;
+  readonly shardSelection?: { readonly count: number; readonly start: number; readonly end: number };
 }
 
 export function createBlueprintPlannerHost(workspace: WorkspaceContract, options: PlannerHostOptions = {}): BlueprintPlannerHost {
@@ -49,14 +60,25 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       message: `任务无法继续，原始记录已保留，可导出或删除。${errorMessage(error)}` } });
   };
   const worker = options.worker ?? new PlannerWorkerClient();
+  const workers = new Map<number, Pick<PlannerWorkerClient, "build" | "dispose">>();
+  const workerFor = (index: number) => {
+    const existing = workers.get(index);
+    if (existing) return existing;
+    const created = workers.size === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient();
+    workers.set(index, created);
+    return created;
+  };
   const storage = options.storage === undefined ? edaTaskStorage : options.storage;
   let disposed = false, loaded = storage === null;
   let latestId: string | undefined;
   let writes: Promise<void> = Promise.resolve();
   const notify = () => runInAction(() => { state.revision++; });
   const elapsed = (task: PlannerTask) => task.file.progress.elapsedMs + (task.resumedAt === null ? 0 : performance.now() - task.resumedAt);
+  // 只保存已完成的搜索阶段；运行中的计数没有可恢复的退火状态，刷新后必须从安全边界重做。
   const snapshot = (task: PlannerTask): BlueprintPlannerTaskFile => structuredClone({ ...task.file,
-    progress: { ...task.file.progress, elapsedMs: elapsed(task) },
+    progress: { ...task.file.progress, elapsedMs: elapsed(task), evaluatedProposals: task.file.checkpoint.evaluations,
+      candidateCount: task.file.checkpoint.attempt,
+      roundEvaluatedProposals: Math.max(0, task.file.checkpoint.evaluations - task.roundStartedEvaluations) },
     checkpoint: { ...task.file.checkpoint, portfolio: task.portfolio.snapshot() } });
   const persist = (task: PlannerTask) => {
     if (storage === null) return;
@@ -85,14 +107,23 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     const parsed = restorePlannerTaskFile(file, workspace.registry);
     const portfolio = new PlannerSearchPortfolio(parsed.request);
     portfolio.restore(parsed.checkpoint.portfolio);
-    return { file: parsed, portfolio, abort: new AbortController(), resumedAt: null, roundStartedEvaluations: parsed.checkpoint.evaluations - parsed.progress.roundEvaluatedProposals, remaining: 0, running: null };
+    const portfolios = new Map<number, PlannerSearchPortfolio>();
+    for (const shard of parsed.checkpoint.parallel?.shards ?? []) {
+      const pool = new PlannerSearchPortfolio(parsed.request);
+      pool.restore(shard.portfolio);
+      portfolios.set(shard.index, pool);
+    }
+    return { file: parsed, originTaskId: parsed.checkpoint.parallel?.originTaskId ?? parsed.taskId,
+      portfolio, portfolios, liveEvaluations: new Map(), activeShards: new Set(), activeShapes: new Set(), abort: new AbortController(),
+      resumedAt: null, roundStartedEvaluations: parsed.checkpoint.evaluations - parsed.progress.roundEvaluatedProposals, remaining: 0, running: null };
   };
-  const settle = (task: PlannerTask) => {
+  const settle = async (task: PlannerTask) => {
     publish(task, { estimatedProgress: null });
     task.resumedAt = null;
+    persist(task);
+    await writes;
     task.running = null;
     if (state.activeTaskId === task.file.taskId) runInAction(() => { state.activeTaskId = null; });
-    persist(task);
     notify();
   };
   const check = (task: PlannerTask) => {
@@ -108,98 +139,434 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
 
   };
 
+  const prepareParallel = (task: PlannerTask, concurrency: number): PlannerParallelCheckpoint => {
+    const point = task.file.checkpoint;
+    const requested = options.shardSelection;
+    // AI-REMOVED 2026-10-02:
+    // Reason: Worker 数曾决定分片数，增减并发会重排同一搜索任务。
+    // Trigger: 用户要求多 Worker 唯一批次与暂停后尺寸访问记录连续。
+    // Evidence: 原 count 随 concurrency 增长，prepareParallel 会重建分片序列。
+    // Replacement: 浏览器固定 32 个虚拟分片，Worker 仅是可调整的执行容量。
+    // Risk: 检查点增加空分片；Human Review: Required。
+    // Original code:
+    // const count = requested?.count ?? Math.max(point.parallel?.count ?? 0, concurrency);
+    const count = requested?.count ?? 32;
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+      throw new Error("并发计算数必须介于 1 到 32。");
+    }
+    if (!Number.isSafeInteger(count) || count < 1 || count > 32
+      || (requested && (!Number.isSafeInteger(requested.start)
+        || !Number.isSafeInteger(requested.end) || requested.start < 0 || requested.end > count
+        || requested.start >= requested.end))) throw new Error("分片范围无效。");
+    if (point.parallel && point.parallel.count !== count
+      && (count < point.parallel.count || point.parallel.ownedShards.length !== point.parallel.count)) {
+      throw new Error("已分片任务不能改变总分片数，请先合并全部分片。");
+    }
+    const ownedShards = Array.from({ length: requested ? requested.end - requested.start : count },
+      (_, offset) => (requested?.start ?? 0) + offset);
+    task.file = { ...task.file, request: { ...task.file.request,
+      options: { ...task.file.request.options, concurrency } } };
+    if (point.parallel && point.parallel.count !== count) {
+      const previous = point.parallel;
+      const baseVariant = Math.max(...previous.shards.map(shard => shard.nextVariant));
+      // AI-REMOVED 2026-10-02:
+      // Reason: 新虚拟分片不预复制当前最佳种子。
+      // Trigger: 固定分片数后的检查点体积控制。
+      // Evidence: 运行时可从 point.best 按需引入种子。
+      // Replacement: run 中分片领任务时的按需 remember；Risk: Low；Human Review: Required。
+      // Original code:
+      // const initialPortfolio = new PlannerSearchPortfolio(task.file.request, point.best?.candidate.seed).snapshot();
+      point.parallel = { count, originTaskId: task.originTaskId, baseAttempt: point.attempt, baseVariant, nextShard: previous.nextShard % count,
+        baseEvaluations: point.evaluations, baseValidatedCandidates: task.file.progress.validatedCandidateCount,
+        requestKey: plannerRequestKey(task.file.request), ownedShards,
+        shards: Array.from({ length: count }, (_, index) => ({ index, nextVariant: baseVariant + index,
+          attempts: 0, evaluations: 0, validatedCandidates: 0,
+          // AI-REMOVED 2026-10-02:
+          // Reason: 新虚拟分片无需预复制大蓝图种子，执行时才从当前最佳引入。
+          // Trigger: 固定 32 分片时避免持久化 32 份相同布局。
+          // Evidence: 旧扩容将 initialPortfolio 深拷贝到每个新分片。
+          // Replacement: 空种子池与运行时按需 remember；Risk: Low；Human Review: Required。
+          // Original code:
+          // portfolio: structuredClone(previous.shards[index]?.portfolio ?? initialPortfolio),
+          portfolio: structuredClone(previous.shards[index]?.portfolio ?? { pools: [] }),
+          pendingCandidate: previous.shards[index]?.pendingCandidate ?? null,
+          // AI-REMOVED 2026-10-02:
+          // Reason: 扩大总分片数时，旧尝试计数已归入 baseAttempt，旧尺寸访问次数不能归给新分片。
+          // Trigger: 从较小总分片数的协作任务导入浏览器固定 32 分片。
+          // Evidence: 检查点要求每分片尺寸访问总数不超过该分片的新尝试次数。
+          // Replacement: 新分片从空尺寸访问记录开始；Risk: 转换前的尺寸频次不参与之后排序；Human Review: Required。
+          // Original code:
+          // shapeVisits: structuredClone(previous.shards[index]?.shapeVisits ?? {})
+          shapeVisits: {} })) };
+      task.portfolios.clear();
+    }
+    if (!point.parallel) {
+      const initialPortfolio = task.portfolio.snapshot();
+      point.parallel = { count, originTaskId: task.originTaskId, baseAttempt: point.attempt, nextShard: 0,
+        baseEvaluations: point.evaluations, baseValidatedCandidates: task.file.progress.validatedCandidateCount,
+        requestKey: plannerRequestKey(task.file.request), ownedShards,
+        shards: Array.from({ length: count }, (_, index) => ({ index, nextVariant: point.attempt + index,
+          attempts: 0, evaluations: 0, validatedCandidates: 0,
+          // AI-REMOVED 2026-10-02:
+          // Reason: 仅实际领取任务的分片需要持有种子布局。
+          // Trigger: 浏览器固定 32 虚拟分片；Evidence: 原代码逐分片复制同一种子。
+          // Replacement: 首分片保留原种子，其余按需引入；Risk: Low；Human Review: Required。
+          // Original code:
+          // portfolio: structuredClone(initialPortfolio),
+          portfolio: index === 0 ? structuredClone(initialPortfolio) : { pools: [] },
+          pendingCandidate: index === 0 ? point.pendingCandidate : null, shapeVisits: {} })) };
+      point.pendingCandidate = null;
+    } else point.parallel.ownedShards = ownedShards;
+    for (const shard of point.parallel.shards) if (!task.portfolios.has(shard.index)) {
+      const portfolio = new PlannerSearchPortfolio(task.file.request);
+      portfolio.restore(shard.portfolio);
+      task.portfolios.set(shard.index, portfolio);
+    }
+    const workerCount = Math.min(concurrency, ownedShards.length);
+    for (const [index, current] of workers) if (index >= workerCount) {
+      current.dispose();
+      workers.delete(index);
+    }
+    return point.parallel;
+  };
+
   async function run(task: PlannerTask): Promise<void> {
     const point = task.file.checkpoint;
+    const parallel = point.parallel!;
     const idleStatus = () => point.result !== null && point.savedBlueprintId === point.result.blueprint.blueprintId ? "completed" as const : "waiting" as const;
     let lastFailure = "尚未找到通过验证的布局";
-    try {
-      while (task.remaining > 0 || point.pendingCandidate !== null) {
-        check(task);
-        const allowance = task.remaining;
-        let accounted = point.pendingCandidate !== null;
-        let observed = 0;
-        const account = (count: number) => {
-          if (!Number.isSafeInteger(count) || count < observed || count > allowance) throw new Error("Worker 提案计数无效。");
-          const delta = count - observed;
-          point.evaluations += delta; task.remaining -= delta; observed = count;
-          const round = point.evaluations - task.roundStartedEvaluations;
-          publish(task, { evaluatedProposals: point.evaluations, roundEvaluatedProposals: round,
-            estimatedProgress: Math.min(1, round / task.file.request.options.evaluationsPerRound) });
-        };
-        try {
-          if (point.pendingCandidate === null) {
-            const attempt = point.attempt++;
-            const selection = task.portfolio.next(attempt);
-            publish(task, { candidateCount: point.attempt, message: `正在搜索第 ${point.attempt} 个布局` });
-            point.pendingCandidate = await worker.build(selection.request, selection.variant,
-              null, allowance, task.abort.signal,
-              (phase, message, evaluations) => { account(evaluations); publish(task, { phase, message }); },
-              selection.seed, selection.continuationStep, selection.maximumArea);
-            const used = point.pendingCandidate.search.evaluations;
-            account(used);
-            accounted = true;
-            persist(task);
-          }
-          check(task);
-          const candidate = point.pendingCandidate;
-          const simulation = workspace.simulation;
-          if (simulation === null) throw new Error("仿真服务不可用。");
-          publish(task, { phase: "verification", message: "正在验证产量与循环运行" });
-          const report = await simulation.actions.runBlueprint(candidate.execution, task.abort.signal);
-          if (task.abort.signal.aborted) break;
-          if (report.status === "timeout") { lastFailure = "产量验证超时，检查点已保留"; break; }
-          point.pendingCandidate = null;
-          if (!meetsProductionTargets(task.file.request, report) || !meetsOperatingLimits(candidate.supplyAudit, report)) {
-            lastFailure = report.diagnostics.find(entry => entry.severity === "error")?.message ?? "布局实际产量未达到目标";
-            persist(task);
-            continue;
-          }
-          task.portfolio.remember(candidate.seed);
-          publish(task, { validatedCandidateCount: task.file.progress.validatedCandidateCount + 1, phase: "optimization" });
-          // AI-REMOVED 2026-09-30:
-          // Reason: 同面积优先减少输出箱，不能直接跳到物流成本。Trigger: 多线合箱需求。
-          // Evidence: 原选优不区分箱数。Replacement: comparePlannerRanks。
-          // Risk: 同面积结果可能改变。Human Review: Required。
-          // Original code:
-          // if (point.best === null || candidate.metrics.area < point.best.candidate.metrics.area
-          //   || (candidate.metrics.area === point.best.candidate.metrics.area
-          //     && (candidate.search.quality?.secondary ?? candidate.metrics.score)
-          //       < (point.best.candidate.search.quality?.secondary ?? point.best.candidate.metrics.score))) {
-          if (point.best === null || comparePlannerRanks({ area: candidate.metrics.area,
-            outputStashCount: candidate.search.quality?.outputStashCount, secondary: candidate.search.quality?.secondary ?? candidate.metrics.score },
-          { area: point.best.candidate.metrics.area, outputStashCount: point.best.candidate.search.quality?.outputStashCount,
-            secondary: point.best.candidate.search.quality?.secondary ?? point.best.candidate.metrics.score }) < 0) {
-            point.best = { candidate, report };
-            point.result = { taskId: task.file.taskId, blueprint: candidate.execution.blueprint, folderId: null,
-              metrics: candidate.metrics, connections: candidate.connections,
-              measuredOutputs: report.probes.filter(probe => task.file.request.plan.targets.some(target => target.itemId === probe.id))
-                .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute })),
-              warmupSeconds: candidate.execution.warmupSeconds, observationSeconds: report.observationSeconds, elapsedMs: elapsed(task) };
-            publish(task, { bestArea: candidate.metrics.area });
-          }
-          persist(task);
-        } catch (error) {
-          if (!accounted) {
-            const used = error instanceof PlannerCandidateError ? error.search?.evaluations ?? observed : observed;
-            account(used);
-            if (used === 0 && error instanceof PlannerCandidateError) throw new Error(`当前布局无法启动搜索：${error.message}`);
-          }
-          if (!(error instanceof PlannerCandidateError)) throw error;
-          lastFailure = error.message;
-          persist(task);
-        }
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
+    let interruption: unknown = null;
+    let verificationTail: Promise<void> = Promise.resolve();
+    const live = (phase?: BlueprintPlannerProgress["phase"], message?: string) => {
+      const inFlight = [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0);
+      const total = point.evaluations + inFlight;
+      const round = total - task.roundStartedEvaluations;
+      publish(task, { evaluatedProposals: total, roundEvaluatedProposals: round,
+        candidateCount: point.attempt + task.activeShards.size,
+        estimatedProgress: Math.min(1, round / task.file.request.options.evaluationsPerRound),
+        ...(phase ? { phase } : {}), ...(message ? { message } : {}) });
+    };
+    const verify = async (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
+      const candidate = shard.pendingCandidate;
+      if (candidate === null) return;
+      check(task);
+      const simulation = workspace.simulation;
+      if (simulation === null) throw new Error("仿真服务不可用。");
+      publish(task, { phase: "verification", message: "正在验证产量与循环运行" });
+      const report = await simulation.actions.runBlueprint(candidate.execution, task.abort.signal);
+      if (task.abort.signal.aborted) return;
+      if (report.status === "timeout") throw new PlanningBudgetExhausted("产量验证超时，检查点已保留");
+      shard.pendingCandidate = null;
+      if (!meetsProductionTargets(task.file.request, report) || !meetsOperatingLimits(candidate.supplyAudit, report)) {
+        lastFailure = report.diagnostics.find(entry => entry.severity === "error")?.message ?? "布局实际产量未达到目标";
+        persist(task);
+        return;
       }
+      portfolio.remember(candidate.seed);
+      shard.portfolio = portfolio.snapshot();
+      shard.validatedCandidates++;
+      publish(task, { validatedCandidateCount: task.file.progress.validatedCandidateCount + 1, phase: "optimization" });
+      const oldArea = point.best?.candidate.metrics.area ?? null;
+      if (point.best === null || comparePlannerRanks({ area: candidate.metrics.area,
+        outputStashCount: candidate.search.quality?.outputStashCount,
+        secondary: candidate.search.quality?.secondary ?? candidate.metrics.score },
+      { area: point.best.candidate.metrics.area,
+        outputStashCount: point.best.candidate.search.quality?.outputStashCount,
+        secondary: point.best.candidate.search.quality?.secondary ?? point.best.candidate.metrics.score }) < 0) {
+        point.best = { candidate, report };
+        point.result = { taskId: task.file.taskId, blueprint: candidate.execution.blueprint, folderId: null,
+          metrics: candidate.metrics, connections: candidate.connections,
+          measuredOutputs: report.probes.filter(probe => task.file.request.plan.targets.some(target => target.itemId === probe.id))
+            .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute })),
+          warmupSeconds: candidate.execution.warmupSeconds, observationSeconds: report.observationSeconds, elapsedMs: elapsed(task) };
+        publish(task, { bestArea: candidate.metrics.area,
+          areaHistory: oldArea === null || candidate.metrics.area < oldArea
+            ? [...task.file.progress.areaHistory ?? [], { evaluatedProposals: point.evaluations, bestArea: candidate.metrics.area }]
+            : task.file.progress.areaHistory });
+      }
+      persist(task);
+    };
+    const queueVerification = (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
+      const pending = verificationTail.then(() => verify(shard, portfolio));
+      verificationTail = pending.catch(() => undefined);
+      return pending;
+    };
+    const owned = parallel.ownedShards;
+    // AI-REMOVED 2026-10-02:
+    // Reason: 预先平分到分片会让空闲 Worker 无法领取其他尺寸的剩余预算。
+    // Trigger: 用户要求尺寸广度和动态并发批次。
+    // Evidence: 原 quotas 每轮固定，快分片无法帮助慢分片。
+    // Replacement: 下方 available 与 claim 的全局提案预留；Risk: 调度次序改变；Human Review: Required。
+    // Original code:
+    // const quotas = owned.map((_, index) => Math.floor(task.remaining / owned.length) + Number(index < task.remaining % owned.length));
+    let available = task.remaining, zeroAttempts = 0;
+    const leased = new Set<number>();
+    const outlineCache = new Map<string, ReturnType<typeof breadthOutlines>>();
+    const minimumCache = new Map<string, ReturnType<typeof fixedOutlineMinimum>>();
+    const lane = async (shard: PlannerShardCheckpoint, quota: number, laneWorker: ReturnType<typeof workerFor>) => {
+      const portfolio = task.portfolios.get(shard.index)!;
+      // AI-REMOVED 2026-10-02:
+      // Reason: 零提案失败应按整轮统计，不能每个短批重置。
+      // Trigger: 尺寸广度批次可能因固定设施不合而零提案跳过。
+      // Evidence: 原局部 zeroAttempts 只在一个长期占用分片内累计。
+      // Replacement: run 级 zeroAttempts；Risk: Low；Human Review: Required。
+      // Original code:
+      // let remaining = quota, zeroAttempts = 0;
+      let remaining = quota;
+      while (remaining > 0 || shard.pendingCandidate !== null) {
+        check(task);
+        if (shard.pendingCandidate === null) {
+          if (shard.portfolio.pools.length === 0 && point.best?.candidate.seed) portfolio.remember(point.best.candidate.seed);
+          const before = portfolio.snapshot();
+          const selection = portfolio.next(shard.nextVariant);
+          const sharedArea = point.best?.candidate.metrics.area;
+          const maximumArea = sharedArea === undefined ? selection.maximumArea
+            : Math.min(selection.maximumArea ?? sharedArea, sharedArea);
+          let shapeKey: string | undefined;
+          let targetOutline: { readonly width: number; readonly height: number } | undefined;
+          const requestKey = plannerRequestKey(selection.request);
+          const bestSeed = point.best?.candidate.seed;
+          const source = selection.seed ?? (bestSeed?.requestKey === requestKey ? bestSeed : undefined);
+          if (maximumArea !== undefined) {
+            let minimum = minimumCache.get(requestKey);
+            if (!minimum) {
+              minimum = fixedOutlineMinimum(workspace.registry,
+                source?.network.nodes ?? createProductionNetwork(workspace.registry, selection.request).nodes);
+              minimumCache.set(requestKey, minimum);
+            }
+            const cacheKey = `${maximumArea}/${minimum.width}/${minimum.height}`;
+            let shapes = outlineCache.get(cacheKey);
+            if (!shapes) { shapes = breadthOutlines(maximumArea, minimum); outlineCache.set(cacheKey, shapes); }
+            const mode = selection.request.options.solidOutput;
+            const visits = (key: string) => parallel.shards.reduce((sum, entry) => sum + (entry.shapeVisits[key] ?? 0), 0);
+            // AI-REMOVED 2026-10-02:
+            // Reason: 尺寸领取规则移至纯函数，供真实调度与回归测试共用。
+            // Trigger: 多 Worker 防重复与可验证的跨客户端分片归属。
+            // Evidence: 内联选择无法独立验证同尺寸占用和最少访问策略。
+            // Replacement: selectBreadthOutline；Risk: Low；Human Review: Required。
+            // Original code:
+            // const ownedShapes = owned.length === parallel.count ? shapes
+            //   : shapes.filter(shape => shape.width % parallel.count === shard.index);
+            // const choices = ownedShapes.length ? ownedShapes : shapes;
+            // const unoccupied = choices.filter(shape => !task.activeShapes.has(`${mode}/${shape.width}/${shape.height}`));
+            // const candidates = unoccupied.length ? unoccupied : choices;
+            // targetOutline = candidates.reduce<typeof targetOutline>((best, shape) => {
+            //   const key = `${mode}/${shape.width}/${shape.height}`;
+            //   return !best || visits(key) < visits(`${mode}/${best.width}/${best.height}`) ? shape : best;
+            // }, undefined);
+            targetOutline = selectBreadthOutline(shapes, mode, visits, task.activeShapes,
+              owned.length === parallel.count ? undefined : { count: parallel.count, index: shard.index });
+            if (targetOutline) {
+              shapeKey = breadthOutlineKey(mode, targetOutline);
+              task.activeShapes.add(shapeKey);
+            }
+          }
+          let observed = 0;
+          task.activeShards.add(shard.index);
+          live(undefined, `正在搜索第 ${point.attempt + task.activeShards.size} 个布局`);
+          const commit = (used: number, candidate: PlannerCandidate | null) => {
+            if (!Number.isSafeInteger(used) || used < observed || used > remaining) throw new Error("Worker 提案计数无效。");
+            shard.attempts++;
+            shard.nextVariant += parallel.count;
+            shard.evaluations += used;
+            if (shapeKey) shard.shapeVisits[shapeKey] = (shard.shapeVisits[shapeKey] ?? 0) + 1;
+            shard.portfolio = portfolio.snapshot();
+            shard.pendingCandidate = candidate;
+            point.attempt++;
+            point.evaluations += used;
+            remaining -= used;
+            zeroAttempts = used === 0 ? zeroAttempts + 1 : 0;
+            task.liveEvaluations.delete(shard.index);
+            task.activeShards.delete(shard.index);
+            live();
+            persist(task);
+          };
+          try {
+            const candidate = await laneWorker.build(selection.request, selection.variant, null, remaining,
+              task.abort.signal, (phase, message, count) => {
+                if (!Number.isSafeInteger(count) || count < observed || count > remaining) throw new Error("Worker 提案计数无效。");
+                observed = count;
+                task.liveEvaluations.set(shard.index, count);
+                live(phase, message);
+              }, selection.seed, selection.continuationStep, maximumArea, targetOutline);
+            commit(candidate.search.evaluations, candidate);
+          } catch (error) {
+            if (error instanceof PlannerCandidateError) {
+              const used = error.search?.evaluations ?? observed;
+              // AI-CORRECTION 2026-10-02: 显式尺寸不合时跳过该批；连续零提案仍停止以免无限循环。
+              if (used === 0 && !targetOutline) throw new Error(`当前布局无法启动搜索：${error.message}`);
+              commit(used, null);
+              lastFailure = error.message;
+            } else if (task.abort.signal.aborted) {
+              if (observed > 0) commit(observed, null);
+              else { portfolio.restore(before); task.liveEvaluations.delete(shard.index); task.activeShards.delete(shard.index); }
+              break;
+            } else {
+              portfolio.restore(before);
+              task.liveEvaluations.delete(shard.index);
+              task.activeShards.delete(shard.index);
+              throw error;
+            }
+          } finally {
+            if (shapeKey) task.activeShapes.delete(shapeKey);
+          }
+          // AI-CORRECTION 2026-10-02: 广度轮换可能遇到多个固定设施无法容纳的盒子，按整轮计数。
+          if (zeroAttempts >= 64) throw new Error("连续零提案搜索，任务已停止。");
+        }
+        if (shard.pendingCandidate !== null) await queueVerification(shard, portfolio);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        break;
+      }
+      return quota - remaining;
+    };
+    try {
+      const workerCount = Math.min(owned.length, task.file.request.options.concurrency ?? 1);
+      const claim = () => {
+        for (let step = 0; step < parallel.count; step++) {
+          const index = (parallel.nextShard + step) % parallel.count;
+          if (!owned.includes(index) || leased.has(index)) continue;
+          const shard = parallel.shards[index]!;
+          if (available <= 0 && shard.pendingCandidate === null) continue;
+          const quota = shard.pendingCandidate !== null ? 0 : Math.min(available, point.best ? 5_000 : 20_000);
+          available -= quota;
+          leased.add(index);
+          parallel.nextShard = (index + 1) % parallel.count;
+          return { shard, quota };
+        }
+        return null;
+      };
+      const outcomes = await Promise.allSettled(Array.from({ length: workerCount }, (_, workerIndex) => (async () => {
+        // AI-REMOVED 2026-10-02:
+        // Reason: 固定分片循环会阻止空闲 Worker 领取其他尺寸批次。
+        // Trigger: 用户要求多 Worker 在长宽比例广度上协同搜索。
+        // Evidence: 原循环把单个 Worker 固定到 owned 的模数子集。
+        // Replacement: claim 按全局剩余提案与空闲虚拟分片动态领取；Risk: 调度顺序改变；Human Review: Required。
+        // Original code:
+        // for (let offset = workerIndex; offset < owned.length; offset += workerCount) {
+        //   await lane(parallel.shards[owned[offset]!]!, quotas[offset]!, laneWorker);
+        // }
+        while (true) {
+          const job = claim();
+          if (job === null) break;
+          try {
+            const used = await lane(job.shard, job.quota, workerFor(workerIndex));
+            // 2026-10-02：await 期间其他 Worker 会领取额度；必须在 await 返回后读取最新 available。
+            available += job.quota - used;
+          }
+          finally { leased.delete(job.shard.index); }
+        }
+      })().catch(error => { if (interruption === null) interruption = error; task.abort.abort(); throw error; })));
+      void outcomes;
+      if (interruption !== null && !(interruption instanceof DOMException && interruption.name === "AbortError")) throw interruption;
       publish(task, { status: idleStatus(), message: task.abort.signal.aborted ? "计算已暂停，可以继续。"
         : point.best ? "本轮计算完成，可以预览、保存蓝图或继续计算。" : `本轮计算结束；${lastFailure}。可以继续计算。` });
     } catch (error) {
-      publish(task, { status: task.abort.signal.aborted || error instanceof PlanningBudgetExhausted ? idleStatus() : "failed",
-        message: task.abort.signal.aborted ? "计算已暂停，可以继续。" : error instanceof PlanningBudgetExhausted
-          ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
-    } finally { settle(task); }
+      publish(task, { status: error instanceof PlanningBudgetExhausted || error instanceof DOMException && error.name === "AbortError"
+        ? idleStatus() : "failed", message: error instanceof PlanningBudgetExhausted
+        ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
+    } finally { await settle(task); }
   }
 
-  function launch(task: PlannerTask, evaluations: number): void {
+  // AI-REMOVED 2026-10-01:
+  // Reason: 单 Worker 顺序状态机改由统一分片执行器承担，避免浏览器和无头端计数与验收规则分叉。
+  // Trigger: 用户授权并发分片、协作计算和刷新检查点。
+  // Evidence: 旧 run 每轮只 await 一个 worker.build，无法同时运行 X 个分片；中途快照包含不可恢复的实时计数。
+  // Replacement: 本文件上方 run 与 prepareParallel。
+  // Risk: 多分片调度和验收队列需要回归验证。
+  // Human Review: Required
+  //
+  // Original code:
+  //   async function run(task: PlannerTask): Promise<void> {
+  //     const point = task.file.checkpoint;
+  //     const idleStatus = () => point.result !== null && point.savedBlueprintId === point.result.blueprint.blueprintId ? "completed" as const : "waiting" as const;
+  //     let lastFailure = "尚未找到通过验证的布局";
+  //     try {
+  //       while (task.remaining > 0 || point.pendingCandidate !== null) {
+  //         check(task);
+  //         const allowance = task.remaining;
+  //         let accounted = point.pendingCandidate !== null;
+  //         let observed = 0;
+  //         const account = (count: number) => {
+  //           if (!Number.isSafeInteger(count) || count < observed || count > allowance) throw new Error("Worker 提案计数无效。");
+  //           const delta = count - observed;
+  //           point.evaluations += delta; task.remaining -= delta; observed = count;
+  //           const round = point.evaluations - task.roundStartedEvaluations;
+  //           publish(task, { evaluatedProposals: point.evaluations, roundEvaluatedProposals: round,
+  //             estimatedProgress: Math.min(1, round / task.file.request.options.evaluationsPerRound) });
+  //         };
+  //         try {
+  //           if (point.pendingCandidate === null) {
+  //             const attempt = point.attempt++;
+  //             const selection = task.portfolio.next(attempt);
+  //             publish(task, { candidateCount: point.attempt, message: `正在搜索第 ${point.attempt} 个布局` });
+  //             point.pendingCandidate = await worker.build(selection.request, selection.variant,
+  //               null, allowance, task.abort.signal,
+  //               (phase, message, evaluations) => { account(evaluations); publish(task, { phase, message }); },
+  //               selection.seed, selection.continuationStep, selection.maximumArea);
+  //             const used = point.pendingCandidate.search.evaluations;
+  //             account(used);
+  //             accounted = true;
+  //             persist(task);
+  //           }
+  //           check(task);
+  //           const candidate = point.pendingCandidate;
+  //           const simulation = workspace.simulation;
+  //           if (simulation === null) throw new Error("仿真服务不可用。");
+  //           publish(task, { phase: "verification", message: "正在验证产量与循环运行" });
+  //           const report = await simulation.actions.runBlueprint(candidate.execution, task.abort.signal);
+  //           if (task.abort.signal.aborted) break;
+  //           if (report.status === "timeout") { lastFailure = "产量验证超时，检查点已保留"; break; }
+  //           point.pendingCandidate = null;
+  //           if (!meetsProductionTargets(task.file.request, report) || !meetsOperatingLimits(candidate.supplyAudit, report)) {
+  //             lastFailure = report.diagnostics.find(entry => entry.severity === "error")?.message ?? "布局实际产量未达到目标";
+  //             persist(task);
+  //             continue;
+  //           }
+  //           task.portfolio.remember(candidate.seed);
+  //           publish(task, { validatedCandidateCount: task.file.progress.validatedCandidateCount + 1, phase: "optimization" });
+  //           // AI-REMOVED 2026-09-30:
+  //           // Reason: 同面积优先减少输出箱，不能直接跳到物流成本。Trigger: 多线合箱需求。
+  //           // Evidence: 原选优不区分箱数。Replacement: comparePlannerRanks。
+  //           // Risk: 同面积结果可能改变。Human Review: Required。
+  //           // Original code:
+  //           // if (point.best === null || candidate.metrics.area < point.best.candidate.metrics.area
+  //           //   || (candidate.metrics.area === point.best.candidate.metrics.area
+  //           //     && (candidate.search.quality?.secondary ?? candidate.metrics.score)
+  //           //       < (point.best.candidate.search.quality?.secondary ?? point.best.candidate.metrics.score))) {
+  //           if (point.best === null || comparePlannerRanks({ area: candidate.metrics.area,
+  //             outputStashCount: candidate.search.quality?.outputStashCount, secondary: candidate.search.quality?.secondary ?? candidate.metrics.score },
+  //           { area: point.best.candidate.metrics.area, outputStashCount: point.best.candidate.search.quality?.outputStashCount,
+  //             secondary: point.best.candidate.search.quality?.secondary ?? point.best.candidate.metrics.score }) < 0) {
+  //             point.best = { candidate, report };
+  //             point.result = { taskId: task.file.taskId, blueprint: candidate.execution.blueprint, folderId: null,
+  //               metrics: candidate.metrics, connections: candidate.connections,
+  //               measuredOutputs: report.probes.filter(probe => task.file.request.plan.targets.some(target => target.itemId === probe.id))
+  //                 .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute })),
+  //               warmupSeconds: candidate.execution.warmupSeconds, observationSeconds: report.observationSeconds, elapsedMs: elapsed(task) };
+  //             publish(task, { bestArea: candidate.metrics.area });
+  //           }
+  //           persist(task);
+  //         } catch (error) {
+  //           if (!accounted) {
+  //             const used = error instanceof PlannerCandidateError ? error.search?.evaluations ?? observed : observed;
+  //             account(used);
+  //             if (used === 0 && error instanceof PlannerCandidateError) throw new Error(`当前布局无法启动搜索：${error.message}`);
+  //           }
+  //           if (!(error instanceof PlannerCandidateError)) throw error;
+  //           lastFailure = error.message;
+  //           persist(task);
+  //         }
+  //         await new Promise<void>(resolve => setTimeout(resolve, 0));
+  //       }
+  //       publish(task, { status: idleStatus(), message: task.abort.signal.aborted ? "计算已暂停，可以继续。"
+  //         : point.best ? "本轮计算完成，可以预览、保存蓝图或继续计算。" : `本轮计算结束；${lastFailure}。可以继续计算。` });
+  //     } catch (error) {
+  //       publish(task, { status: task.abort.signal.aborted || error instanceof PlanningBudgetExhausted ? idleStatus() : "failed",
+  //         message: task.abort.signal.aborted ? "计算已暂停，可以继续。" : error instanceof PlanningBudgetExhausted
+  //           ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
+  //     } finally { settle(task); }
+  //   }
+  function launch(task: PlannerTask, evaluations: number, concurrency = task.file.request.options.concurrency ?? 1): void {
     if (state.activeTaskId !== null) throw new Error("已有任务正在计算或保存。");
     // AI-REMOVED 2026-09-30:
     // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
@@ -212,6 +579,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
 
     if (!Number.isSafeInteger(evaluations) || evaluations < 10_000 || evaluations % 10_000 !== 0) throw new Error("提案次数必须为不少于一万的整万数。");
     if (workspace.simulation === null) throw new Error("仿真服务不可用。");
+    prepareParallel(task, concurrency);
     task.file = { ...task.file, request: { ...task.file.request, options: { ...task.file.request.options, evaluationsPerRound: evaluations } } };
     task.abort = new AbortController();
     task.roundStartedEvaluations = task.file.checkpoint.evaluations;
@@ -246,7 +614,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     } catch (error) {
       publish(task, { status: "save-failed", message: errorMessage(error) });
       throw error;
-    } finally { settle(task); }
+    } finally { await settle(task); }
   }
 
   const ready = storage === null ? Promise.resolve() : storage.load().then(files => {
@@ -281,14 +649,14 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           request: structuredClone(request), checkpoint: emptyPlannerCheckpoint(), progress: { taskId: id, status: "waiting",
             phase: "preparing", startedAt: Date.now(), elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
             evaluatedProposals: 0, roundEvaluatedProposals: 0,
-            validatedCandidateCount: 0, bestArea: null, message: null } });
+            validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } });
         tasks.set(id, task);
         launch(task, request.options.evaluationsPerRound);
         return id;
       },
-      continuePlanning(id, evaluations) {
+      continuePlanning(id, evaluations, concurrency) {
         const task = requireTask(id);
-        launch(task, evaluations);
+        launch(task, evaluations, concurrency);
       },
       cancel(id) {
         const task = requireTask(id);
@@ -360,7 +728,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     dispose() {
       disposed = true;
       for (const task of tasks.values()) { task.abort.abort(); persist(task); }
-      worker.dispose();
+      for (const current of new Set([worker, ...workers.values()])) current.dispose();
       if (workspace.blueprintPlanner === host) workspace.blueprintPlanner = null;
     },
   };

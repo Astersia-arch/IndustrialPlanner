@@ -14,7 +14,7 @@ function taskFile(): BlueprintPlannerTaskFile {
   return { formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: "test-task",
     request: structuredClone(yazhen.request) as BlueprintPlannerRequest, checkpoint: emptyPlannerCheckpoint(),
     progress: { taskId: "test-task", status: "waiting", phase: "preparing", startedAt: 1,
-      elapsedMs: 0, estimatedProgress: null, evaluatedProposals: 0, roundEvaluatedProposals: 0, candidateCount: 0, validatedCandidateCount: 0, bestArea: null, message: null } };
+      elapsedMs: 0, estimatedProgress: null, evaluatedProposals: 0, roundEvaluatedProposals: 0, candidateCount: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } };
 }
 
 it("检查点往返保持布局池的访问次数、轮换顺序和独立输出拓扑", () => {
@@ -58,8 +58,8 @@ it("真实 Worker 与仿真 Host 支持多任务导入、续算检查点与删�
   const session = new PlannerBatchSession();
   const host = createBlueprintPlannerHost(session.workspace, { storage: null, roundLimit: () => 10,
     worker: {
-      build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea) =>
-        session.planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea }, update, signal),
+      build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea, targetOutline) =>
+        session.planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea, targetOutline }, update, signal),
       dispose: () => { void session.planner.dispose(); },
     },
   });
@@ -96,8 +96,8 @@ it("真实 Worker 暂停结算已用提案，续算只重置本轮计数且不�
   let requestedPause = false;
   const host = createBlueprintPlannerHost(session.workspace, { storage: null,
     worker: {
-      build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea) =>
-        session.planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea },
+      build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea, targetOutline) =>
+        session.planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea, targetOutline },
           (phase, message, count) => {
             update(phase, message, count);
             if (!requestedPause && count > 0) {

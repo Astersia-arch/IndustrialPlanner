@@ -273,6 +273,10 @@ case "$CMD" in
     echo "未通过的测试"
     FAIL_FOUND=0
     for LOG in "$RUN_DIR/test.log" "$RUN_DIR/e2e.log" "$RUN_DIR/release.log" "$RUN_DIR/blueprint.log"; do
+      # AI-CORRECTION 2026-10-02: normal 首轮超时若已串行复跑通过，首轮 FAIL 日志仍保留，但不是最终失败用例。
+      if [ "$LOG" = "$RUN_DIR/test.log" ] && [ "$TEST_EXIT" = "0" ]; then
+        continue
+      fi
       if [ -f "$LOG" ]; then
         grep -nE "^(FAIL|✗|×)\b|AssertionError|Expected |Received " "$LOG" 2>/dev/null | head -n 50 || true
         if grep -qE "^(FAIL|✗|×)\b" "$LOG" 2>/dev/null; then

@@ -450,13 +450,11 @@ describe("production planning flow graph", () => {
     ));
     const planterBodyOutput = graph.links.find((link) => (
       link.source.includes("r_planter_moss_1_from_moss_seed_1_basic")
-      && link.target === seedCollectorFeedback?.source
+      && link.target.includes("r_seedcol_moss_seed_1_from_moss_1_basic")
       && link.itemId === "item_plant_moss_1"
     ));
-    const externalCycleSupply = graph.links.find((link) => (
-      link.source === "recipe:external-supply:item_plant_moss_1:target:item_plant_moss_1"
-      && link.target === seedCollectorFeedback?.source
-      && link.itemId === "item_plant_moss_1"
+    const externalCycleSupply = graph.nodes.find((node) => (
+      node.recipeId === "external-supply:item_plant_moss_1"
     ));
     const seedCollectorSeedOutput = graph.links.find((link) => (
       link.source.includes("r_seedcol_moss_seed_1_from_moss_1_basic")
@@ -468,7 +466,7 @@ describe("production planning flow graph", () => {
     expect(seedCollectorFeedback?.preferredFeedback).toBe(true);
     expect(seedCollectorFeedback?.targetSide).toBe("right");
     expect(planterBodyOutput).toBeDefined();
-    expect(externalCycleSupply).toBeDefined();
+    expect(externalCycleSupply).toBeUndefined();
     expect(seedCollectorSeedOutput?.sourceSide).toBe("left");
     expect(layoutFeedback?.direction).toBe("backward");
   });

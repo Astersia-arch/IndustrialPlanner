@@ -17,7 +17,7 @@ export interface PlannerSearchSeed {
 }
 
 export function plannerRequestKey(request: BlueprintPlannerRequest): string {
-  return JSON.stringify({ ...request, options: { ...request.options, budgetMs: 0, evaluationsPerRound: 0 } });
+  return JSON.stringify({ ...request, options: { ...request.options, budgetMs: 0, evaluationsPerRound: 0, concurrency: undefined } });
 }
 
 export function capturePlannerSeed(request: BlueprintPlannerRequest, network: PlannerNetwork, wires: readonly PlannerWire[],

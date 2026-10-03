@@ -45,6 +45,7 @@ export interface BlueprintPlannerOptions {
   //   readonly budgetMs: number;
 
   readonly evaluationsPerRound: number;
+  readonly concurrency?: number;
 }
 
 export interface BlueprintPlannerRequest {
@@ -69,6 +70,11 @@ export type BlueprintPlannerPhase =
   | "optimization"
   | "saving";
 
+export interface BlueprintPlannerAreaPoint {
+  readonly evaluatedProposals: number;
+  readonly bestArea: number;
+}
+
 export interface BlueprintPlannerProgress {
   readonly taskId: string;
   readonly status: BlueprintPlannerTaskStatus;
@@ -81,6 +87,7 @@ export interface BlueprintPlannerProgress {
   readonly candidateCount: number;
   readonly validatedCandidateCount: number;
   readonly bestArea: number | null;
+  readonly areaHistory?: readonly BlueprintPlannerAreaPoint[];
   readonly message: string | null;
 }
 

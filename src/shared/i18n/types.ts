@@ -66,6 +66,8 @@ export type UiKey =
   | "eda.warehouseStartup"
   | "eda.budget"
   | "eda.evaluationsPerRound"
+  | "eda.concurrency"
+  | "eda.areaCurve"
   | "eda.noPlan"
   | "eda.openProductionPlanning"
   | "eda.elapsed"

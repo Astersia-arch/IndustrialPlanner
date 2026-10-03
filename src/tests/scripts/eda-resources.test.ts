@@ -3,13 +3,13 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
 
-function python(body: string): unknown {
+function python(body: string, timeoutMs = 10_000): unknown {
   return JSON.parse(execFileSync("python3", ["-B", "-c", `
 import sys,json
 sys.path.insert(0,sys.argv[1])
 from eda_resources import cpu_policy,memory_headroom,admission_slots
 ${body}
-`, resolve("src/scripts")], { encoding: "utf8", timeout: 10_000 }));
+`, resolve("src/scripts")], { encoding: "utf8", timeout: timeoutMs }));
 }
 
 it("训练命令行能创建并渲染多核与百分比预算的帮助信息", () => {
@@ -98,7 +98,7 @@ for scenario in ('memory','cancel','checkpoint-error'):
   finally:pool.close()
   outcomes.append([state['workers'],all(not process_group(pid)['pids'] for pid in active)])
 print(json.dumps(outcomes))
-`)).toEqual([
+`, 30_000)).toEqual([
     ["memory", "memory-pressure", 17], [[], true],
     ["cancel", "signal", 17], [[], true],
     ["checkpoint-error", "injected checkpoint failure"], [[], true],
@@ -122,5 +122,5 @@ try:
  print(json.dumps([state['workers'],owned.returncode is not None,other.poll() is None]))
 finally:
  terminate_worker(owned);terminate_worker(other)
-`)).toEqual([[], true, true]);
+`, 30_000)).toEqual([[], true, true]);
 });

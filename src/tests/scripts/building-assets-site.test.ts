@@ -564,7 +564,7 @@ try:
     print('http verified')
 finally:
     server.shutdown();thread.join();server.server_close()
-`, path.resolve("src/scripts/building-assets-site-source.py")], { cwd: directory, encoding: "utf8", timeout: 10000 });
+`, path.resolve("src/scripts/building-assets-site-source.py")], { cwd: directory, encoding: "utf8", timeout: 30_000 });
       expect(result.trim().endsWith("http verified")).toBe(true);
     });
   });

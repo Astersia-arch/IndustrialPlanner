@@ -18,6 +18,24 @@ export function materialBalance(network: PlannerNetwork): Map<string, number> {
   return result;
 }
 
+function isRoundedRunningConsumptionShortfall(network: PlannerNetwork, itemId: string, shortfall: number): boolean {
+  const plan = network.request.plan;
+  const plannedProduction = plan.recipes.reduce((total, recipe) => total
+    + recipe.outputs.filter(flow => flow.itemId === itemId).reduce((sum, flow) => sum + flow.perMinute, 0)
+    - recipe.inputs.filter(flow => flow.itemId === itemId).reduce((sum, flow) => sum + flow.perMinute, 0),
+  -plan.targets.filter(flow => flow.itemId === itemId).reduce((sum, flow) => sum + flow.perMinute, 0));
+  if (plannedProduction < -1e-6) return false;
+  const plannedRunning = plan.recipes.flatMap(recipe => recipe.runningInputs)
+    .filter(flow => flow.itemId === itemId).reduce((sum, flow) => sum + flow.perMinute, 0);
+  const actualRunning = network.nodes.filter(node => node.purpose === "production").reduce((total, node) => total
+    + node.inputs.filter(input => input.itemId === itemId && input.storageGroupIds?.some(groupId =>
+      node.definition.recipeChannels.some(channel => channel.type === "consumption-channel"
+        && channel.ingredientStorageGroupIds.includes(groupId))))
+      .reduce((sum, input) => sum + input.perMinute, 0), 0);
+  const extraRunning = actualRunning - plannedRunning;
+  return extraRunning > 1e-6 && Math.abs(extraRunning - plannedProduction - shortfall) <= 1e-4;
+}
+
 export function addTerminals(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, separateOperatingSupply = false, fluidGroupSize = 64, compact = false, stashPackingVariant = 0): void {
   if (!Number.isSafeInteger(stashPackingVariant) || stashPackingVariant < 0) throw new Error("储存箱分组序号必须为非负整数。");
   const available = new Set([...network.request.plan.infiniteItemIds, ...network.request.plan.externalSupplies.map((entry) => entry.itemId)]);
@@ -26,7 +44,11 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
   const outputs = sumMaterial(network.request.plan.targets);
   for (const [itemId, rate] of balance) {
     if (rate < -1e-6) {
-      if (!available.has(itemId)) throw new PlannerCandidateError(`原规划缺少物料来源：${itemId}，${(-rate).toFixed(2)}/min`);
+      if (!available.has(itemId)) {
+        const advice = isRoundedRunningConsumptionShortfall(network, itemId, -rate)
+          ? "。设备按整台放置后，运行消耗高于原规划；请在产线规划将「设备最低消耗」设为「取整计算」，重新生成并启动 EDA 任务。" : "";
+        throw new PlannerCandidateError(`原规划缺少物料来源：${itemId}，${(-rate).toFixed(2)}/min${advice}`);
+      }
       sources.push({ itemId, perMinute: -rate });
     } else if (rate > 1e-6) outputs.set(itemId, (outputs.get(itemId) ?? 0) + rate);
   }

@@ -23,7 +23,7 @@ import type { PlannerDiagnosticPhase, PlannerSearchDiagnostics, PlannerSearchExp
 import { constructCompactLayout } from "./constructive-layout";
 import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "./search-seed";
 import { resolvePlannerAttempt } from "./search-portfolio";
-import { continuationOutline } from "./search-outline";
+import { continuationOutline, fixedOutlineMinimum } from "./search-outline";
 
 export interface PlannerCandidate {
   readonly seed?: PlannerSearchSeed;
@@ -131,12 +131,20 @@ async function createPlannerAttempt(
     - initialGraph.groups[initialGraph.groupIndexByNodeId.get(b.entity.id)!]!.rank);
   const bodyArea = network.nodes.reduce((sum, node) => sum + node.definition.footprint.width * node.definition.footprint.height, 0);
   const scale = strategy === "compact" ? [1, 1.12, 1.25][Math.floor(variant / 3) % 3]! : 1 + Math.floor(variant / 3) * 0.25;
-  const fixedMinimum = network.nodes.filter(node => node.purpose === "bus" || node.external
-    || node.entity.definitionId === "unloader_1" || node.entity.definitionId === "loader_1")
-    .reduce((bounds, node) => {
-      const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
-      return { width: Math.max(bounds.width, rect.x + rect.width), height: Math.max(bounds.height, rect.y + rect.height) };
-    }, { width: 1, height: 1 });
+  // AI-REMOVED 2026-10-02:
+  // Reason: 固定设施最小边界由候选生成与广度调度共享，避免两处判定不一致。
+  // Trigger: 多尺寸并行批次必须在派发前排除不可能的搜索盒子。
+  // Evidence: 原边界计算仅存在于本候选生成器内。
+  // Replacement: fixedOutlineMinimum，src/blueprint-planner/search-outline.ts。
+  // Risk: 最小边界增加单体设备尺寸约束；Human Review: Required。
+  // Original code:
+  // const fixedMinimum = network.nodes.filter(node => node.purpose === "bus" || node.external
+  //   || node.entity.definitionId === "unloader_1" || node.entity.definitionId === "loader_1")
+  //   .reduce((bounds, node) => {
+  //     const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
+  //     return { width: Math.max(bounds.width, rect.x + rect.width), height: Math.max(bounds.height, rect.y + rect.height) };
+  //   }, { width: 1, height: 1 });
+  const fixedMinimum = fixedOutlineMinimum(registry, network.nodes);
   // AI-REMOVED 2026-09-30:
   // Reason: 只减单边从 20×20 直接要求 380 格，遗漏 399、396 等长宽比。
   // Trigger: 用户要求尝试打破面积停滞。Evidence: 五百万提案曲线及原分支。
@@ -145,12 +153,25 @@ async function createPlannerAttempt(
   // Original code (seed branch):
   // { width: Math.min(options.outline?.width ?? Infinity, Math.max(1, options.seed.width - (variant % 2 ? 1 : 0))),
   //   height: Math.min(options.outline?.height ?? Infinity, Math.max(1, options.seed.height - (variant % 2 ? 0 : 1))) }
-  let outline = options.seed
+  // AI-REMOVED 2026-10-02:
+  // Reason: 显式尺寸批次必须先于种子缩边选择盒子。
+  // Trigger: 不同 Worker 对不同长宽比例进行有界搜索。
+  // Evidence: 旧选择会在读取 targetOutline 之前先抛出面积上限错误。
+  // Replacement: 下方 targetOutline 优先的 outline 选择。
+  // Risk: Low；Human Review: Required。
+  // Original code:
+  // let outline = options.seed
+  //   ? continuationOutline(options.seed, variant, options.continuationStep, fixedMinimum, options.outline, options.maximumArea)
+  //   : options.outline ? { ...options.outline }
+  //   : strategy === "compact" ? { width: Math.max(16, Math.ceil(Math.sqrt(bodyArea / 0.5) * scale) + 4), height: Math.max(18, Math.ceil(Math.sqrt(bodyArea / 0.5) * 1.2 * scale) + 2) }
+  //     : { width: Math.max(24, Math.ceil(Math.sqrt(bodyArea / 0.25) * scale)), height: Math.max(32, Math.ceil(Math.sqrt(bodyArea / 0.25) * 1.35 * scale)) };
+  let outline = options.targetOutline ? { ...options.targetOutline } : options.seed
     ? continuationOutline(options.seed, variant, options.continuationStep, fixedMinimum, options.outline, options.maximumArea)
     : options.outline ? { ...options.outline }
     : strategy === "compact" ? { width: Math.max(16, Math.ceil(Math.sqrt(bodyArea / 0.5) * scale) + 4), height: Math.max(18, Math.ceil(Math.sqrt(bodyArea / 0.5) * 1.2 * scale) + 2) }
       : { width: Math.max(24, Math.ceil(Math.sqrt(bodyArea / 0.25) * scale)), height: Math.max(32, Math.ceil(Math.sqrt(bodyArea / 0.25) * 1.35 * scale)) };
-  if (!options.seed && options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea) {
+  // AI-CORRECTION 2026-10-02: 调度器指定的盒子不可由冷启动回退改成另一尺寸；原注释所述面积上限仍有效。
+  if (!options.seed && !options.targetOutline && options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea) {
     outline = continuationOutline(outline, variant, Math.floor(variant / 4) + 2, fixedMinimum, options.outline, options.maximumArea);
   }
   const statistics: PlannerSearchStatistics = { seed: variant, evaluationLimit: options.maxEvaluations ?? 50_000,
@@ -214,7 +235,16 @@ async function createPlannerAttempt(
   addTerminals(registry, network, placement, profile.separateOperatingSupply === 1, profile.fluidGroupSize, strategy === "compact", options.stashPackingVariant);
   }
   checkBudget();
-  const wires = restored?.wires ?? await wireProductionNetwork(registry, network, placement, checkBudget, strategy === "compact");
+  // AI-REMOVED 2026-10-02:
+  // Reason: 共享准入口可能使当前有限布局预算无法布通；既有 baseline 重排应探索逐消费者限速拓扑。
+  // Trigger: 赤铜矿外供候选在共享入口拓扑下用尽 50,000 次提案，独立限速拓扑通过。
+  // Evidence: candidate.test.ts 的同输入隔离对照。
+  // Replacement: 下方按搜索策略选择共享入口或逐消费者限速。
+  // Risk: 回退拓扑增加准入口及缓冲占地。Human Review: Required
+  // Original code:
+  // const wires = restored?.wires ?? await wireProductionNetwork(registry, network, placement, checkBudget, strategy === "compact");
+  const wires = restored?.wires ?? await wireProductionNetwork(registry, network, placement, checkBudget,
+    strategy === "compact", strategy !== "baseline");
   connectPlantStartups(registry, startups, wires);
   statistics.wireCount = wires.length;
   statistics.bestRoutedWireCount = 0;
@@ -224,18 +254,30 @@ async function createPlannerAttempt(
   // 订正 2026-09-16：最终实现在布线后补桩，避免桩位占用物流通道。
   // Risk: Low。Human Review: Required。
   // Original code: await placePower(registry, network, placement, checkBudget);
-  if (options.outline === undefined && !options.seed) for (const node of network.nodes.filter(node => node.purpose === "bus" || node.external
+  // AI-CORRECTION 2026-10-02: 显式调度盒子也是硬约束，不得由固定设施自动扩宽。
+  if (options.outline === undefined && !options.seed && !options.targetOutline) for (const node of network.nodes.filter(node => node.purpose === "bus" || node.external
     || node.definition.id === "unloader_1" || node.definition.id === "loader_1")) {
     const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
     outline.width = Math.max(outline.width, rect.x + rect.width); outline.height = Math.max(outline.height, rect.y + rect.height);
   }
   // 2026-09-30：新增固定存取口后可能撑大初始盒子；按实际固定边界重新选形状，不能突破全局面积上限。
+  const currentFixedMinimum = fixedOutlineMinimum(registry, network.nodes);
+  if (options.targetOutline && (outline.width < currentFixedMinimum.width || outline.height < currentFixedMinimum.height
+    || (options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea))) {
+    throw new PlannerCandidateError("指定搜索盒子无法容纳固定设施或超过面积上限。", statistics);
+  }
   if (options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea) {
-    const minimum = network.nodes.filter(node => node.purpose === "bus" || node.external
-      || node.definition.id === "unloader_1" || node.definition.id === "loader_1").reduce((bounds, node) => {
-      const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
-      return { width: Math.max(bounds.width, rect.x + rect.width), height: Math.max(bounds.height, rect.y + rect.height) };
-    }, { width: 1, height: 1 });
+    // AI-REMOVED 2026-10-02:
+    // Reason: 固定设施边界改为共享实现，派发与生成使用同一规则。
+    // Trigger: 多尺寸并行批次。Evidence: 两处 reduce 原先重复计算。
+    // Replacement: currentFixedMinimum；Risk: Low；Human Review: Required。
+    // Original code:
+    // const minimum = network.nodes.filter(node => node.purpose === "bus" || node.external
+    //   || node.definition.id === "unloader_1" || node.definition.id === "loader_1").reduce((bounds, node) => {
+    //   const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
+    //   return { width: Math.max(bounds.width, rect.x + rect.width), height: Math.max(bounds.height, rect.y + rect.height) };
+    // }, { width: 1, height: 1 });
+    const minimum = currentFixedMinimum;
     Object.assign(outline, continuationOutline(outline, variant, Math.floor(variant / 4) + 2, minimum, options.outline, options.maximumArea));
   }
   // AI-REMOVED 2026-09-16:

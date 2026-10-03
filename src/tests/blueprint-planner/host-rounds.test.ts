@@ -105,7 +105,8 @@ describe("EDA Host 多轮规划", () => {
       expect(host.queries.getTask()?.status).toBe("completed");
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(90);
 
-      expect(workerBuild.mock.calls.map((call) => call[3])).toEqual([50_000, 49_999, 20_000, 19_999, 30_000, 29_999]);
+      // 2026-10-02：Worker 按布局批次领取额度；找到最佳后缩小单批预算并换尺寸。
+      expect(workerBuild.mock.calls.map((call) => call[3])).toEqual([20_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
       expect(new Set(workerBuild.mock.calls.map((call) => call[0]))).toEqual(new Set([workerBuild.mock.calls[0]![0]]));
       expect(saveBlueprintDocument).toHaveBeenCalledTimes(2);
     } finally {
