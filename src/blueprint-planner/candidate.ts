@@ -7,7 +7,7 @@ import type { SimulationBlueprintRunRequest } from "@/domain/simulation";
 import { lookupText } from "@/shared/i18n";
 import { resolveEntityGridRect } from "@/shared/geometry/power-range";
 import { createProductionNetwork, supplyAuxiliaryDemand } from "./production-network";
-import { createPlainNode, PlannerPlacement, placeProduction } from "./placement";
+import { createPlainNode, PlannerPlacement, placeProduction, redundantEnvironmentStations } from "./placement";
 import { addTerminals, configureSource, getPlannerStashDrainPorts, materialBalance } from "./terminals";
 import { connectPlantStartups, placePower, preparePlantStartups } from "./support";
 import { wireProductionNetwork } from "./wiring";
@@ -105,8 +105,31 @@ async function createPlannerAttempt(
   }
   const strategy = options.strategy ?? "compact";
   const profile = resolveSearchProfile({ ...(strategy === "compact" ? { areaWeight: 0.4, congestionWeight: 2, fluidGroupSize: 2 } : {}), ...options.profile });
-  const restored = options.seed ? restorePlannerSeed(registry, request, options.seed) : undefined;
+  let restored = options.seed ? restorePlannerSeed(registry, request, options.seed) : undefined;
+  let environmentLimits: Map<string, number> | undefined;
+  if (restored) {
+    const redundant = redundantEnvironmentStations(restored.network);
+    if (redundant.length) {
+      environmentLimits = new Map();
+      for (const node of restored.network.nodes.filter(entry => entry.purpose === "environment" && !redundant.includes(entry))) {
+        const gas = node.recipe!.gasDiffusionOutput!.gasItemId;
+        environmentLimits.set(gas, (environmentLimits.get(gas) ?? 0) + 1);
+      }
+      // 拓扑改变时从原始生产需求重新补算辅助产能和物流，不复用已撤设备的管线或消耗。
+      restored = undefined;
+    }
+  }
   const network = restored?.network ?? createProductionNetwork(registry, request);
+  if (environmentLimits) {
+    const counts = new Map<string, number>();
+    const nodes = network.nodes.filter(node => {
+      const gas = node.recipe?.gasDiffusionOutput?.gasItemId;
+      if (!gas) return true;
+      counts.set(gas, (counts.get(gas) ?? 0) + 1);
+      return counts.get(gas)! <= (environmentLimits.get(gas) ?? 0);
+    });
+    network.nodes.splice(0, network.nodes.length, ...nodes);
+  }
   // AI-REMOVED 2026-09-16:
   // Reason: 固定六格间距与无拓扑随机排列使紧凑目标不可达。
   // Trigger: 用户要求一万次局部评估内优化完整蓝图面积。
@@ -212,11 +235,16 @@ async function createPlannerAttempt(
   let startups: ReturnType<typeof preparePlantStartups> = [];
   update("layout", "正在安排设备与环境设施");
   if (!restored) {
-  await placeProduction(registry, network, placement, variant, checkBudget);
+  await placeProduction(registry, network, placement, variant, checkBudget, environmentLimits);
+  const redundant = redundantEnvironmentStations(network);
+  if (redundant.length) {
+    placement.remove(redundant);
+    network.nodes.splice(0, network.nodes.length, ...network.nodes.filter(node => !redundant.includes(node)));
+  }
   const processedEnvironments = new Set<string>();
   for (;;) {
     checkBudget();
-    const added = network.nodes.filter((node) => node.entity.id.startsWith("eda-environment-") && !processedEnvironments.has(node.entity.id));
+    const added = network.nodes.filter((node) => node.purpose === "environment" && !processedEnvironments.has(node.entity.id));
     if (!added.length) break;
     for (const environment of added) {
       processedEnvironments.add(environment.entity.id);
@@ -225,7 +253,7 @@ async function createPlannerAttempt(
         if (deficit > 1e-6) supplyAuxiliaryDemand(registry, network, input.itemId, deficit);
       }
     }
-    await placeProduction(registry, network, placement, variant, checkBudget);
+    await placeProduction(registry, network, placement, variant, checkBudget, environmentLimits);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   // AI-REMOVED 2026-09-16: 初排供电由后面的候选覆盖计算替代。

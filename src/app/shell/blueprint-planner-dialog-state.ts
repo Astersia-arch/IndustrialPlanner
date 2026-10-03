@@ -1,5 +1,5 @@
 import { makeAutoObservable, observable, toJS } from "mobx";
-import type { BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerRequest } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerItemPolicy, BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerRequest, BlueprintPlannerSupplyPolicy } from "@/domain/blueprint-planner";
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
 import { runStorageEffect } from "@/shared/storage/storage-failure";
 import { createDefaultDialogStateForKey } from "../state";
@@ -59,8 +59,11 @@ export class BlueprintPlannerDialogController {
     if (!enabled) this.close();
   }
 
-  open(plan?: BlueprintPlannerProductionPlan): void {
-    if (plan !== undefined) { this.plan = structuredClone(plan); this.viewTaskId = null; }
+  open(plan?: BlueprintPlannerProductionPlan, options?: BlueprintPlannerOptions): void {
+    if (plan !== undefined) {
+      this.plan = structuredClone(plan); this.viewTaskId = null;
+      this.options = options ? toJS(options) : { ...this.options, itemPolicies: [] };
+    }
     this.dialogState.visible = true;
   }
 
@@ -81,6 +84,16 @@ export class BlueprintPlannerDialogController {
     this.options = { ...this.options, ...options,
       concurrency: (options.concurrency ?? this.options.concurrency) === 1 ? 1 : "auto" };
     runStorageEffect("planner-options", () => saveToLocalStorage(OPTIONS_KEY, toJS(this.options)));
+  }
+
+  updateSupplyPolicy(policy: BlueprintPlannerSupplyPolicy): void {
+    if (!this.plan || this.viewTaskId !== null) return;
+    this.plan = { ...this.plan, supplyPolicies: [...(this.plan.supplyPolicies ?? []).filter(entry => entry.itemId !== policy.itemId), policy] };
+  }
+
+  updateItemPolicy(policy: BlueprintPlannerItemPolicy): void {
+    if (!this.plan || this.viewTaskId !== null) return;
+    this.options = { ...this.options, itemPolicies: [...(this.options.itemPolicies ?? []).filter(entry => entry.itemId !== policy.itemId), policy] };
   }
 
   getRequest(): BlueprintPlannerRequest {

@@ -413,7 +413,7 @@ function computeProductionPlanPass(
     surplusSupplyRemaining: waterPurifierOutputPerMinute > EPSILON
       ? new Map([[WATER_PURIFIER_OUTPUT_ITEM_ID, waterPurifierOutputPerMinute]])
       : new Map(),
-    infiniteItemIds: buildInfiniteItemIds(request.infiniteItemIds, request.supplies, index),
+    infiniteItemIds: buildInfiniteItemIds(request.infiniteItemIds, request.supplies),
     recipeChoices: request.recipeChoices,
     sourceConfig: request.sourceConfig,
     useModules,
@@ -1878,12 +1878,19 @@ function buildSupplyMap(supplies: readonly ProductionPlanningPort[]): Map<string
 function buildInfiniteItemIds(
   baseItemIds: ReadonlySet<string>,
   supplies: readonly ProductionPlanningPort[],
-  index: ProductionPlanningIndex,
+  // AI-REMOVED 2026-10-03:
+  // Reason: 显式无限外供统一适用于所有原料，不再需要物品分类索引。
+  // Trigger: 用户要求所有自然资源可点击无限供给。
+  // Evidence: index 在本函数中只用于排除自然资源。
+  // Replacement: 下方按原料行的 isInfinite 合并无限供给。
+  // Risk: Low；未设置无限的自然资源仍按配方生产。Human Review: Required
+  // Original code:
+  // index: ProductionPlanningIndex,
 ): ReadonlySet<string> {
   const result = new Set(baseItemIds);
 
   for (const supply of supplies) {
-    if (supply.itemId.length > 0 && supply.isInfinite === true && !index.naturalResourceItemIds.has(supply.itemId)) {
+    if (supply.itemId.length > 0 && supply.isInfinite === true) {
       result.add(supply.itemId);
     }
   }

@@ -1,3 +1,4 @@
+import { restorePlannerOutputRequest, MAX_PLANNER_OUTPUT_MODES, plannerOutputModeKey, resolvePlannerOutputAttempt } from "./output-policy";
 import type { BlueprintPlannerRequest, BlueprintPlannerResult, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { SimulationBlueprintRunReport } from "@/domain/simulation";
@@ -84,6 +85,8 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
     assertJson(file);
     const { request, checkpoint: point, progress } = file;
     validateTaskRequest(registry, request);
+    const outputModes = new Set(Array.from({ length: MAX_PLANNER_OUTPUT_MODES }, (_, variant) =>
+      plannerOutputModeKey(resolvePlannerOutputAttempt(request, variant).request.options)));
     if (!point || !progress || progress.taskId !== file.taskId) throw new Error("任务缺少检查点或进度。");
     for (const count of [point.attempt, point.evaluations, progress.candidateCount, progress.validatedCandidateCount]) {
       if (!Number.isSafeInteger(count) || count < 0) throw new Error("任务计数无效。");
@@ -97,14 +100,23 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
     if (!Number.isFinite(progress.elapsedMs) || progress.elapsedMs < 0 || !Number.isFinite(progress.startedAt)
       || point.attempt !== progress.candidateCount || progress.validatedCandidateCount > point.attempt
       || !["running", "waiting", "saving", "completed", "cancelled", "failed", "save-failed"].includes(progress.status)) throw new Error("任务进度无效。");
-    if (!Array.isArray(point.portfolio?.pools) || point.portfolio.pools.length > 2) throw new Error("搜索池无效。");
+    if (!Array.isArray(point.portfolio?.pools) || point.portfolio.pools.length > MAX_PLANNER_OUTPUT_MODES) throw new Error("搜索池无效。");
     const portfolio = new PlannerSearchPortfolio(request);
     portfolio.restore(point.portfolio);
-    const seedRequest = (mode: BlueprintPlannerRequest["options"]["solidOutput"]) => request.options.solidOutput === "auto"
-      ? { ...request, options: { ...request.options, solidOutput: mode } } : request;
+// AI-REMOVED 2026-10-03:
+// Reason: 自动去向改为逐物品组合，检查点需要保留每种组合。
+// Trigger: 用户要求精确配置物品。
+// Evidence: 原搜索和恢复只读取全局 solidOutput。
+// Replacement: restorePlannerOutputRequest
+// Risk: 种子池上限增为 64 种组合。
+// Human Review: Required
+// Original code:
+//     const seedRequest = (mode: BlueprintPlannerRequest["options"]["solidOutput"]) => request.options.solidOutput === "auto"
+//       ? { ...request, options: { ...request.options, solidOutput: mode } } : request;
+
     for (const pool of point.portfolio.pools) for (const entry of pool.entries) {
       validateTaskRequest(registry, entry.seed.network.request);
-      restorePlannerSeed(registry, seedRequest(entry.seed.network.request.options.solidOutput), entry.seed);
+      restorePlannerSeed(registry, restorePlannerOutputRequest(request, entry.seed.network.request.options), entry.seed);
     }
     for (const candidate of [point.best?.candidate ?? null, point.pendingCandidate]) {
       if (candidate === null) continue;
@@ -117,7 +129,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
         if (!entity || registry.queries.findEntityDefinition(entity.definitionId) === null
           || !Number.isFinite(entity.position.x) || !Number.isFinite(entity.position.y)) throw new Error("候选蓝图包含无效设备。");
       }
-      if (candidate.seed) restorePlannerSeed(registry, seedRequest(candidate.seed.network.request.options.solidOutput), candidate.seed);
+      if (candidate.seed) restorePlannerSeed(registry, restorePlannerOutputRequest(request, candidate.seed.network.request.options), candidate.seed);
     }
     if (point.best !== null && (!Array.isArray(point.best.report?.probes) || point.best.report.status !== "completed")) throw new Error("最优结果缺少验证报告。");
     if (point.result !== null && (point.result.taskId !== file.taskId || !point.best
@@ -153,7 +165,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
           || !Number.isSafeInteger(shard.validatedCandidates) || shard.validatedCandidates < 0
           || shard.validatedCandidates > shard.attempts
           || !shard.shapeVisits || typeof shard.shapeVisits !== "object" || Array.isArray(shard.shapeVisits)
-          || Object.entries(shard.shapeVisits).some(([key, visits]) => !/^(stash|warehouse)\/\d+\/\d+$/.test(key)
+          || Object.entries(shard.shapeVisits).some(([key, visits]) => (!/^.+\/\d+\/\d+$/.test(key) || !outputModes.has(key.split("/").slice(0, -2).join("/")))
             || !Number.isSafeInteger(visits) || visits < 0)
           || Object.values(shard.shapeVisits).reduce((sum, visits) => sum + visits, 0) > shard.attempts
           || !Array.isArray(shard.portfolio?.pools))) throw new Error("分片检查点无效。");

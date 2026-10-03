@@ -138,6 +138,25 @@ for (const profile of profiles) {
       '固定虚拟分片必须记录实际搜索且总尝试数一致');
       assert(progress.areaHistory.length > 0, '已验证面积曲线必须记录下降点');
       assert(await dialog.getByRole('img',{name:/提案次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
+      // 三种 Screen Profile 开发验证后补入正式回归：X 对数、Y 线性，面积范围不强制包含零。
+      const curve = dialog.getByRole('img',{name:/提案次数与已验证最优面积/});
+      const labels = await curve.locator('text').allTextContents();
+      assert(labels.filter(label => label.includes('（对数坐标）')).length === 1, '只有 X 轴标注对数坐标');
+      assert(labels.includes('已验证最优面积') && labels.includes('累计提案（对数坐标）'), '坐标轴标题缺失');
+      assert(labels.filter(label => label === '0').length === 1, '只有 X 轴强制显示零刻度');
+      const coordinates = await curve.locator('circle').evaluateAll(circles => circles.map(circle => ({
+        x: Number(circle.getAttribute('cx')), y: Number(circle.getAttribute('cy')),
+      })));
+      const minimum = Math.min(...progress.areaHistory.map(point => point.bestArea));
+      const maximum = Math.max(...progress.areaHistory.map(point => point.bestArea));
+      const padding = Math.max(1, (maximum - minimum) * 0.1), lower = Math.max(0, minimum - padding);
+      assert(coordinates.length === progress.areaHistory.length, '下降数据点丢失');
+      for (const [index, point] of progress.areaHistory.entries()) {
+        const expectedX = 58 + Math.log1p(point.evaluatedProposals) / Math.log1p(Math.max(1, progress.evaluatedProposals)) * 530;
+        const expectedY = 160 - (point.bestArea - lower) / (maximum + padding - lower) * 126;
+        assert(Math.abs(coordinates[index].x - expectedX) < 0.001 && Math.abs(coordinates[index].y - expectedY) < 0.001,
+          '曲线未使用 X 对数、Y 线性的真实面积坐标');
+      }
       const before = await page.evaluate(() => {
         const h = window.__industrialPlannerAppHost;
         return h.workspace.blueprintPlanner.queries.getResult(h.blueprintPlannerDialog.viewTaskId);

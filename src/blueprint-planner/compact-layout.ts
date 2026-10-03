@@ -1,6 +1,6 @@
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { GridRotation } from "@/domain/shared/grid";
-import { resolveEntityGridRect, resolveGasDiffusionRangeGridRect, areGridRectsContaining, areGridRectsIntersecting } from "@/shared/geometry/power-range";
+import { resolveEntityGridRect, resolveGasDiffusionRangeGridRect, areGridRectsIntersecting } from "@/shared/geometry/power-range";
 import { allowsPlannerOverlap, getPlannerPorts, opposite, ROTATIONS, type PlannerPort } from "./geometry";
 import type { LogisticsKind } from "@/domain/shared/logistics";
 import type { PlannerNetwork, PlannerWire } from "./model";
@@ -121,10 +121,10 @@ export class CompactLayoutSearch {
     this.neighbors = network.nodes.map((_, index) => this.edges.flatMap(edge => edge.source === index ? [edge.target] : edge.target === index ? [edge.source] : []));
     this.environmentPairs = network.nodes.flatMap((node, device) => {
       if (!node.recipe?.requiredGasDiffusion) return [];
-      const environment = network.nodes.findIndex(other => other.recipe?.gasDiffusionOutput?.gasItemId === node.recipe!.requiredGasDiffusion
-        && areGridRectsContaining(resolveGasDiffusionRangeGridRect({ entity: other.entity, definition: other.definition, gasDiffusionRange: other.recipe!.gasDiffusionOutput!.range })!,
-          resolveEntityGridRect({ entity: node.entity, definition: node.definition })));
-      return environment < 0 ? [] : [{ device, environment }];
+      // 不要求初始姿态已覆盖；修复和重建中的暂时失配同样必须参与约束评分。
+      const environment = network.nodes.findIndex(other => other.recipe?.gasDiffusionOutput?.gasItemId === node.recipe!.requiredGasDiffusion);
+      if (environment < 0) throw new Error(`缺少气体环境设施：${node.recipe.requiredGasDiffusion}`);
+      return [{ device, environment }];
     });
     this.current = this.evaluate();
     this.best = this.snapshot(); this.bestEvaluation = this.current;
@@ -607,16 +607,43 @@ export class CompactLayoutSearch {
           width: rect.width + behavior.range * 2, height: rect.height + behavior.range * 2 }, rects[j]!)) record("same-device-distance", 10, [i, j], rect);
       }
     }
+    // AI-REMOVED 2026-10-03:
+    // Reason: 环境覆盖不能固定绑定初排时的一台散布机。
+    // Trigger: 用户要求移动、共用与裁撤环境设施。
+    // Evidence: 原 environmentPairs 仅校验初始化选中的设施，忽略其他同种气体覆盖。
+    // Replacement: 下方每次评估选择当前可覆盖或最近的同类环境。
+    // Risk: 每次覆盖检查增加同类设施扫描；Human Review: Required。
+    // Original code:
+    //     for (const pair of this.environmentPairs) {
+    //       const environment = this.network.nodes[pair.environment]!;
+    //       const pose = this.poses[pair.environment]!;
+    //       const range = resolveGasDiffusionRangeGridRect({ entity: { ...environment.entity, position: pose, rotation: pose.rotation },
+    //         definition: environment.definition, gasDiffusionRange: environment.recipe!.gasDiffusionOutput!.range })!;
+    //       const device = rects[pair.device]!;
+    //       violations += Math.max(0, range.x - device.x) + Math.max(0, range.y - device.y)
+    //         + Math.max(0, device.x + device.width - range.x - range.width) + Math.max(0, device.y + device.height - range.y - range.height);
+    //       record?.("environment-coverage", Math.max(0, range.x - device.x) + Math.max(0, range.y - device.y)
+    //         + Math.max(0, device.x + device.width - range.x - range.width) + Math.max(0, device.y + device.height - range.y - range.height), [pair.device, pair.environment], device);
+    //     }
     for (const pair of this.environmentPairs) {
-      const environment = this.network.nodes[pair.environment]!;
-      const pose = this.poses[pair.environment]!;
-      const range = resolveGasDiffusionRangeGridRect({ entity: { ...environment.entity, position: pose, rotation: pose.rotation },
-        definition: environment.definition, gasDiffusionRange: environment.recipe!.gasDiffusionOutput!.range })!;
+      const requiredGas = this.network.nodes[pair.device]!.recipe!.requiredGasDiffusion;
       const device = rects[pair.device]!;
-      violations += Math.max(0, range.x - device.x) + Math.max(0, range.y - device.y)
-        + Math.max(0, device.x + device.width - range.x - range.width) + Math.max(0, device.y + device.height - range.y - range.height);
-      record?.("environment-coverage", Math.max(0, range.x - device.x) + Math.max(0, range.y - device.y)
-        + Math.max(0, device.x + device.width - range.x - range.width) + Math.max(0, device.y + device.height - range.y - range.height), [pair.device, pair.environment], device);
+      let closest = pair.environment, distance = Infinity;
+      for (let index = 0; index < this.network.nodes.length; index++) {
+        const environment = this.network.nodes[index]!;
+        const gas = environment.recipe?.gasDiffusionOutput;
+        if (!gas || gas.gasItemId !== requiredGas) continue;
+        const pose = this.poses[index]!;
+        const range = resolveGasDiffusionRangeGridRect({ entity: { ...environment.entity, position: pose, rotation: pose.rotation },
+          definition: environment.definition, gasDiffusionRange: gas.range })!;
+        const gap = Math.max(0, range.x - device.x) + Math.max(0, range.y - device.y)
+          + Math.max(0, device.x + device.width - range.x - range.width) + Math.max(0, device.y + device.height - range.y - range.height);
+        if (gap < distance) { closest = index; distance = gap; }
+        if (gap === 0) break;
+      }
+      pair.environment = closest;
+      violations += distance;
+      record?.("environment-coverage", distance, [pair.device, closest], device);
     }
     // 成品箱清空夹具不计交付面积，但验证时占据的格子必须在布局阶段预留。
     const fixtureRects = this.network.nodes.flatMap((node, index) => {

@@ -1,5 +1,10 @@
+// AI-REMOVED 2026-10-03: Reason: 树表行样式已提取。Trigger: 共用树表。Evidence: 本文件不再使用 CSSProperties。
+// Replacement: production-planning-tree-table.tsx。Risk: Low。Human Review: Required
+// Original code: import type { CSSProperties } from "react";
+import { ProductionPlanningTreeTableView } from "./production-planning-tree-table";
+import { RecipeChoiceControls } from "./recipe-choice-controls";
 import { createBlueprintPlannerPlan } from "./blueprint-planner-adapter";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { runInAction } from "mobx";
 import { observer, useLocalObservable } from "mobx-react-lite";
 import LucideBox from "~icons/lucide/box";
@@ -48,7 +53,9 @@ import {
   isWaterPurifierNodeRecipe,
   resolveProductionPlanningEntityIconSrc,
   resolveProductionPlanningModuleIconSrcs,
-  resolveProductionPlanningCandidateName,
+  // AI-REMOVED 2026-10-03: Reason: 配方控件已提取。Trigger: 共用树表。Evidence: 无其他有效引用。
+  // Replacement: recipe-choice-controls.tsx。Risk: Low。Human Review: Required
+  // Original code: resolveProductionPlanningCandidateName,
   resolveProductionPlanningItemIconSrc,
   resolveProductionPlanningItemName,
   resolveProductionPlanningRecipeName,
@@ -68,7 +75,9 @@ import {
 import {
   createProductionPlanningRecipeCandidateId,
   normalizeProductionPlanningCandidateChoiceId,
-  type ProductionPlanningCandidate,
+  // AI-REMOVED 2026-10-03: Reason: 类型随配方控件提取。Trigger: 共用配方选择。
+  // Evidence: 无剩余有效引用。Replacement: recipe-choice-controls.tsx。Risk: Low。Human Review: Required
+  // Original code: type ProductionPlanningCandidate,
 } from "./production-planning-candidate";
 import { ProductionFlowGraph } from "@/app/shell/production-planning/flow";
 import {
@@ -531,7 +540,7 @@ export const ProductionPlanningPanel = observer(function ProductionPlanningPanel
 
   const toggleSupplyInfinite = (id: string, isInfinite: boolean) => {
     const supply = store.supplies.find((line) => line.id === id);
-    if (supply === undefined || index.naturalResourceItemIds.has(supply.itemId)) {
+    if (supply === undefined) {
       return;
     }
 
@@ -814,7 +823,14 @@ export const ProductionPlanningPanel = observer(function ProductionPlanningPanel
               onPickItem={(id) => {
                 void requestItemSelection((itemId) => updateSupply(id, {
                   itemId,
-                  ...(index.naturalResourceItemIds.has(itemId) ? { isInfinite: false } : {}),
+                  // AI-REMOVED 2026-10-03:
+                  // Reason: 自然资源与其他原料统一允许手动无限外供，切换物品应保留供给模式。
+                  // Trigger: 用户要求所有自然资源可点击无限供给。
+                  // Evidence: 原料切换回调会将自然资源的 isInfinite 强制重置为 false。
+                  // Replacement: updateSupply 保留当前原料行的 isInfinite。
+                  // Risk: Low；仅改变产线规划的显式外供。Human Review: Required
+                  // Original code:
+                  // ...(index.naturalResourceItemIds.has(itemId) ? { isInfinite: false } : {}),
                 }));
               }}
               onRemove={(id) => {
@@ -1028,8 +1044,15 @@ function PortEditorRow({
   canToggleInfinite?: boolean;
   t: (key: string) => string;
 }) {
-  const isNaturalResource = index.naturalResourceItemIds.has(line.itemId);
-  const isInfinite = canToggleInfinite && !isNaturalResource && line.isInfinite === true;
+  // AI-REMOVED 2026-10-03:
+  // Reason: 原料无限外供的可用性不再依赖自然资源分类。
+  // Trigger: 用户要求所有自然资源可点击无限供给。
+  // Evidence: 此变量只用于禁止自然资源显示与切换无限供给。
+  // Replacement: 下方 isInfinite 与按钮直接读取供给状态及回调。
+  // Risk: Low；自然资源分类仍用于自动配方选择。Human Review: Required
+  // Original code:
+  // const isNaturalResource = index.naturalResourceItemIds.has(line.itemId);
+  const isInfinite = canToggleInfinite && line.isInfinite === true;
   const rowClassName = [
     "production-planning-line-row",
     canToggleInfinite ? "has-infinite-toggle" : "",
@@ -1072,8 +1095,8 @@ function PortEditorRow({
           ].filter(Boolean).join(" "))}
           aria-label={t("productionPlanning.infinite")}
           aria-pressed={isInfinite}
-          title={isNaturalResource ? t("productionPlanning.infiniteNaturalDisabled") : t("productionPlanning.infinite")}
-          disabled={isNaturalResource || onToggleInfinite === undefined}
+          title={t("productionPlanning.infinite")}
+          disabled={onToggleInfinite === undefined}
           onClick={() => onToggleInfinite?.(!isInfinite)}
         >
           <LucideInfinity />
@@ -1482,6 +1505,196 @@ function PlanGraph({
   );
 }
 
+
+// AI-REMOVED 2026-10-03:
+// Reason: 产线规划和环境供料复用同一树表及配方交互。
+// Trigger: 用户要求统一 UI，禁止重复实现。
+// Evidence: 原组件包含通用折叠、选择与详情布局。
+// Replacement: production-planning-tree-table.tsx
+// Risk: 两个入口均需验证节点选择和配方切换。
+// Human Review: Required
+// Original code:
+// function ProductionPlanningTreeTable({
+//   displayMode,
+//   plan,
+//   index,
+//   useModules,
+//   recipeChoices,
+//   treeScrollTop,
+//   isTouch,
+//   onSelectRecipe,
+//   onRequestRecipeSelection,
+//   onCoverDemand,
+//   onRemoveExternalSupply,
+//   onTreeScrollTopChange,
+//   t,
+// }: {
+//   displayMode: ProductionPlanningDisplayMode;
+//   plan: ProductionPlanningResult;
+//   index: ProductionPlanningIndex;
+//   useModules: boolean;
+//   recipeChoices: ReadonlyMap<string, string>;
+//   treeScrollTop: number;
+//   isTouch: boolean;
+//   onSelectRecipe: (itemId: string, recipeId: string | null) => void;
+//   onRequestRecipeSelection: (itemId: string, recipes: readonly RecipeDefinition[]) => void;
+//   onCoverDemand: (itemId: string) => void;
+//   onRemoveExternalSupply: (itemId: string) => void;
+//   onTreeScrollTopChange: (scrollTop: number) => void;
+//   t: (key: string) => string;
+// }) {
+//   const rows = useMemo(() => buildProductionPlanningTreeRows(plan, displayMode), [displayMode, plan]);
+//   const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+//   const treePaneRef = useRef<HTMLDivElement | null>(null);
+//   const rowElementRefs = useRef(new Map<string, HTMLTableRowElement>());
+//   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+//   const [collapsedRowIds, setCollapsedRowIds] = useState<Set<string>>(() => new Set());
+//   // 筛掉已不存在于当前树中的折叠行 ID
+//   const collapsibleRowIds = useMemo(
+//     () => new Set(rows.filter((row) => row.childIds.length > 0).map((row) => row.id)),
+//     [rows],
+//   );
+//   const effectiveCollapsedRowIds = useMemo(() => {
+//     if (collapsedRowIds.size === 0) return collapsedRowIds;
+//     const next = new Set<string>();
+//     for (const rowId of collapsedRowIds) {
+//       if (collapsibleRowIds.has(rowId)) next.add(rowId);
+//     }
+//     return next;
+//   }, [collapsedRowIds, collapsibleRowIds]);
+//   const visibleRows = useMemo(
+//     () => filterVisibleProductionPlanningTreeRows(rows, rowById, effectiveCollapsedRowIds),
+//     [effectiveCollapsedRowIds, rowById, rows],
+//   );
+//   const visibleRowIds = useMemo(() => new Set(visibleRows.map((row) => row.id)), [visibleRows]);
+//   // 确保选中行始终在可见范围内；不可见时回退到首行
+//   const selectedRow = useMemo(() => {
+//     if (selectedRowId !== null) {
+//       const row = rowById.get(selectedRowId);
+//       if (row !== undefined && visibleRowIds.has(selectedRowId)) return row;
+//     }
+//     return visibleRows[0] ?? null;
+//   }, [selectedRowId, rowById, visibleRowIds, visibleRows]);
+//
+//   useLayoutEffect(() => {
+//     const element = treePaneRef.current;
+//     if (element === null) {
+//       return;
+//     }
+//
+//     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+//     element.scrollTop = Math.min(treeScrollTop, maxScrollTop);
+//   }, [treeScrollTop, visibleRows]);
+//
+//   const selectRow = (rowId: string) => {
+//     setSelectedRowId(rowId);
+//     requestAnimationFrame(() => {
+//       rowElementRefs.current.get(rowId)?.scrollIntoView({ block: "nearest" });
+//     });
+//   };
+//
+//   const toggleRowCollapsed = (rowId: string) => {
+//     const row = rowById.get(rowId);
+//     if (row === undefined || row.childIds.length === 0) {
+//       return;
+//     }
+//
+//     const nextCollapsed = !collapsedRowIds.has(rowId);
+//     setCollapsedRowIds((current) => {
+//       const next = new Set(current);
+//       if (next.has(rowId)) {
+//         next.delete(rowId);
+//       } else {
+//         next.add(rowId);
+//       }
+//       return next;
+//     });
+//
+//     if (
+//       nextCollapsed
+//       && selectedRowId !== null
+//       && selectedRowId !== rowId
+//       && isProductionPlanningTreeDescendant(rowById, rowId, selectedRowId)
+//     ) {
+//       setSelectedRowId(rowId);
+//     }
+//   };
+//
+//   if (rows.length === 0) {
+//     return <div className={cm(styles, "production-planning-empty")}>{t("productionPlanning.noRecipes")}</div>;
+//   }
+//
+//   const layoutClassName = [
+//     "production-planning-tree-table-layout",
+//     displayMode === "device" ? "is-device-mode" : "is-item-mode",
+//   ].join(" ");
+//
+//   return (
+//     <div className={cm(styles, layoutClassName)}>
+//       <div
+//         className={cm(styles, "production-planning-tree-table-pane")}
+//         onScroll={(event) => onTreeScrollTopChange(event.currentTarget.scrollTop)}
+//         ref={treePaneRef}
+//       >
+//         <table className={cm(styles, "production-planning-tree-table")}>
+//           <colgroup>
+//             <col className={cm(styles, "production-planning-tree-table-node-col")} />
+//             <col className={cm(styles, "production-planning-tree-table-rate-col")} />
+//           </colgroup>
+//           <thead>
+//             <tr>
+//               <th>{t("productionPlanning.node")}</th>
+//               <th>{t("productionPlanning.rate")}</th>
+//             </tr>
+//           </thead>
+//           <tbody>
+//             {visibleRows.map((row) => (
+//               <ProductionPlanningTreeTableRow
+//                 key={row.id}
+//                 row={row}
+//                 index={index}
+//                 useModules={useModules}
+//                 displayMode={displayMode}
+//                 collapsed={collapsedRowIds.has(row.id)}
+//                 selected={selectedRow?.id === row.id}
+//                 onSelect={() => selectRow(row.id)}
+//                 onToggleCollapsed={() => toggleRowCollapsed(row.id)}
+//                 setRowElement={(element) => {
+//                   if (element === null) {
+//                     rowElementRefs.current.delete(row.id);
+//                   } else {
+//                     rowElementRefs.current.set(row.id, element);
+//                   }
+//                 }}
+//                 t={t}
+//               />
+//             ))}
+//           </tbody>
+//         </table>
+//       </div>
+//       <aside className={cm(styles, "production-planning-tree-detail")}>
+//         {selectedRow !== null && (
+//           <ProductionPlanningTreeDetail
+//             row={selectedRow}
+//             rowById={rowById}
+//             index={index}
+//             useModules={useModules}
+//             displayMode={displayMode}
+//             recipeChoices={recipeChoices}
+//             isTouch={isTouch}
+//             onSelectRow={selectRow}
+//             onSelectRecipe={onSelectRecipe}
+//             onRequestRecipeSelection={onRequestRecipeSelection}
+//             onCoverDemand={onCoverDemand}
+//             onRemoveExternalSupply={onRemoveExternalSupply}
+//             t={t}
+//           />
+//         )}
+//       </aside>
+//     </div>
+//   );
+// }
+//
 function ProductionPlanningTreeTable({
   displayMode,
   plan,
@@ -1512,250 +1725,10 @@ function ProductionPlanningTreeTable({
   t: (key: string) => string;
 }) {
   const rows = useMemo(() => buildProductionPlanningTreeRows(plan, displayMode), [displayMode, plan]);
-  const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
-  const treePaneRef = useRef<HTMLDivElement | null>(null);
-  const rowElementRefs = useRef(new Map<string, HTMLTableRowElement>());
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
-  const [collapsedRowIds, setCollapsedRowIds] = useState<Set<string>>(() => new Set());
-  // 筛掉已不存在于当前树中的折叠行 ID
-  const collapsibleRowIds = useMemo(
-    () => new Set(rows.filter((row) => row.childIds.length > 0).map((row) => row.id)),
-    [rows],
-  );
-  const effectiveCollapsedRowIds = useMemo(() => {
-    if (collapsedRowIds.size === 0) return collapsedRowIds;
-    const next = new Set<string>();
-    for (const rowId of collapsedRowIds) {
-      if (collapsibleRowIds.has(rowId)) next.add(rowId);
-    }
-    return next;
-  }, [collapsedRowIds, collapsibleRowIds]);
-  const visibleRows = useMemo(
-    () => filterVisibleProductionPlanningTreeRows(rows, rowById, effectiveCollapsedRowIds),
-    [effectiveCollapsedRowIds, rowById, rows],
-  );
-  const visibleRowIds = useMemo(() => new Set(visibleRows.map((row) => row.id)), [visibleRows]);
-  // 确保选中行始终在可见范围内；不可见时回退到首行
-  const selectedRow = useMemo(() => {
-    if (selectedRowId !== null) {
-      const row = rowById.get(selectedRowId);
-      if (row !== undefined && visibleRowIds.has(selectedRowId)) return row;
-    }
-    return visibleRows[0] ?? null;
-  }, [selectedRowId, rowById, visibleRowIds, visibleRows]);
-
-  useLayoutEffect(() => {
-    const element = treePaneRef.current;
-    if (element === null) {
-      return;
-    }
-
-    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    element.scrollTop = Math.min(treeScrollTop, maxScrollTop);
-  }, [treeScrollTop, visibleRows]);
-
-  const selectRow = (rowId: string) => {
-    setSelectedRowId(rowId);
-    requestAnimationFrame(() => {
-      rowElementRefs.current.get(rowId)?.scrollIntoView({ block: "nearest" });
-    });
-  };
-
-  const toggleRowCollapsed = (rowId: string) => {
-    const row = rowById.get(rowId);
-    if (row === undefined || row.childIds.length === 0) {
-      return;
-    }
-
-    const nextCollapsed = !collapsedRowIds.has(rowId);
-    setCollapsedRowIds((current) => {
-      const next = new Set(current);
-      if (next.has(rowId)) {
-        next.delete(rowId);
-      } else {
-        next.add(rowId);
-      }
-      return next;
-    });
-
-    if (
-      nextCollapsed
-      && selectedRowId !== null
-      && selectedRowId !== rowId
-      && isProductionPlanningTreeDescendant(rowById, rowId, selectedRowId)
-    ) {
-      setSelectedRowId(rowId);
-    }
-  };
-
-  if (rows.length === 0) {
-    return <div className={cm(styles, "production-planning-empty")}>{t("productionPlanning.noRecipes")}</div>;
-  }
-
-  const layoutClassName = [
-    "production-planning-tree-table-layout",
-    displayMode === "device" ? "is-device-mode" : "is-item-mode",
-  ].join(" ");
-
-  return (
-    <div className={cm(styles, layoutClassName)}>
-      <div
-        className={cm(styles, "production-planning-tree-table-pane")}
-        onScroll={(event) => onTreeScrollTopChange(event.currentTarget.scrollTop)}
-        ref={treePaneRef}
-      >
-        <table className={cm(styles, "production-planning-tree-table")}>
-          <colgroup>
-            <col className={cm(styles, "production-planning-tree-table-node-col")} />
-            <col className={cm(styles, "production-planning-tree-table-rate-col")} />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>{t("productionPlanning.node")}</th>
-              <th>{t("productionPlanning.rate")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) => (
-              <ProductionPlanningTreeTableRow
-                key={row.id}
-                row={row}
-                index={index}
-                useModules={useModules}
-                displayMode={displayMode}
-                collapsed={collapsedRowIds.has(row.id)}
-                selected={selectedRow?.id === row.id}
-                onSelect={() => selectRow(row.id)}
-                onToggleCollapsed={() => toggleRowCollapsed(row.id)}
-                setRowElement={(element) => {
-                  if (element === null) {
-                    rowElementRefs.current.delete(row.id);
-                  } else {
-                    rowElementRefs.current.set(row.id, element);
-                  }
-                }}
-                t={t}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <aside className={cm(styles, "production-planning-tree-detail")}>
-        {selectedRow !== null && (
-          <ProductionPlanningTreeDetail
-            row={selectedRow}
-            rowById={rowById}
-            index={index}
-            useModules={useModules}
-            displayMode={displayMode}
-            recipeChoices={recipeChoices}
-            isTouch={isTouch}
-            onSelectRow={selectRow}
-            onSelectRecipe={onSelectRecipe}
-            onRequestRecipeSelection={onRequestRecipeSelection}
-            onCoverDemand={onCoverDemand}
-            onRemoveExternalSupply={onRemoveExternalSupply}
-            t={t}
-          />
-        )}
-      </aside>
-    </div>
-  );
-}
-
-function ProductionPlanningTreeRowChip({
-  row,
-  index: _index,
-  useModules,
-  t,
-}: {
-  row: ProductionPlanningTreeRow;
-  index: ProductionPlanningIndex;
-  useModules: boolean;
-  t: (key: string) => string;
-}): ReactNode {
-  if (useModules && row.recipeNode.module !== null) {
-    return (
-      <span className={cm(styles, "production-planning-tree-table-chip")}>
-        {t("productionPlanning.modules")}
-      </span>
-    );
-  }
-
-  if (!row.isByproduct) {
-    return null;
-  }
-
-  return (
-    <span className={cm(styles, "production-planning-tree-table-chip")}>
-      {t("productionPlanning.byproduct")}
-    </span>
-  );
-}
-
-function ProductionPlanningTreeTableRow({
-  row,
-  index,
-  useModules,
-  displayMode,
-  collapsed,
-  selected,
-  onSelect,
-  onToggleCollapsed,
-  setRowElement,
-  t,
-}: {
-  row: ProductionPlanningTreeRow;
-  index: ProductionPlanningIndex;
-  useModules: boolean;
-  displayMode: ProductionPlanningDisplayMode;
-  collapsed: boolean;
-  selected: boolean;
-  onSelect: () => void;
-  onToggleCollapsed: () => void;
-  setRowElement: (element: HTMLTableRowElement | null) => void;
-  t: (key: string) => string;
-}) {
-  const className = [
-    "production-planning-tree-table-row",
-    row.isShared ? "is-shared" : "",
-    selected ? "is-active" : "",
-  ].filter(Boolean).join(" ");
-
-  const hasChildren = row.childIds.length > 0;
-  const toggleLabel = collapsed ? t("action.expand") : t("action.collapse");
-
-  return (
-    <tr className={cm(styles, className)} ref={setRowElement}>
-      <td>
-        <div
-          className={cm(styles, "production-planning-tree-table-node-cell")}
-          style={{ "--tree-depth": row.depth } as CSSProperties}
-        >
-          {hasChildren ? (
-            <button
-              type="button"
-              className={cm(styles, "production-planning-tree-table-branch-button")}
-              aria-expanded={!collapsed}
-              aria-label={toggleLabel}
-              title={toggleLabel}
-              onClick={onToggleCollapsed}
-            >
-              <span className={cm(styles, "production-planning-tree-table-branch")} aria-hidden="true">
-                {collapsed ? "+" : "-"}
-              </span>
-            </button>
-          ) : (
-            <span className={cm(styles, "production-planning-tree-table-branch-spacer")} aria-hidden="true">
-              <span className={cm(styles, "production-planning-tree-table-branch is-leaf")} />
-            </span>
-          )}
-          <button
-            type="button"
-            className={cm(styles, "production-planning-tree-table-node-button")}
-            aria-pressed={selected}
-            onClick={onSelect}
-          >
+  return <ProductionPlanningTreeTableView rows={rows} styles={styles}
+    className={displayMode === "device" ? "is-device-mode" : "is-item-mode"}
+    treeScrollTop={treeScrollTop} onTreeScrollTopChange={onTreeScrollTopChange} t={t}
+    renderIdentity={row => <>
             {row.isSharedDemandReference ? (
               <div className={cm(styles, "production-planning-recipe-identity")}>
                 <img alt="" src={resolveProductionPlanningItemIconSrc(row.targetItemId, index)} />
@@ -1792,15 +1765,162 @@ function ProductionPlanningTreeTableRow({
               </span>
             )}
             {ProductionPlanningTreeRowChip({ row, index, useModules, t })}
-          </button>
-        </div>
-      </td>
-      <td>
-        <ProductionPlanningTreeRowRate row={row} index={index} t={t} />
-      </td>
-    </tr>
+    </>}
+    renderRate={row => <ProductionPlanningTreeRowRate row={row} index={index} t={t} />}
+    renderDetail={(row, rowById, selectRow) => <ProductionPlanningTreeDetail row={row} rowById={rowById}
+      index={index} useModules={useModules} displayMode={displayMode} recipeChoices={recipeChoices}
+      isTouch={isTouch} onSelectRow={selectRow} onSelectRecipe={onSelectRecipe}
+      onRequestRecipeSelection={onRequestRecipeSelection} onCoverDemand={onCoverDemand}
+      onRemoveExternalSupply={onRemoveExternalSupply} t={t} />} />;
+}
+
+function ProductionPlanningTreeRowChip({
+  row,
+  index: _index,
+  useModules,
+  t,
+}: {
+  row: ProductionPlanningTreeRow;
+  index: ProductionPlanningIndex;
+  useModules: boolean;
+  t: (key: string) => string;
+}): ReactNode {
+  if (useModules && row.recipeNode.module !== null) {
+    return (
+      <span className={cm(styles, "production-planning-tree-table-chip")}>
+        {t("productionPlanning.modules")}
+      </span>
+    );
+  }
+
+  if (!row.isByproduct) {
+    return null;
+  }
+
+  return (
+    <span className={cm(styles, "production-planning-tree-table-chip")}>
+      {t("productionPlanning.byproduct")}
+    </span>
   );
 }
+
+
+// AI-REMOVED 2026-10-03:
+// Reason: 产线规划和环境供料复用同一树表及配方交互。
+// Trigger: 用户要求统一 UI，禁止重复实现。
+// Evidence: 原组件包含通用折叠、选择与详情布局。
+// Replacement: production-planning-tree-table.tsx
+// Risk: 两个入口均需验证节点选择和配方切换。
+// Human Review: Required
+// Original code:
+// function ProductionPlanningTreeTableRow({
+//   row,
+//   index,
+//   useModules,
+//   displayMode,
+//   collapsed,
+//   selected,
+//   onSelect,
+//   onToggleCollapsed,
+//   setRowElement,
+//   t,
+// }: {
+//   row: ProductionPlanningTreeRow;
+//   index: ProductionPlanningIndex;
+//   useModules: boolean;
+//   displayMode: ProductionPlanningDisplayMode;
+//   collapsed: boolean;
+//   selected: boolean;
+//   onSelect: () => void;
+//   onToggleCollapsed: () => void;
+//   setRowElement: (element: HTMLTableRowElement | null) => void;
+//   t: (key: string) => string;
+// }) {
+//   const className = [
+//     "production-planning-tree-table-row",
+//     row.isShared ? "is-shared" : "",
+//     selected ? "is-active" : "",
+//   ].filter(Boolean).join(" ");
+//
+//   const hasChildren = row.childIds.length > 0;
+//   const toggleLabel = collapsed ? t("action.expand") : t("action.collapse");
+//
+//   return (
+//     <tr className={cm(styles, className)} ref={setRowElement}>
+//       <td>
+//         <div
+//           className={cm(styles, "production-planning-tree-table-node-cell")}
+//           style={{ "--tree-depth": row.depth } as CSSProperties}
+//         >
+//           {hasChildren ? (
+//             <button
+//               type="button"
+//               className={cm(styles, "production-planning-tree-table-branch-button")}
+//               aria-expanded={!collapsed}
+//               aria-label={toggleLabel}
+//               title={toggleLabel}
+//               onClick={onToggleCollapsed}
+//             >
+//               <span className={cm(styles, "production-planning-tree-table-branch")} aria-hidden="true">
+//                 {collapsed ? "+" : "-"}
+//               </span>
+//             </button>
+//           ) : (
+//             <span className={cm(styles, "production-planning-tree-table-branch-spacer")} aria-hidden="true">
+//               <span className={cm(styles, "production-planning-tree-table-branch is-leaf")} />
+//             </span>
+//           )}
+//           <button
+//             type="button"
+//             className={cm(styles, "production-planning-tree-table-node-button")}
+//             aria-pressed={selected}
+//             onClick={onSelect}
+//           >
+//             {row.isSharedDemandReference ? (
+//               <div className={cm(styles, "production-planning-recipe-identity")}>
+//                 <img alt="" src={resolveProductionPlanningItemIconSrc(row.targetItemId, index)} />
+//                 <div>
+//                   <strong>{resolveProductionPlanningItemName(row.targetItemId, index, t)}</strong>
+//                   <span>
+//                     {row.isDeviceMinimumConsumption
+//                       ? `${t("productionPlanning.minimumConsumption")} · ${t("productionPlanning.sharedDemand")}`
+//                       : t("productionPlanning.sharedDemand")}
+//                   </span>
+//                 </div>
+//               </div>
+//             ) : isProductionPlanningDeviceMinimumConsumptionRecipeId(row.recipeId) ? (
+//               <div className={cm(styles, "production-planning-recipe-identity")}>
+//                 <img alt="" src={resolveProductionPlanningItemIconSrc(row.targetItemId, index)} />
+//                 <div>
+//                   <strong>{resolveProductionPlanningItemName(row.targetItemId, index, t)}</strong>
+//                   <span>{t("productionPlanning.deviceMinimumConsumptionNode")}</span>
+//                 </div>
+//               </div>
+//             ) : (
+//               <RecipeIdentity
+//                 recipeNode={row.recipeNode}
+//                 targetItemId={row.targetItemId}
+//                 displayMode={displayMode}
+//                 isDeviceMinimumConsumption={row.isDeviceMinimumConsumption}
+//                 index={index}
+//                 t={t}
+//               />
+//             )}
+//             {row.isShared && (
+//               <span className={cm(styles, "production-planning-tree-table-chip")}>
+//                 {t("productionPlanning.shared")}
+//               </span>
+//             )}
+//             {ProductionPlanningTreeRowChip({ row, index, useModules, t })}
+//           </button>
+//         </div>
+//       </td>
+//       <td>
+//         <ProductionPlanningTreeRowRate row={row} index={index} t={t} />
+//       </td>
+//     </tr>
+//   );
+// }
 
 /*
 AI-REMOVED 2026-05-22:
@@ -1836,58 +1956,67 @@ function renderFoldedOutputItems(
 }
 */
 
-function filterVisibleProductionPlanningTreeRows(
-  rows: readonly ProductionPlanningTreeRow[],
-  rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
-  collapsedRowIds: ReadonlySet<string>,
-): ProductionPlanningTreeRow[] {
-  if (collapsedRowIds.size === 0) {
-    return [...rows];
-  }
 
-  const hiddenRowIds = new Set<string>();
-  for (const row of rows) {
-    if (hiddenRowIds.has(row.id) || !collapsedRowIds.has(row.id)) {
-      continue;
-    }
-
-    collectProductionPlanningTreeDescendantIds(rowById, row.id, hiddenRowIds);
-  }
-
-  return rows.filter((row) => !hiddenRowIds.has(row.id));
-}
-
-function collectProductionPlanningTreeDescendantIds(
-  rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
-  rowId: string,
-  result: Set<string>,
-): void {
-  const row = rowById.get(rowId);
-  if (row === undefined) {
-    return;
-  }
-
-  for (const childId of row.childIds) {
-    const childRow = rowById.get(childId);
-    if (childRow === undefined || childRow.parentIds.length !== 1 || result.has(childId)) {
-      continue;
-    }
-
-    result.add(childId);
-    collectProductionPlanningTreeDescendantIds(rowById, childId, result);
-  }
-}
-
-function isProductionPlanningTreeDescendant(
-  rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
-  ancestorRowId: string,
-  candidateRowId: string,
-): boolean {
-  const descendantRowIds = new Set<string>();
-  collectProductionPlanningTreeDescendantIds(rowById, ancestorRowId, descendantRowIds);
-  return descendantRowIds.has(candidateRowId);
-}
-
+// AI-REMOVED 2026-10-03:
+// Reason: 产线规划和环境供料复用同一树表及配方交互。
+// Trigger: 用户要求统一 UI，禁止重复实现。
+// Evidence: 原组件包含通用折叠、选择与详情布局。
+// Replacement: production-planning-tree-table.tsx
+// Risk: 两个入口均需验证节点选择和配方切换。
+// Human Review: Required
+// Original code:
+// function filterVisibleProductionPlanningTreeRows(
+//   rows: readonly ProductionPlanningTreeRow[],
+//   rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
+//   collapsedRowIds: ReadonlySet<string>,
+// ): ProductionPlanningTreeRow[] {
+//   if (collapsedRowIds.size === 0) {
+//     return [...rows];
+//   }
+//
+//   const hiddenRowIds = new Set<string>();
+//   for (const row of rows) {
+//     if (hiddenRowIds.has(row.id) || !collapsedRowIds.has(row.id)) {
+//       continue;
+//     }
+//
+//     collectProductionPlanningTreeDescendantIds(rowById, row.id, hiddenRowIds);
+//   }
+//
+//   return rows.filter((row) => !hiddenRowIds.has(row.id));
+// }
+//
+// function collectProductionPlanningTreeDescendantIds(
+//   rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
+//   rowId: string,
+//   result: Set<string>,
+// ): void {
+//   const row = rowById.get(rowId);
+//   if (row === undefined) {
+//     return;
+//   }
+//
+//   for (const childId of row.childIds) {
+//     const childRow = rowById.get(childId);
+//     if (childRow === undefined || childRow.parentIds.length !== 1 || result.has(childId)) {
+//       continue;
+//     }
+//
+//     result.add(childId);
+//     collectProductionPlanningTreeDescendantIds(rowById, childId, result);
+//   }
+// }
+//
+// function isProductionPlanningTreeDescendant(
+//   rowById: ReadonlyMap<string, ProductionPlanningTreeRow>,
+//   ancestorRowId: string,
+//   candidateRowId: string,
+// ): boolean {
+//   const descendantRowIds = new Set<string>();
+//   collectProductionPlanningTreeDescendantIds(rowById, ancestorRowId, descendantRowIds);
+//   return descendantRowIds.has(candidateRowId);
+// }
+//
 function ProductionPlanningTreeRowRate({
   row,
   index,
@@ -2156,7 +2285,7 @@ function ProductionPlanningTreeDetail({
           <span>{externalSupplyActionLabel}</span>
         </button>
       </div>
-      <RecipeChoiceControls
+      <RecipeChoiceControls styles={styles}
         itemId={row.targetItemId}
         recipes={availableRecipes}
         candidates={availableCandidates}
@@ -2295,80 +2424,89 @@ function ProductionPlanningDeviceMinimumConsumptionDetail({
   );
 }
 
-function RecipeChoiceControls({
-  itemId,
-  recipes,
-  candidates,
-  index,
-  selectedRecipeId,
-  onRequestRecipeSelection,
-  onSelectRecipe,
-  t,
-}: {
-  itemId: string;
-  recipes: readonly RecipeDefinition[];
-  candidates: readonly ProductionPlanningCandidate[];
-  index: ProductionPlanningIndex;
-  selectedRecipeId: string | null;
-  onRequestRecipeSelection: (itemId: string, recipes: readonly RecipeDefinition[]) => void;
-  onSelectRecipe: (itemId: string, recipeId: string | null) => void;
-  t: (key: string) => string;
-}) {
-  if (itemId.length === 0 || candidates.length <= 1) {
-    return null;
-  }
 
-  const normalizedSelectedCandidateId = selectedRecipeId === null
-    ? null
-    : normalizeProductionPlanningCandidateChoiceId(selectedRecipeId);
-  const selectedCandidate = normalizedSelectedCandidateId === null
-    ? null
-    : candidates.find((candidate) => candidate.id === normalizedSelectedCandidateId) ?? null;
-  const label = selectedCandidate === null
-    ? t("productionPlanning.autoRecipe")
-    : resolveProductionPlanningCandidateName(selectedCandidate, index, t);
-
-  return (
-    <div className={cm(styles, "production-planning-recipe-choice")}>
-      <div className={cm(styles, "production-planning-recipe-choice-summary")}>
-        <span>{t("productionPlanning.productionCandidate")}</span>
-        <strong>{label}</strong>
-      </div>
-      <select
-        className={cm(styles, "production-planning-recipe-choice-candidate")}
-        aria-label={t("productionPlanning.productionCandidate")}
-        value={selectedCandidate?.id ?? ""}
-        onChange={(event) => onSelectRecipe(itemId, event.currentTarget.value || null)}
-      >
-        <option value="">{t("productionPlanning.autoRecipe")}</option>
-        {candidates.map((candidate) => (
-          <option key={candidate.id} value={candidate.id}>
-            {resolveProductionPlanningCandidateName(candidate, index, t)}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        className={cm(styles, "production-planning-icon-text-button production-planning-recipe-choice-compact-auto")}
-        aria-pressed={selectedCandidate === null}
-        onClick={() => onSelectRecipe(itemId, null)}
-      >
-        <LucideRepeat />
-        <span>{t("productionPlanning.autoRecipe")}</span>
-      </button>
-      {recipes.length > 1 && (
-        <button
-          type="button"
-          className={cm(styles, "production-planning-icon-text-button production-planning-recipe-choice-select")}
-          onClick={() => onRequestRecipeSelection(itemId, recipes)}
-        >
-          <LucideListTree />
-          <span>{t("productionPlanning.chooseRecipe")}</span>
-        </button>
-      )}
-    </div>
-  );
-}
+// AI-REMOVED 2026-10-03:
+// Reason: 产线规划和环境供料复用同一树表及配方交互。
+// Trigger: 用户要求统一 UI，禁止重复实现。
+// Evidence: 原组件包含通用折叠、选择与详情布局。
+// Replacement: recipe-choice-controls.tsx
+// Risk: 两个入口均需验证节点选择和配方切换。
+// Human Review: Required
+// Original code:
+// function RecipeChoiceControls({
+//   itemId,
+//   recipes,
+//   candidates,
+//   index,
+//   selectedRecipeId,
+//   onRequestRecipeSelection,
+//   onSelectRecipe,
+//   t,
+// }: {
+//   itemId: string;
+//   recipes: readonly RecipeDefinition[];
+//   candidates: readonly ProductionPlanningCandidate[];
+//   index: ProductionPlanningIndex;
+//   selectedRecipeId: string | null;
+//   onRequestRecipeSelection: (itemId: string, recipes: readonly RecipeDefinition[]) => void;
+//   onSelectRecipe: (itemId: string, recipeId: string | null) => void;
+//   t: (key: string) => string;
+// }) {
+//   if (itemId.length === 0 || candidates.length <= 1) {
+//     return null;
+//   }
+//
+//   const normalizedSelectedCandidateId = selectedRecipeId === null
+//     ? null
+//     : normalizeProductionPlanningCandidateChoiceId(selectedRecipeId);
+//   const selectedCandidate = normalizedSelectedCandidateId === null
+//     ? null
+//     : candidates.find((candidate) => candidate.id === normalizedSelectedCandidateId) ?? null;
+//   const label = selectedCandidate === null
+//     ? t("productionPlanning.autoRecipe")
+//     : resolveProductionPlanningCandidateName(selectedCandidate, index, t);
+//
+//   return (
+//     <div className={cm(styles, "production-planning-recipe-choice")}>
+//       <div className={cm(styles, "production-planning-recipe-choice-summary")}>
+//         <span>{t("productionPlanning.productionCandidate")}</span>
+//         <strong>{label}</strong>
+//       </div>
+//       <select
+//         className={cm(styles, "production-planning-recipe-choice-candidate")}
+//         aria-label={t("productionPlanning.productionCandidate")}
+//         value={selectedCandidate?.id ?? ""}
+//         onChange={(event) => onSelectRecipe(itemId, event.currentTarget.value || null)}
+//       >
+//         <option value="">{t("productionPlanning.autoRecipe")}</option>
+//         {candidates.map((candidate) => (
+//           <option key={candidate.id} value={candidate.id}>
+//             {resolveProductionPlanningCandidateName(candidate, index, t)}
+//           </option>
+//         ))}
+//       </select>
+//       <button
+//         type="button"
+//         className={cm(styles, "production-planning-icon-text-button production-planning-recipe-choice-compact-auto")}
+//         aria-pressed={selectedCandidate === null}
+//         onClick={() => onSelectRecipe(itemId, null)}
+//       >
+//         <LucideRepeat />
+//         <span>{t("productionPlanning.autoRecipe")}</span>
+//       </button>
+//       {recipes.length > 1 && (
+//         <button
+//           type="button"
+//           className={cm(styles, "production-planning-icon-text-button production-planning-recipe-choice-select")}
+//           onClick={() => onRequestRecipeSelection(itemId, recipes)}
+//         >
+//           <LucideListTree />
+//           <span>{t("productionPlanning.chooseRecipe")}</span>
+//         </button>
+//       )}
+//     </div>
+//   );
+// }
 
 // AI-REMOVED 2026-08-29:
 // Reason: 生产候选统一下拉框已经直接提供“自动”选项，原宽屏专用自动按钮与其重复。

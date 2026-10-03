@@ -7,6 +7,7 @@ import {
   type ProductionPlanningSourceConfig,
 } from "@/app/shell/production-planning/production-planning-model";
 import { createProductionPlanningModule } from "@/app/shell/production-planning/production-planning-module";
+import { createBlueprintPlannerPlan } from "@/app/shell/production-planning/blueprint-planner-adapter";
 import { createRegistryContract } from "@/registry";
 import { lookupText } from "@/shared/i18n";
 
@@ -27,6 +28,36 @@ function port(itemId: string, perMinute: number): ProductionPlanningPort {
 }
 
 describe("production planning module conversion", () => {
+  it("preserves actual consumption of infinite natural-resource inputs in module and EDA exports", () => {
+    const index = buildProductionPlanningIndex(createRegistryContract());
+    const targets = [port("item_iron_nugget", 120)];
+    const supplies = [{ ...port("item_iron_ore", 0), isInfinite: true }];
+    const plan = computeProductionPlan({
+      targets,
+      supplies,
+      infiniteItemIds: new Set(),
+      recipeChoices: new Map(),
+      sourceConfig: SOURCE_CONFIG,
+    }, index);
+
+    expect(plan.recipeTotals.some((entry) => entry.recipeId === "r_miner_iron_ore_basic")).toBe(false);
+    const module = createProductionPlanningModule({
+      index, plan, targets,
+      translate: (key) => lookupText("zh-CN", key) ?? key,
+    });
+    expect(module.inputs).toEqual([{ itemId: "item_iron_ore", perMinute: 120 }]);
+    expect(module.outputs).toEqual([{ itemId: "item_iron_nugget", perMinute: 120 }]);
+
+    const exported = createBlueprintPlannerPlan({
+      result: plan, targets, supplies, infiniteItemIds: new Set(),
+      activeActivityIds: [], sourceBaseId: "wuling_protocol_core", name: "",
+    });
+    expect(exported.infiniteItemIds).toEqual(["item_iron_ore"]);
+    expect(exported.recipes.some((entry) => entry.recipeId === "r_miner_iron_ore_basic")).toBe(false);
+    expect(exported.recipes).toHaveLength(1);
+    expect(exported.recipes[0]?.inputs).toEqual([{ itemId: "item_iron_ore", perMinute: 120 }]);
+  });
+
   it("converts natural-resource gathering into module input demand", () => {
     const index = buildProductionPlanningIndex(createRegistryContract());
     const targets = [port("item_iron_nugget", 60)];

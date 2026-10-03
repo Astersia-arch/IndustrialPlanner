@@ -1,10 +1,17 @@
+import { PlannerItemRules } from "@/shared/planner-item-policy";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { RecipeDefinition } from "@/domain/registry/types/recipe-definition";
 import { isRecipeAvailableByActivity } from "@/shared/registry/activity-availability";
 import { buildDeviceRunningConsumptionRecipesByMachine, resolveCompanionDeviceRunningConsumptionRecipe } from "@/shared/device-running-consumption";
-import { CONSUMPTION_RECIPE_TAG } from "@/shared/consumption-channel";
+// AI-REMOVED 2026-10-03:
+// Reason: 配方筛选由共享供料规则负责。Trigger: 环境供料统一来源选择。
+// Evidence: 当前函数使用 PlannerSupplyRules；Replacement: shared/planner-supply.ts。
+// Risk: Low；Human Review: Required。
+// Original code:
+// import { CONSUMPTION_RECIPE_TAG } from "@/shared/consumption-channel";
 import { lookupText } from "@/shared/i18n";
+import { PlannerSupplyRules } from "@/shared/planner-supply";
 import { PlannerCandidateError, sumMaterial, type PlannerNetwork, type PlannerNode } from "./model";
 
 const EPSILON = 1e-6;
@@ -12,6 +19,13 @@ const EPSILON = 1e-6;
 /** 自然采集只描述物料来源；保留用户选定的所有实际加工配方。 */
 export function normalizePlannerSources(registry: RegistryContract, request: BlueprintPlannerRequest): BlueprintPlannerRequest {
   const supplies = sumMaterial(request.plan.externalSupplies);
+  const internal = new Set([
+    ...request.plan.supplyPolicies?.flatMap(policy => policy.source === "production" ? [policy.itemId] : []) ?? [],
+    ...request.plan.recipes.flatMap(entry => {
+      const recipe = registry.queries.findRecipeDefinition(entry.recipeId);
+      return recipe && !recipe.tags.includes("自然资源采集") ? recipe.outputs.map(output => output.itemId) : [];
+    }),
+  ]);
   const recipes = request.plan.recipes.filter((entry) => {
     const recipe = registry.queries.findRecipeDefinition(entry.recipeId);
     if (!recipe?.tags.includes("自然资源采集")) return true;
@@ -22,7 +36,8 @@ export function normalizePlannerSources(registry: RegistryContract, request: Blu
   return { ...request, plan: { ...request.plan, recipes,
     externalSupplies: [...supplies].map(([itemId, perMinute]) => ({ itemId, perMinute })),
     infiniteItemIds: [...new Set([...request.plan.infiniteItemIds,
-      ...registry.itemDefinitions.filter((item) => item.tags.includes("自然资源")).map((item) => item.id)])],
+      ...request.plan.supplyPolicies?.flatMap(policy => policy.source === "external" ? [policy.itemId] : []) ?? [],
+      ...registry.itemDefinitions.filter((item) => item.tags.includes("自然资源") && !internal.has(item.id)).map((item) => item.id)])],
   } };
 }
 
@@ -80,6 +95,7 @@ export function createRecipeNode(
 
 export function validatePlannerRequest(registry: RegistryContract, request: BlueprintPlannerRequest): void {
   const { plan, options } = request;
+  new PlannerItemRules(registry, options);
   if (!["warehouse", "stash", "auto"].includes(options.solidOutput)) throw new Error("未知固体输出方式。");
   if (plan.containsModules) throw new Error("包含模块的规划不能自动规划产线。");
   if (!Number.isFinite(plan.unresolvedPerMinute) || plan.unresolvedPerMinute < 0 || plan.unresolvedPerMinute > EPSILON) throw new Error("产线规划仍有未满足需求，请先补齐生产方案。");
@@ -122,67 +138,138 @@ export function validatePlannerRequest(registry: RegistryContract, request: Blue
     }
   }
   if (plan.infiniteItemIds.some((itemId) => registry.queries.findItemDefinition(itemId) === null)) throw new Error("外部供给包含未知物料。");
+  const view = new PlannerSupplyRules(registry, plan).view();
+  if (view.issues.length) {
+    const issue = view.issues[0]!;
+    throw new Error(`${issue.kind === "cycle" ? "供料路线存在循环" : "缺少可用供料路线"}：${issue.itemIds.map(id => {
+      const item = registry.queries.findItemDefinition(id);
+      return item ? lookupText("zh-CN", item.nameKey) ?? id : id;
+    }).join(" → ")}`);
+  }
 }
 
 /** 只补充环境设施产生的额外需求；原有生产配方和数量保持不变。 */
+// AI-CORRECTION 2026-10-03: 保持原配方和主体目标，允许已有生产设备增加负载以满足环境增量。
 export function supplyAuxiliaryDemand(
   registry: RegistryContract, network: PlannerNetwork, itemId: string, perMinute: number,
 ): PlannerNode[] {
-  const allowedSources = new Set([...network.request.plan.infiniteItemIds, ...network.request.plan.externalSupplies.map((entry) => entry.itemId)]);
-  const chosen = new Set(network.request.plan.recipes.map((entry) => entry.recipeId));
-  const selectedByOutput = new Map<string, Set<string>>();
-  for (const recipeId of chosen) {
-    for (const output of registry.queries.findRecipeDefinition(recipeId)!.outputs) {
-      const ids = selectedByOutput.get(output.itemId) ?? new Set<string>();
-      ids.add(recipeId); selectedByOutput.set(output.itemId, ids);
+  const rules = new PlannerSupplyRules(registry, network.request.plan);
+  const changed = new Set<PlannerNode>();
+  const balance = (item: string) => network.nodes.reduce((sum, node) => sum
+    + node.outputs.filter(flow => flow.itemId === item).reduce((total, flow) => total + flow.perMinute, 0)
+    - node.inputs.filter(flow => flow.itemId === item).reduce((total, flow) => total + flow.perMinute, 0),
+  -network.request.plan.targets.filter(flow => flow.itemId === item).reduce((sum, flow) => sum + flow.perMinute, 0));
+  const add = (item: string, rate: number, path: readonly string[]): void => {
+    if (rate <= EPSILON) return;
+    const policy = rules.resolve(item).policy;
+    if (policy?.source === "external") return;
+    if (!policy) throw new PlannerCandidateError(`气体环境的额外需求缺少可用来源：${item}`);
+    if (path.includes(item)) throw new PlannerCandidateError(`辅助生产存在无法配平的循环：${[...path, item].join(" → ")}`);
+    const recipe = registry.queries.findRecipeDefinition(policy.recipeId)!;
+    const output = recipe.outputs.find(flow => flow.itemId === item)!;
+    const maximumCycles = 60 / recipe.durationSeconds;
+    let remaining = rate / output.amount;
+    const inputIncrease = new Map<string, number>();
+    const grow = (node: PlannerNode | undefined, cycles: number) => {
+      const previous = sumMaterial(node?.inputs ?? []);
+      let sequence = network.nodes.length;
+      while (!node && network.nodes.some(entry => entry.entity.id === `eda-aux-${sequence}`)) sequence++;
+      const current = createRecipeNode(registry, recipe, node?.entity.id ?? `eda-aux-${sequence}`,
+        cycles, node?.purpose === "production" ? "production" : "auxiliary");
+      for (const [input, value] of sumMaterial(current.inputs)) inputIncrease.set(input,
+        (inputIncrease.get(input) ?? 0) + value - (previous.get(input) ?? 0));
+      if (node) {
+        node.inputs.splice(0, node.inputs.length, ...current.inputs);
+        node.outputs.splice(0, node.outputs.length, ...current.outputs);
+        changed.add(node);
+      } else { network.nodes.push(current); changed.add(current); }
+    };
+    // 同一配方的已有设备先提高负载，达到容量后再增补实体；运行消耗按实际台数计算。
+    for (const node of network.nodes.filter(entry => entry.recipe?.id === recipe.id && entry.purpose !== "environment")) {
+      const cycles = node.outputs.find(flow => flow.itemId === item)!.perMinute / output.amount;
+      const extra = Math.min(remaining, Math.max(0, maximumCycles - cycles));
+      if (extra > EPSILON) { grow(node, cycles + extra); remaining -= extra; }
+      if (remaining <= EPSILON) break;
     }
-  }
-  const usable = registry.recipeDefinitions.filter((recipe) =>
-    !recipe.tags.includes(CONSUMPTION_RECIPE_TAG) && recipe.gasDiffusionOutput === undefined
-    && !recipe.tags.includes("自然资源采集")
-    && isRecipeAvailableByActivity(recipe, network.request.plan.activeActivityIds)
-    && !registry.queries.findEntityDefinition(recipe.machineId)?.placementBehaviors.some((behavior) => behavior.type === "snap-to-outer-ring-edge")
-    && !recipe.machineId.startsWith("cheat_"));
-  function findRecipe(item: string, visiting: ReadonlySet<string>): { recipe: RecipeDefinition; cost: number } | null {
-    if (visiting.has(item)) return null;
-    const costs = new Map([...allowedSources].map((source) => [source, 0]));
-    const choices = new Map<string, { recipe: RecipeDefinition; cost: number }>();
-    // 正成本松弛只接受从已知来源可达的方案，避免配方环导致指数递归。
-    for (let pass = 0; pass < usable.length; pass++) {
-      let changed = false;
-      for (const recipe of usable) {
-        if (recipe.inputs.some((input) => visiting.has(input.itemId))) continue;
-        const cost = (chosen.has(recipe.id) ? 0.5 : 1) + recipe.inputs.reduce((sum, input) => sum + (costs.get(input.itemId) ?? Infinity), 0);
-        if (!Number.isFinite(cost)) continue;
-        for (const output of recipe.outputs) {
-          const selected = selectedByOutput.get(output.itemId);
-          if (selected !== undefined && !selected.has(recipe.id)) continue;
-          if (output.amount <= 0 || visiting.has(output.itemId) || cost >= (costs.get(output.itemId) ?? Infinity)) continue;
-          costs.set(output.itemId, cost);
-          choices.set(output.itemId, { recipe, cost });
-          changed = true;
-        }
-      }
-      if (!changed) break;
+    while (remaining > EPSILON) {
+      const cycles = Math.min(remaining, maximumCycles);
+      grow(undefined, cycles); remaining -= cycles;
     }
-    return choices.get(item) ?? null;
-  }
-  const added: PlannerNode[] = [];
-  function add(item: string, rate: number, visiting: ReadonlySet<string>): void {
-    if (rate <= EPSILON || allowedSources.has(item)) return;
-    const choice = findRecipe(item, visiting);
-    if (choice === null) throw new PlannerCandidateError(`气体环境的额外需求缺少可用来源：${item}`);
-    const output = choice.recipe.outputs.find((entry) => entry.itemId === item)!;
-    const cycles = rate / output.amount;
-    const count = Math.ceil(cycles * choice.recipe.durationSeconds / 60 - EPSILON);
-    const fresh: PlannerNode[] = [];
-    for (let index = 0; index < count; index++) {
-      const node = createRecipeNode(registry, choice.recipe, `eda-aux-${network.nodes.length}`, cycles / count, "auxiliary");
-      network.nodes.push(node); added.push(node); fresh.push(node);
+    for (const [input, increase] of inputIncrease) {
+      // 先消耗全网已有余量；不能借补料顺带掩盖主方案原本的缺口。
+      const deficit = Math.min(increase, Math.max(0, -balance(input)));
+      add(input, deficit, [...path, item]);
     }
-    const nextPath = new Set([...visiting, item]);
-    for (const [inputItem, inputRate] of sumMaterial(fresh.flatMap((node) => node.inputs))) add(inputItem, inputRate, nextPath);
-  }
-  add(itemId, perMinute, new Set());
-  return added;
+  };
+  add(itemId, perMinute, []);
+  return [...changed];
 }
+
+// AI-REMOVED 2026-10-03:
+// Reason: 辅助供料改用与界面共用的按物品规则，并优先扩展已有设备产能。
+// Trigger: 用户授权环境供料配置，要求沿用自产/外供选择并支持按实际需求扩产。
+// Evidence: 旧算法只从已实例化配方猜测来源，每次递归单独增补设备，无法携带待用路线。
+// Replacement: 本文件 supplyAuxiliaryDemand 与 shared/planner-supply.ts。
+// Risk: 辅助产能分配和默认路线发生变化，需 Worker 与 Dense 验证；Human Review: Required。
+// Original code:
+// export function supplyAuxiliaryDemand(
+//   registry: RegistryContract, network: PlannerNetwork, itemId: string, perMinute: number,
+// ): PlannerNode[] {
+//   const allowedSources = new Set([...network.request.plan.infiniteItemIds, ...network.request.plan.externalSupplies.map((entry) => entry.itemId)]);
+//   const chosen = new Set(network.request.plan.recipes.map((entry) => entry.recipeId));
+//   const selectedByOutput = new Map<string, Set<string>>();
+//   for (const recipeId of chosen) {
+//     for (const output of registry.queries.findRecipeDefinition(recipeId)!.outputs) {
+//       const ids = selectedByOutput.get(output.itemId) ?? new Set<string>();
+//       ids.add(recipeId); selectedByOutput.set(output.itemId, ids);
+//     }
+//   }
+//   const usable = registry.recipeDefinitions.filter((recipe) =>
+//     !recipe.tags.includes(CONSUMPTION_RECIPE_TAG) && recipe.gasDiffusionOutput === undefined
+//     && !recipe.tags.includes("自然资源采集")
+//     && isRecipeAvailableByActivity(recipe, network.request.plan.activeActivityIds)
+//     && !registry.queries.findEntityDefinition(recipe.machineId)?.placementBehaviors.some((behavior) => behavior.type === "snap-to-outer-ring-edge")
+//     && !recipe.machineId.startsWith("cheat_"));
+//   function findRecipe(item: string, visiting: ReadonlySet<string>): { recipe: RecipeDefinition; cost: number } | null {
+//     if (visiting.has(item)) return null;
+//     const costs = new Map([...allowedSources].map((source) => [source, 0]));
+//     const choices = new Map<string, { recipe: RecipeDefinition; cost: number }>();
+//     // 正成本松弛只接受从已知来源可达的方案，避免配方环导致指数递归。
+//     for (let pass = 0; pass < usable.length; pass++) {
+//       let changed = false;
+//       for (const recipe of usable) {
+//         if (recipe.inputs.some((input) => visiting.has(input.itemId))) continue;
+//         const cost = (chosen.has(recipe.id) ? 0.5 : 1) + recipe.inputs.reduce((sum, input) => sum + (costs.get(input.itemId) ?? Infinity), 0);
+//         if (!Number.isFinite(cost)) continue;
+//         for (const output of recipe.outputs) {
+//           const selected = selectedByOutput.get(output.itemId);
+//           if (selected !== undefined && !selected.has(recipe.id)) continue;
+//           if (output.amount <= 0 || visiting.has(output.itemId) || cost >= (costs.get(output.itemId) ?? Infinity)) continue;
+//           costs.set(output.itemId, cost);
+//           choices.set(output.itemId, { recipe, cost });
+//           changed = true;
+//         }
+//       }
+//       if (!changed) break;
+//     }
+//     return choices.get(item) ?? null;
+//   }
+//   const added: PlannerNode[] = [];
+//   function add(item: string, rate: number, visiting: ReadonlySet<string>): void {
+//     if (rate <= EPSILON || allowedSources.has(item)) return;
+//     const choice = findRecipe(item, visiting);
+//     if (choice === null) throw new PlannerCandidateError(`气体环境的额外需求缺少可用来源：${item}`);
+//     const output = choice.recipe.outputs.find((entry) => entry.itemId === item)!;
+//     const cycles = rate / output.amount;
+//     const count = Math.ceil(cycles * choice.recipe.durationSeconds / 60 - EPSILON);
+//     const fresh: PlannerNode[] = [];
+//     for (let index = 0; index < count; index++) {
+//       const node = createRecipeNode(registry, choice.recipe, `eda-aux-${network.nodes.length}`, cycles / count, "auxiliary");
+//       network.nodes.push(node); added.push(node); fresh.push(node);
+//     }
+//     const nextPath = new Set([...visiting, item]);
+//     for (const [inputItem, inputRate] of sumMaterial(fresh.flatMap((node) => node.inputs))) add(inputItem, inputRate, nextPath);
+//   }
+//   add(itemId, perMinute, new Set());
+//   return added;
+// }

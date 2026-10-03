@@ -1,33 +1,84 @@
+// AI-REMOVED 2026-10-03: Reason: 全局选项字段收敛后无须 BlueprintPlannerOptions。Trigger: 逐物品配置。
+// Evidence: OPTION_FIELDS 仅保留两项。Replacement: 字段字面量。Risk: Low。Human Review: Required
+// Original code: import type { BlueprintPlannerOptions } from "@/domain/blueprint-planner";
+import { collectPlannerItemBoundaries, PlannerItemRules } from "@/shared/planner-item-policy";
+import { BlueprintPlannerItemPolicies } from "./blueprint-planner-item-policies";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
-import type { BlueprintPlannerAreaPoint, BlueprintPlannerOptions, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerAreaPoint, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
 import { DialogShell } from "./shared/dialog-shell";
 import { PlannerTaskFlow } from "./production-planning";
-import { plannerAreaTicks, plannerProposalRate, samplePlannerProposalRate } from "./blueprint-planner-statistics";
+import { plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate } from "./blueprint-planner-statistics";
 import styles from "./blueprint-planner-dialog.module.scss";
+import { BlueprintPlannerEnvironment } from "./blueprint-planner-environment";
+import { PlannerSupplyRules } from "@/shared/planner-supply";
 
-const OPTION_FIELDS: readonly { key: Exclude<keyof BlueprintPlannerOptions, "evaluationsPerRound" | "concurrency">; label: UiKey; choices: readonly [string, UiKey][] }[] = [
-  { key: "solidSupply", label: "eda.solidSupply", choices: [["external", "eda.externalBelt"], ["warehouse", "eda.warehouseSupply"]] },
-  { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
+const OPTION_FIELDS: readonly { key: "warehouseBus" | "plantStartup"; label: UiKey; choices: readonly [string, UiKey][] }[] = [
+  // AI-REMOVED 2026-10-03:
+  // Reason: 四类意图改为逐物品编辑。Trigger: 用户要求精确选择。
+  // Evidence: BlueprintPlannerItemPolicies 展示任务边界。Replacement: BlueprintPlannerItemPolicies。
+  // Risk: Low；旧字段保留任务缺省值。Human Review: Required
+  // Original code:
+  //   { key: "solidSupply", label: "eda.solidSupply", choices: [["external", "eda.externalBelt"], ["warehouse", "eda.warehouseSupply"]] },
+  // AI-REMOVED 2026-10-03:
+  // Reason: 四类意图改为逐物品编辑。Trigger: 用户要求精确选择。
+  // Evidence: BlueprintPlannerItemPolicies 展示任务边界。Replacement: BlueprintPlannerItemPolicies。
+  // Risk: Low；旧字段保留任务缺省值。Human Review: Required
+  // Original code:
+  //   { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
   { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["free", "eda.free"]] },
-  { key: "solidOutput", label: "eda.solidOutput", choices: [["auto", "eda.autoOutput"], ["warehouse", "eda.warehouseOutput"], ["stash", "eda.stashOutput"]] },
-  { key: "byproducts", label: "eda.byproducts", choices: [["output", "eda.output"], ["destroy", "eda.destroy"]] },
+  // AI-REMOVED 2026-10-03:
+  // Reason: 四类意图改为逐物品编辑。Trigger: 用户要求精确选择。
+  // Evidence: BlueprintPlannerItemPolicies 展示任务边界。Replacement: BlueprintPlannerItemPolicies。
+  // Risk: Low；旧字段保留任务缺省值。Human Review: Required
+  // Original code:
+  //   { key: "solidOutput", label: "eda.solidOutput", choices: [["auto", "eda.autoOutput"], ["warehouse", "eda.warehouseOutput"], ["stash", "eda.stashOutput"]] },
+  // AI-REMOVED 2026-10-03:
+  // Reason: 四类意图改为逐物品编辑。Trigger: 用户要求精确选择。
+  // Evidence: BlueprintPlannerItemPolicies 展示任务边界。Replacement: BlueprintPlannerItemPolicies。
+  // Risk: Low；旧字段保留任务缺省值。Human Review: Required
+  // Original code:
+  //   { key: "byproducts", label: "eda.byproducts", choices: [["output", "eda.output"], ["destroy", "eda.destroy"]] },
   { key: "plantStartup", label: "eda.plantStartup", choices: [["preload", "eda.preload"], ["warehouse", "eda.warehouseStartup"]] },
 ];
 
-function AreaCurve({ points, proposals, label }: { points: readonly BlueprintPlannerAreaPoint[]; proposals: number; label: string }) {
-  const width = 600, left = 46, right = 588, top = 12, bottom = 132;
+function AreaCurve({ points, proposals, label, xLabel, yLabel }: {
+  points: readonly BlueprintPlannerAreaPoint[]; proposals: number; label: string; xLabel: string; yLabel: string;
+}) {
+  const width = 600, left = 58, right = 588, top = 34, bottom = 160;
   const ticks = plannerAreaTicks(points, proposals, left, right);
-  const height = bottom + 28;
+  const height = bottom + 46;
   const maxX = Math.max(1, proposals);
+  // AI-REMOVED 2026-10-03:
+  // Reason: Y 轴改为从零开始的 log(1+x)，不再用极值差拉伸。
+  // Trigger: 用户要求面积图两轴从零开始的对数坐标。
+  // Evidence: 旧 span 与 minArea 将最小面积映射到轴底部附近。
+  // Replacement: plannerLogCoordinate 与下方 areaTicks。
+  // Risk: 接近的面积值视觉差异缩小；圆点保留精确数值。Human Review: Required
+  // Original code:
+  // const minArea = Math.min(...points.map(point => point.bestArea));
+  // const span = Math.max(1, maxArea - minArea);
+  // AI-CORRECTION 2026-10-03: 用户取消 Y 轴对数与零起点，恢复实际极值范围；单点与留白统一由 plannerAreaCoordinate 处理。
   const minArea = Math.min(...points.map(point => point.bestArea));
   const maxArea = Math.max(...points.map(point => point.bestArea));
-  const span = Math.max(1, maxArea - minArea);
-  const x = (value: number) => left + value / maxX * (right - left);
-  const y = (value: number) => bottom - ((value - minArea) / span * (bottom - top - 20) + 10);
+  const x = (value: number) => plannerLogCoordinate(value, maxX, left, right);
+  const y = (value: number) => plannerAreaCoordinate(value, minArea, maxArea, top, bottom);
+  // AI-REMOVED 2026-10-03:
+  // Reason: Y 轴改为实际面积范围内的线性刻度。
+  // Trigger: 用户要求 X 对数、Y 线性，使等量面积下降与翻倍搜索量形成近似斜线。
+  // Evidence: 对数 Y 轴压缩高位面积差，零起点掩盖小幅改善。
+  // Replacement: 下方实际极值之间的等距面积刻度。
+  // Risk: Low；不改变原始面积与下降点。Human Review: Required
+  // Original code:
+  // const areaTicks = [0];
+  // for (let value = 1; value < maxArea; value *= 10) {
+  //   if (y(value) - y(maxArea) >= 14 && y(areaTicks.at(-1)!) - y(value) >= 14) areaTicks.push(value);
+  // }
+  // if (maxArea > 0) areaTicks.push(maxArea);
+  const areaTicks = [...new Set(Array.from({ length: 5 }, (_, index) => Math.round(minArea + (maxArea - minArea) * index / 4)))];
   const first = points[0]!;
   const path = [`M ${x(first.evaluatedProposals)} ${y(first.bestArea)}`];
   for (let index = 1; index < points.length; index++) {
@@ -56,8 +107,20 @@ function AreaCurve({ points, proposals, label }: { points: readonly BlueprintPla
         <path className={styles.areaTick} d={`M ${tick.x} ${bottom} V ${bottom + 5}`} />
         <text x={tick.labelX} y={bottom + 18} textAnchor="start">{tick.label}</text>
       </g>)}
-      <text x={left - 5} y={y(maxArea) + 4} textAnchor="end">{maxArea}</text>
-      {minArea !== maxArea ? <text x={left - 5} y={y(minArea) + 4} textAnchor="end">{minArea}</text> : null}
+      {/* AI-REMOVED 2026-10-03:
+        Reason: 极值标签由零点和对数刻度替代。Trigger: 用户要求从零开始的对数轴。
+        Evidence: 原 Y 轴仅显示最小/最大面积。Replacement: 下方 areaTicks 和两轴末端标签。
+        Risk: Low。Human Review: Required
+        Original code:
+        <text x={left - 5} y={y(maxArea) + 4} textAnchor="end">{maxArea}</text>
+        {minArea !== maxArea ? <text x={left - 5} y={y(minArea) + 4} textAnchor="end">{minArea}</text> : null}
+      */}
+      {areaTicks.map(value => <g key={value}>
+        <path className={styles.areaTick} d={`M ${left - 4} ${y(value)} H ${left}`} />
+        <text x={left - 7} y={y(value) + 4} textAnchor="end">{value.toLocaleString()}</text>
+      </g>)}
+      <text x={left} y={16}>{yLabel}</text>
+      <text x={right} y={height - 6} textAnchor="end">{xLabel}</text>
     </svg></div>
   </figure>;
 }
@@ -97,6 +160,11 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     void revision;
     return planner?.queries.listTasks().map(task => ({ ...task, name: planner.queries.getLastRequest(task.taskId)?.plan.name ?? task.taskId })) ?? [];
   }, [planner, revision]);
+  const supply = useMemo(() => {
+    if (!controller.plan) return { view: null, error: null };
+    try { return { view: new PlannerSupplyRules(appHost.workspace.registry, controller.plan).view(), error: null }; }
+    catch (failure) { return { view: null, error: failure instanceof Error ? failure.message : String(failure) }; }
+  }, [appHost.workspace.registry, controller.plan]);
   if (!controller.dialogState.visible) return null;
   const busy = progress !== null && ["running", "saving"].includes(progress.status);
   const anyBusy = planner?.state.activeTaskId != null;
@@ -201,6 +269,17 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
             <div className={styles.flow} aria-label={t("productionPlanning.modeDevice")}>
               <PlannerTaskFlow key={selectedId ?? "draft"} plan={plan} registry={appHost.workspace.registry} t={t} />
             </div>
+            {supply.view ? <BlueprintPlannerEnvironment plan={plan} registry={appHost.workspace.registry} view={supply.view}
+              disabled={busy || progress !== null} isTouch={appHost.state.screenProfile.hasTouch}
+              onChange={controller.updateSupplyPolicy} onPickRecipe={(itemId, recipes) => act(async () => {
+                const item = appHost.workspace.registry.queries.findItemDefinition(itemId);
+                const recipeId = await appHost.recipePicker.pickRecipe({ includeInactiveActivityRecipes: false,
+                  title: `${t("productionPlanning.chooseRecipe")} · ${item ? t(item.nameKey) : itemId}`, recipes });
+                if (recipeId && controller.plan === plan && controller.viewTaskId === null) controller.updateSupplyPolicy({ itemId, source: "production", recipeId });
+              })} t={t} /> : null}
+            {supply.view ? <BlueprintPlannerItemPolicies plan={plan} registry={appHost.workspace.registry} environment={supply.view}
+              options={controller.options} disabled={busy || progress !== null} onChange={controller.updateItemPolicy} t={t} /> : null}
+            {supply.error ? <p role="alert" className={styles.error}>{supply.error}</p> : null}
             <fieldset className={styles.options} disabled={busy}>
               {OPTION_FIELDS.map(field => <label key={field.key}><span>{t(field.label)}</span>
                 <select disabled={progress !== null} value={controller.options[field.key]}
@@ -258,12 +337,16 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
             </div>
             <p>{progress.message}</p>
             {progress.areaHistory?.length ? <AreaCurve points={progress.areaHistory}
-              proposals={progress.evaluatedProposals} label={t("eda.areaCurve")} /> : null}
-            {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}</p> : null}
+              proposals={progress.evaluatedProposals} label={t("eda.areaCurve")}
+              xLabel={`${t("eda.totalProposals")}${t("eda.logScale")}`} yLabel={t("eda.bestArea")} /> : null}
+            {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}
+              {result.metrics.gasDiffuserCount > 0 ? ` · ${t("eda.environmentCount").replace("{count}", String(result.metrics.gasDiffuserCount))}` : ""}</p> : null}
           </section> : null}
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
         </div>
         <footer className={styles.footer}>
+          {progress !== null && plan !== null && !busy ? <button type="button" disabled={anyBusy}
+            onClick={() => { controller.open(plan, controller.options); setError(null); }}>{t("eda.replan")}</button> : null}
           {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
           {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
             onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
@@ -287,8 +370,19 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
           </> : null}
           {progress === null && plan !== null ? <button type="button" className={styles.primary}
-            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings} onClick={() => act(() => {
-              if (planner) select(planner.actions.start(controller.getRequest()));
+            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
+              if (planner) {
+                const request = controller.getRequest();
+                // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
+                const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? [];
+                const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
+                const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
+                  itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
+                  ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
+                  ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
+                })) : request.options.itemPolicies;
+                select(planner.actions.start({ ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } }));
+              }
             })}>{t("eda.start")}</button> : null}
         </footer>
       </div>

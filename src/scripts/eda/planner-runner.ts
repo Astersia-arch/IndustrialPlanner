@@ -3,7 +3,7 @@ import type { PlannerSearchProfile } from "@/blueprint-planner/search-profile";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { cpus, availableParallelism } from "node:os";
-import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerItemPolicy, BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import type { SimulationEngineKind } from "@/domain/simulation";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import { createWorkspaceState } from "@/domain/document/workspace-state";
@@ -57,6 +57,7 @@ export interface PlannerBatchOptions {
 export interface PlannerAttemptRecord {
   readonly variant: number;
   readonly solidOutput?: "warehouse" | "stash";
+  readonly itemPolicies?: readonly BlueprintPlannerItemPolicy[];
   readonly evaluations: number;
   readonly evaluationAccounting: "exact" | "upper-bound";
   readonly elapsedMs: number;
@@ -114,6 +115,7 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
       const variant = (options.startVariant ?? 0) + index;
       const selection = portfolio.next(variant, options.strategy !== "baseline");
       const solidOutput = selection.request.options.solidOutput as "warehouse" | "stash";
+      const itemPolicies = selection.request.options.itemPolicies;
       const generationStart = performance.now();
       let generationMs = 0, verificationMs = 0;
       let attemptEvaluations = 0;
@@ -162,7 +164,7 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
         if (success) firstSuccessMs ??= performance.now() - startedAt;
         if (success) portfolio.remember(candidate.seed);
         const artifactPath = success ? await saveSuccessfulPlanning(workspace.registry, `${request.plan.name}-${variant}`,
-          candidate.execution.blueprint, request, { variant, solidOutput, generationMs, verificationMs, engineKind: options.engineKind, ticksPerSecond: 2,
+          candidate.execution.blueprint, request, { variant, solidOutput, itemPolicies, generationMs, verificationMs, engineKind: options.engineKind, ticksPerSecond: 2,
             metrics: candidate.metrics, search: candidate.search, supplyAudit: candidate.supplyAudit, constraints, report }) : undefined;
         if (artifactPath && candidate.seed) await writeFile(resolve(artifactPath, "search-seed.json"), JSON.stringify(candidate.seed, null, 2));
         const diagnosticPath = success ? undefined : edaOutputPath("runs/candidates", `${Date.now()}-${process.pid}-${variant}`);
@@ -174,7 +176,7 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
             writeFile(resolve(diagnosticPath, "preview.svg"), createLayoutPreview(workspace.registry, candidate.execution.blueprint)),
           ]);
         }
-        records.push({ variant, solidOutput, generationMs, verificationMs, evaluations: attemptEvaluations, evaluationAccounting,
+        records.push({ variant, solidOutput, itemPolicies, generationMs, verificationMs, evaluations: attemptEvaluations, evaluationAccounting,
           elapsedMs: performance.now() - startedAt,
           outcome: success ? "success" : report.status === "timeout" ? "timeout" : "verification-failed",
           area: candidate.metrics.area, width: candidate.metrics.width, height: candidate.metrics.height, search: candidate.search,
@@ -191,7 +193,7 @@ export async function runPlannerBatch(request: BlueprintPlannerRequest, options:
           evaluationAccounting = search === undefined ? "upper-bound" : "exact";
           localEvaluations += attemptEvaluations;
         }
-        records.push({ variant, solidOutput, search, evaluations: attemptEvaluations, evaluationAccounting, elapsedMs: performance.now() - startedAt,
+        records.push({ variant, solidOutput, itemPolicies, search, evaluations: attemptEvaluations, evaluationAccounting, elapsedMs: performance.now() - startedAt,
           generationMs: generationMs || performance.now() - generationStart, verificationMs,
           outcome: error instanceof PlanningBudgetExhausted ? "timeout" : "layout-failed", error: error.message });
       }

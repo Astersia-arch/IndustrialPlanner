@@ -15,6 +15,12 @@ export interface BlueprintPlannerRecipePlan {
   readonly runningInputs: readonly BlueprintPlannerFlow[];
 }
 
+/** 按需供料规则；数量由环境布局和实际设备消耗共同确定。 */
+export type BlueprintPlannerSupplyPolicy = { readonly itemId: string } & (
+  | { readonly source: "external" }
+  | { readonly source: "production"; readonly recipeId: string }
+);
+
 export interface BlueprintPlannerProductionPlan {
   readonly name: string;
   readonly sourceBaseId: string;
@@ -26,9 +32,19 @@ export interface BlueprintPlannerProductionPlan {
   readonly containsModules: boolean;
   readonly unresolvedPerMinute: number;
   readonly activeActivityIds: readonly string[];
+  readonly supplyPolicies?: readonly BlueprintPlannerSupplyPolicy[];
+}
+
+/** 逐物品的物流接入和剩余处理；不改变生产方案中的物料来源。 */
+export interface BlueprintPlannerItemPolicy {
+  readonly itemId: string;
+  readonly supply?: "external" | "warehouse" | "conduit";
+  readonly output?: "auto" | "warehouse" | "stash";
+  readonly byproducts?: "destroy" | "output";
 }
 
 export interface BlueprintPlannerOptions {
+  readonly itemPolicies?: readonly BlueprintPlannerItemPolicy[];
   readonly solidSupply: "external" | "warehouse";
   readonly fluidSupply: "external" | "conduit";
   readonly warehouseBus: "straight" | "free";

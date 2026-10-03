@@ -28,8 +28,23 @@ export function samplePlannerProposalRate(previous: ProposalRateSample | null,
   return { ...current, rate: plannerProposalRate(current.proposals - previous.proposals, duration) };
 }
 
+/** log(1 + value) 保留零点；刻度和曲线共用同一映射，反向范围用于 Y 轴。 */
+// AI-CORRECTION 2026-10-03: 用户确认只有 X 轴采用对数；Y 轴由 plannerAreaCoordinate 线性映射。
+export function plannerLogCoordinate(value: number, maximum: number, start: number, end: number): number {
+  return start + Math.log1p(value) / Math.log1p(Math.max(1, maximum)) * (end - start);
+}
+
+/** 面积按实际极值线性缩放并留白；只有一个面积值时保持在图表中间。 */
+export function plannerAreaCoordinate(value: number, minimum: number, maximum: number, top: number, bottom: number): number {
+  const padding = Math.max(1, (maximum - minimum) * 0.1);
+  const lower = Math.max(0, minimum - padding), upper = maximum + padding;
+  return bottom - (value - lower) / (upper - lower) * (bottom - top);
+}
+
 /** 保持真实线性 X 坐标；重叠的刻度文字换行，不丢弃任何面积下降点。 */
 // AI-CORRECTION 2026-10-03: 用户改为合并连续密集下降的标签，仅保留最后一次；曲线数据不变。
+// AI-CORRECTION 2026-10-03: 两轴改用 log(1+x)；必须保留零刻度，密集下降仍仅保留最后一次。
+// AI-CORRECTION 2026-10-03: 用户最终选择 X 对数、Y 线性；本函数只负责 X 轴。
 export function plannerAreaTicks(points: readonly BlueprintPlannerAreaPoint[], proposals: number, left: number, right: number) {
   const values = new Set<number>();
   let bestArea = Infinity;
@@ -56,16 +71,17 @@ export function plannerAreaTicks(points: readonly BlueprintPlannerAreaPoint[], p
   //   return { value, x, label, labelX, row };
   // });
   const createTick = (value: number) => {
-    const x = left + value / Math.max(1, proposals) * (right - left);
+    const x = plannerLogCoordinate(value, proposals, left, right);
     const label = value.toLocaleString();
     const labelWidth = label.length * 7;
     const labelX = Math.max(left, Math.min(right - labelWidth, x - labelWidth / 2));
     return { value, x, label, labelX, labelWidth };
   };
-  const ticks: ReturnType<typeof createTick>[] = [];
+  const ticks: ReturnType<typeof createTick>[] = [createTick(0)];
   for (const value of [...values].sort((a, b) => a - b)) {
     const tick = createTick(value);
-    while (ticks.length && ticks.at(-1)!.labelX + ticks.at(-1)!.labelWidth + 10 > tick.labelX) ticks.pop();
+    if (tick.labelX < ticks[0]!.labelX + ticks[0]!.labelWidth + 10) continue;
+    while (ticks.length > 1 && ticks.at(-1)!.labelX + ticks.at(-1)!.labelWidth + 10 > tick.labelX) ticks.pop();
     ticks.push(tick);
   }
   for (const value of new Set([0, proposals])) {

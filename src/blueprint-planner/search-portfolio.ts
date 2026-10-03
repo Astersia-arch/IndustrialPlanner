@@ -1,3 +1,4 @@
+import { resolvePlannerOutputAttempt, restorePlannerOutputRequest, plannerUsesOutputStash, MAX_PLANNER_OUTPUT_MODES } from "./output-policy";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import { plannerRequestKey, type PlannerSearchSeed } from "./search-seed";
 import { countPlannerOutputStashes } from "./quality";
@@ -28,11 +29,23 @@ function seedDistance(a: SeedEntry, b: SeedEntry): number {
   return [...keys].filter(key => a.features.get(key) !== b.features.get(key)).length / Math.max(1, keys.size);
 }
 
-/** 自动输出交替探索两种完整拓扑；每种模式拥有自己的随机序列和独立探索轮次。 */
+// AI-REMOVED 2026-10-03:
+// Reason: 自动去向改为逐物品组合，检查点需要保留每种组合。
+// Trigger: 用户要求精确配置物品。
+// Evidence: 原搜索和恢复只读取全局 solidOutput。
+// Replacement: output-policy.ts
+// Risk: 种子池上限增为 64 种组合。
+// Human Review: Required
+// Original code:
+// /** 自动输出交替探索两种完整拓扑；每种模式拥有自己的随机序列和独立探索轮次。 */
+// export function resolvePlannerAttempt(request: BlueprintPlannerRequest, variant: number) {
+//   if (request.options.solidOutput !== "auto") return { request, variant };
+//   return { request: { ...request, options: { ...request.options,
+//     solidOutput: variant % 2 === 0 ? "stash" as const : "warehouse" as const } }, variant: Math.floor(variant / 2) };
+// }
+//
 export function resolvePlannerAttempt(request: BlueprintPlannerRequest, variant: number) {
-  if (request.options.solidOutput !== "auto") return { request, variant };
-  return { request: { ...request, options: { ...request.options,
-    solidOutput: variant % 2 === 0 ? "stash" as const : "warehouse" as const } }, variant: Math.floor(variant / 2) };
+  return resolvePlannerOutputAttempt(request, variant);
 }
 
 /** 只记住真实验收通过的种子，避免一种输出的领先结果挤掉另一种拓扑的续搜机会。 */
@@ -46,19 +59,29 @@ export class PlannerSearchPortfolio {
   snapshot(): PlannerPortfolioSnapshot {
     return structuredClone({ pools: [...this.seeds].map(([key, pool]) => ({ key,
       attemptsWithoutImprovement: pool.attemptsWithoutImprovement,
-      entries: pool.entries.map(({ seed, visits }) => ({ seed, visits })) })) });
+      entries: pool.entries.map(({ seed, visits }: PlannerPortfolioSnapshot["pools"][number]["entries"][number]) => ({ seed, visits })) })) });
   }
 
   restore(snapshot: PlannerPortfolioSnapshot): void {
+    if (!Array.isArray(snapshot.pools) || snapshot.pools.length > MAX_PLANNER_OUTPUT_MODES) throw new Error("搜索种子池过多。");
     const pools = new Map<string, { entries: SeedEntry[]; attemptsWithoutImprovement: number }>();
     for (const pool of snapshot.pools) {
       if (pools.has(pool.key) || pool.entries.length < 1 || pool.entries.length > 4
         || !Number.isSafeInteger(pool.attemptsWithoutImprovement) || pool.attemptsWithoutImprovement < 0) throw new Error("无效的搜索种子池。");
-      const entries = pool.entries.map(({ seed, visits }) => {
-        const mode = seed.network.request.options.solidOutput;
-        const request = this.request.options.solidOutput === "auto"
-          ? { ...this.request, options: { ...this.request.options, solidOutput: mode } } : this.request;
-        if (mode === "auto" || seed.requestKey !== pool.key || seed.requestKey !== plannerRequestKey(request)
+      const entries = pool.entries.map(({ seed, visits }: PlannerPortfolioSnapshot["pools"][number]["entries"][number]) => {
+// AI-REMOVED 2026-10-03:
+// Reason: 自动去向改为逐物品组合，检查点需要保留每种组合。
+// Trigger: 用户要求精确配置物品。
+// Evidence: 原搜索和恢复只读取全局 solidOutput。
+// Replacement: restorePlannerOutputRequest
+// Risk: 种子池上限增为 64 种组合。
+// Human Review: Required
+// Original code:
+//         const mode = seed.network.request.options.solidOutput;
+//         const request = this.request.options.solidOutput === "auto"
+//           ? { ...this.request, options: { ...this.request.options, solidOutput: mode } } : this.request;
+        const request = restorePlannerOutputRequest(this.request, seed.network.request.options);
+        if (seed.requestKey !== pool.key || seed.requestKey !== plannerRequestKey(request)
           || !Number.isSafeInteger(visits) || visits < 0) throw new Error("检查点与当前生产方案不匹配。");
         const copy = structuredClone(seed);
         return { seed: copy, visits, features: seedFeatures(copy) };
@@ -86,7 +109,7 @@ export class PlannerSearchPortfolio {
       .filter(entry => entry.seed.width * entry.seed.height === bestArea).map(entry => countPlannerOutputStashes(entry.seed.network.nodes))));
     // 2026-09-30：同面积少箱也是改进；冷启动可能合箱，固定拓扑续搜只有本来更少箱时才放宽一格。
     let maximumArea = continuation && Number.isFinite(bestArea)
-      ? bestArea - Number(attempt.request.options.solidOutput !== "stash" || bestStashCount <= 1) : undefined;
+      ? bestArea - Number(!plannerUsesOutputStash(attempt.request.options) || bestStashCount <= 1) : undefined;
     if (!continuation || attempt.variant % 4 === 3 || !pool) return { ...attempt, seed: undefined, continuationStep: undefined, maximumArea };
     const stalled = pool.attemptsWithoutImprovement++;
     // 最小面积分支占三分之二续搜机会；停滞两轮后才轮流探索其他结构。
@@ -99,10 +122,19 @@ export class PlannerSearchPortfolio {
 
   remember(seed: PlannerSearchSeed | undefined): void {
     if (!seed) return;
-    const mode = seed.network.request.options.solidOutput;
-    const request = this.request.options.solidOutput === "auto"
-      ? { ...this.request, options: { ...this.request.options, solidOutput: mode } } : this.request;
-    if (mode === "auto" || seed.requestKey !== plannerRequestKey(request)) {
+// AI-REMOVED 2026-10-03:
+// Reason: 自动去向改为逐物品组合，检查点需要保留每种组合。
+// Trigger: 用户要求精确配置物品。
+// Evidence: 原搜索和恢复只读取全局 solidOutput。
+// Replacement: restorePlannerOutputRequest
+// Risk: 种子池上限增为 64 种组合。
+// Human Review: Required
+// Original code:
+//     const mode = seed.network.request.options.solidOutput;
+//     const request = this.request.options.solidOutput === "auto"
+//       ? { ...this.request, options: { ...this.request.options, solidOutput: mode } } : this.request;
+    const request = restorePlannerOutputRequest(this.request, seed.network.request.options);
+    if (seed.requestKey !== plannerRequestKey(request)) {
       throw new Error("续搜布局与当前生产方案或供给条件不一致。");
     }
     // AI-REMOVED 2026-09-30:

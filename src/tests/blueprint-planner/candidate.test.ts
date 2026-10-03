@@ -75,6 +75,18 @@ describe("EDA 固定生产方案", () => {
         expect(entity.config["storageSlotGroups[0].slots[0].ignoreStock"]).toBe(true);
         expect(entity.config["storageSlotGroups[0].slots[0].initialCount"]).toBeGreaterThan(0);
       }
+      for (const entity of Object.values(candidate.execution.blueprint.entities).filter(entity =>
+        entity.definitionId === "udpipe_unloader_1" || entity.definitionId === "udpipe_unloader_2")) {
+        const links = candidate.execution.blueprint.slotLinks.filter(link => link.source.entityId === entity.id);
+        expect(links).toHaveLength(1);
+        expect(links[0]).toMatchObject({ linkType: "share-all",
+          source: { entityId: entity.id, storageSlotGroupId: "unloader_buffer", slotId: "slot_1" },
+          target: { entityId: "warehouse", storageSlotGroupId: "warehouse" } });
+        expect(entity.config["storageSlotGroups[0].slots[0].ignoreStock"]).toBe(true);
+        expect(entity.config["storageSlotGroups[0].slots[0].initialCount"]).toBeUndefined();
+        expect(entity.config["storageSlotGroups[0].slots[0].initialItemType"]).toBeUndefined();
+        expect(entity.config["storageSlotGroups[0].slots[0].lock"]).toBeUndefined();
+      }
       if (request.options.plantStartup === "warehouse") {
         const startup = Object.values(candidate.execution.blueprint.entities).find((entity) => entity.id.startsWith("eda-startup-admission-"));
         expect(Object.values(startup!.config)).toContainEqual({ itemId: request.plan.targets[0]!.itemId, limit: 29, perMinuteLimit: null });

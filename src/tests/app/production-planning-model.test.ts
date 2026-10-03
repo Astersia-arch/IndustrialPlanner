@@ -234,20 +234,59 @@ describe("production planning model", () => {
     expect(root?.recipeNode).toBeNull();
   });
 
-  it("ignores infinite external supply flags for natural resources", () => {
+  it("uses explicit infinite external supply for every natural resource", () => {
     const index = buildProductionPlanningIndex(createRegistryContract());
-    const result = computeProductionPlan({
-      targets: [port("item_iron_ore", 60)],
-      supplies: [infinitePort("item_iron_ore")],
-      infiniteItemIds: baseInfiniteItemIds(index),
-      recipeChoices: new Map(),
-      sourceConfig: DEFAULT_SOURCE_CONFIG,
-    }, index);
+    expect(index.naturalResourceItemIds.has("item_gas_xiranite")).toBe(true);
 
-    const root = result.roots[0];
-    expect(root?.isInfiniteSource).toBe(false);
-    expect(root?.recipeNode?.recipeId).toBe("r_miner_iron_ore_basic");
+    for (const itemId of index.naturalResourceItemIds) {
+      const result = computeProductionPlan({
+        targets: [port(itemId, 120)],
+        supplies: [{ ...infinitePort(itemId), perMinute: 0 }],
+        infiniteItemIds: baseInfiniteItemIds(index),
+        recipeChoices: new Map(),
+        sourceConfig: DEFAULT_SOURCE_CONFIG,
+      }, index);
+
+      const root = result.roots[0];
+      expect(root?.isInfiniteSource, itemId).toBe(true);
+      expect(root?.suppliedPerMinute, itemId).toBe(120);
+      expect(root?.producedPerMinute, itemId).toBe(0);
+      expect(root?.recipeNode, itemId).toBeNull();
+      expect(result.recipeTotals, itemId).toEqual([]);
+      expect(result.unresolvedPerMinute, itemId).toBe(0);
+    }
   });
+
+  it.each(["item_gas_xiranite", "item_iron_ore"])(
+    "keeps gathering by default and restores finite supply after disabling infinity (%s)",
+    (itemId) => {
+      const index = buildProductionPlanningIndex(createRegistryContract());
+      const request = {
+        targets: [port(itemId, 120)],
+        infiniteItemIds: baseInfiniteItemIds(index),
+        recipeChoices: new Map(),
+        sourceConfig: DEFAULT_SOURCE_CONFIG,
+      };
+      const automatic = computeProductionPlan({ ...request, supplies: [] }, index);
+      expect(automatic.roots[0]?.isInfiniteSource).toBe(false);
+      expect(automatic.roots[0]?.producedPerMinute).toBe(120);
+      expect(automatic.roots[0]?.recipeNode).not.toBeNull();
+
+      const supply = { ...infinitePort(itemId), perMinute: 30, isInfinite: false };
+      const finite = computeProductionPlan({ ...request, supplies: [supply] }, index);
+      expect(finite.roots[0]?.supply.manual).toBe(30);
+      expect(finite.roots[0]?.producedPerMinute).toBe(90);
+
+      const infinite = computeProductionPlan({
+        ...request, supplies: [{ ...supply, isInfinite: true }],
+      }, index);
+      expect(infinite.roots[0]?.suppliedPerMinute).toBe(120);
+      expect(infinite.recipeTotals).toEqual([]);
+
+      const restored = computeProductionPlan({ ...request, supplies: [supply] }, index);
+      expect(restored).toEqual(finite);
+    },
+  );
 
   it("sorts ordinary iron-nugget recipes by id and still allows manual choice", () => {
     const index = buildProductionPlanningIndex(createRegistryContract());

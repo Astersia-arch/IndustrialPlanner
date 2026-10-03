@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { plannerAreaTicks, plannerProposalRate, samplePlannerProposalRate, shouldWarnPlannerConcurrency } from "@/app/shell/blueprint-planner-statistics";
+import { plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate, shouldWarnPlannerConcurrency } from "@/app/shell/blueprint-planner-statistics";
 
 describe("EDA 提案速度", () => {
   const initial = { taskId: "first", status: "running" as const, evaluatedProposals: 100,
@@ -34,7 +34,7 @@ describe("EDA 提案速度", () => {
 });
 
 describe("EDA 面积下降刻度", () => {
-  it("密集下降只标注最后一次，线性坐标不变，单行标签不重叠、不越界", () => {
+  it("密集下降只标注最后一次，对数轴保留零点，单行标签不重叠、不越界", () => {
     const values = [1, 2, 3, 499999, 500000];
     const ticks = plannerAreaTicks(values.map((evaluatedProposals, index) => ({ evaluatedProposals, bestArea: 100 - index })), 500000, 46, 588);
     // AI-REMOVED 2026-10-03:
@@ -51,9 +51,9 @@ describe("EDA 面积下降刻度", () => {
     //     expect(tick.labelX).toBeGreaterThanOrEqual(previous.labelX + previous.label.length * 7 + 10);
     //   }
     // }
-    expect(ticks.map(tick => tick.value)).toEqual([3, 500000]);
+    expect(ticks.map(tick => tick.value)).toEqual([0, 3, 500000]);
     expect(ticks.find(tick => tick.value === 500000)?.x).toBe(588);
-    expect(ticks.find(tick => tick.value === 3)?.x).toBeCloseTo(46 + 542 * 3 / 500000);
+    expect(ticks.find(tick => tick.value === 3)?.x).toBeCloseTo(46 + 542 * Math.log(4) / Math.log(500001));
     for (const tick of ticks) {
       expect(tick.labelX).toBeGreaterThanOrEqual(46);
       expect(tick.labelX + tick.label.length * 7).toBeLessThanOrEqual(588);
@@ -70,8 +70,39 @@ describe("EDA 面积下降刻度", () => {
     const points = values.map((evaluatedProposals, index) => ({ evaluatedProposals, bestArea: 100 - index }));
     const original = structuredClone(points);
     const ticks = plannerAreaTicks(points, 500000, 46, 588);
-    expect(ticks.map(tick => tick.value)).toEqual([0, 160000, 300000, 499999]);
+    expect(ticks.map(tick => tick.value)).toEqual([0, 499999]);
     expect(points).toEqual(original);
+  });
+
+  it("X 轴零点与端点精确对应，log(1+x) 支持正反坐标范围，零提案不产生无效坐标", () => {
+    for (const [start, end] of [[58, 588], [160, 34]]) {
+      expect(plannerLogCoordinate(0, 99, start!, end!)).toBe(start);
+      expect(plannerLogCoordinate(99, 99, start!, end!)).toBeCloseTo(end!);
+      expect(plannerLogCoordinate(9, 99, start!, end!)).toBeCloseTo((start! + end!) / 2);
+      expect(plannerLogCoordinate(0, 0, start!, end!)).toBe(start);
+    }
+    const ticks = plannerAreaTicks([{ evaluatedProposals: 1, bestArea: 100 }], Number.MAX_SAFE_INTEGER, 58, 588);
+    expect(ticks[0]!.value).toBe(0);
+    expect(ticks[0]!.x).toBe(58);
+  });
+
+  it("Y 轴按实际面积范围线性缩放，等量下降具有相同距离且上下留白", () => {
+    const y = (value: number) => plannerAreaCoordinate(value, 900, 1000, 34, 160);
+    expect(y(1000)).toBeGreaterThan(34);
+    expect(y(900)).toBeLessThan(160);
+    expect(y(900) - y(1000)).toBeGreaterThan(100);
+    expect(y(950)).toBeCloseTo(97);
+    expect(y(975) - y(1000)).toBeCloseTo(y(950) - y(975));
+    expect(y(950) - y(975)).toBeCloseTo(y(925) - y(950));
+    expect(plannerAreaCoordinate(1950, 1900, 2000, 34, 160)).toBeCloseTo(y(950));
+  });
+
+  it("只有一个面积值时线居中，小幅改善仍可见且靠近零的面积坐标有限", () => {
+    expect(plannerAreaCoordinate(500, 500, 500, 34, 160)).toBeCloseTo(97);
+    expect(plannerAreaCoordinate(499, 499, 500, 34, 160)
+      - plannerAreaCoordinate(500, 499, 500, 34, 160)).toBeGreaterThan(40);
+    expect(plannerAreaCoordinate(1, 1, 1000, 34, 160)).toBeLessThan(160);
+    expect(plannerAreaCoordinate(0, 0, 0, 34, 160)).toBe(160);
   });
 
   it("同提案次数的多次下降只需一个刻度，同面积不伪造下降点", () => {

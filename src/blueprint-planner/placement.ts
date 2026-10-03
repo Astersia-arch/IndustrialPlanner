@@ -1,3 +1,4 @@
+import { PlannerItemRules } from "@/shared/planner-item-policy";
 import type { WorldEntity } from "@/domain/document/world-document";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { GridPoint, GridRect, GridRotation } from "@/domain/shared/grid";
@@ -85,6 +86,14 @@ export class PlannerPlacement {
     this.place(node, best, rotation);
   }
 
+  remove(nodes: readonly PlannerNode[]): void {
+    const remaining = this.placed.filter(node => !nodes.includes(node));
+    this.placed.splice(0, this.placed.length, ...remaining);
+    this.rectangles.splice(0, this.rectangles.length, ...remaining.map(node => resolveEntityGridRect({ entity: node.entity, definition: node.definition })));
+    this.portCells.splice(0, this.portCells.length, ...remaining.flatMap(node => (["input", "output"] as const)
+      .flatMap(direction => getPlannerPorts(this.registry, node.entity, node.definition, direction).flatMap(port => escapeCells(port, this.escapeLength)))));
+  }
+
   placeInEnvironment(node: PlannerNode, diffuser: PlannerNode, rotationOffset: number): boolean {
     const gas = diffuser.recipe?.gasDiffusionOutput;
     if (gas === undefined) return false;
@@ -107,12 +116,14 @@ export class PlannerPlacement {
 /** 优先使用用户给定的环境设施，放不下时再增加；每一台均遵守同类间距。 */
 export async function placeProduction(
   registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, variant: number, checkBudget: () => void = () => {},
+  environmentLimits?: ReadonlyMap<string, number>,
 ): Promise<void> {
   const environments = network.nodes.filter((node) => node.purpose === "environment");
   for (const node of environments) if (!placement.placed.includes(node)) placeEnvironmentStation(node, placement);
   const producedItems = new Set(network.nodes.flatMap(node => node.outputs.map(output => output.itemId)));
-  const warehouseRate = (node: PlannerNode) => network.request.options.solidSupply !== "warehouse" ? 0 : node.inputs
-    .filter(input => !producedItems.has(input.itemId) && itemLogisticsKind(registry, input.itemId) === "belt")
+  const itemRules = new PlannerItemRules(registry, network.request.options);
+  const warehouseRate = (node: PlannerNode) => node.inputs
+    .filter(input => !producedItems.has(input.itemId) && itemRules.supply(input.itemId) === "warehouse" && itemLogisticsKind(registry, input.itemId) === "belt")
     .reduce((sum, input) => sum + input.perMinute, 0);
   let warehouseLane = 0;
   for (const node of [...network.nodes].sort((left, right) => Number(right.recipe?.requiredGasDiffusion !== undefined) - Number(left.recipe?.requiredGasDiffusion !== undefined)
@@ -146,20 +157,63 @@ export async function placeProduction(
     const recipe = environments.find((entry) => entry.recipe?.gasDiffusionOutput?.gasItemId === requiredGas)?.recipe
       ?? registry.recipeDefinitions.find((entry) => entry.gasDiffusionOutput?.gasItemId === requiredGas);
     if (recipe === undefined) throw new PlannerCandidateError(`气体环境缺少配方：${requiredGas}`);
-    const diffuser = createRecipeNode(registry, recipe, `eda-environment-${network.nodes.length}`, 60 / recipe.durationSeconds, "environment");
+    const limit = environmentLimits?.get(requiredGas);
+    if (limit !== undefined && environments.filter(entry => entry.recipe?.gasDiffusionOutput?.gasItemId === requiredGas).length >= limit) {
+      throw new PlannerCandidateError(`本轮减少环境设施后暂未找到共用覆盖：${requiredGas}`);
+    }
+    let sequence = network.nodes.length;
+    while (network.nodes.some(entry => entry.entity.id === `eda-environment-${sequence}`)) sequence++;
+    const diffuser = createRecipeNode(registry, recipe, `eda-environment-${sequence}`, 60 / recipe.durationSeconds, "environment");
     network.nodes.push(diffuser); environments.push(diffuser);
     placeEnvironmentStation(diffuser, placement);
     if (!placement.placeInEnvironment(node, diffuser, flowRotation(registry, node, variant) / 90)) throw new PlannerCandidateError(`无法覆盖设备的气体环境：${node.definition.id}`);
   }
 }
 
+/** 只裁撤其覆盖可由其他设施完整接替的实体；随后由调用方重建供料与物流。 */
+export function redundantEnvironmentStations(network: PlannerNetwork): PlannerNode[] {
+  const retained = network.nodes.filter(node => node.purpose === "environment");
+  const consumers = network.nodes.filter(node => node.recipe?.requiredGasDiffusion);
+  const removed: PlannerNode[] = [];
+  for (const station of [...retained].reverse()) {
+    const alternatives = retained.filter(node => node !== station);
+    const gasItemId = station.recipe!.gasDiffusionOutput!.gasItemId;
+    const covered = consumers.filter(node => node.recipe!.requiredGasDiffusion === gasItemId).every(node => alternatives.some(other => {
+      const gas = other.recipe!.gasDiffusionOutput!;
+      if (gas.gasItemId !== gasItemId) return false;
+      const range = resolveGasDiffusionRangeGridRect({ entity: other.entity, definition: other.definition, gasDiffusionRange: gas.range });
+      return range !== null && areGridRectsContaining(range, resolveEntityGridRect({ entity: node.entity, definition: node.definition }));
+    }));
+    if (covered) { retained.splice(retained.indexOf(station), 1); removed.push(station); }
+  }
+  return removed;
+}
+
 function placeEnvironmentStation(node: PlannerNode, placement: PlannerPlacement): void {
   const range = node.recipe!.gasDiffusionOutput!.range;
   const inset = Math.floor((range - node.definition.footprint.width) / 2);
   const bounds = placement.bounds();
-  for (let y = placement.minimumY + inset; y <= placement.minimumY + bounds.height + range * 2; y += range + 2) {
-    for (let x = placement.minimumX + Math.max(inset, placement.rowWidth - inset); x >= placement.minimumX + inset; x -= range + 2) {
-      if (placement.canPlace(node, { x, y }, 0)) { placement.place(node, { x, y }, 0); return; }
+  // AI-REMOVED 2026-10-03:
+  // Reason: 固定步长遗漏合法位置，19 格宽的初排仅检查越界的 x=18。
+  // Trigger: 用户任务 eda2.json 在零提案时失败。
+  // Evidence: 同一空布局中 x=12 可放，原循环未枚举。
+  // Replacement: 下方完整整数坐标与朝向搜索；Risk: 初排检查量增加；Human Review: Required。
+  // Original code:
+  //   for (let y = placement.minimumY + inset; y <= placement.minimumY + bounds.height + range * 2; y += range + 2) {
+  //     for (let x = placement.minimumX + Math.max(inset, placement.rowWidth - inset); x >= placement.minimumX + inset; x -= range + 2) {
+  //       if (placement.canPlace(node, { x, y }, 0)) { placement.place(node, { x, y }, 0); return; }
+  //     }
+  //   }
+  const left = placement.minimumX;
+  const right = Math.min(left + placement.rowWidth, placement.maximumX ?? Infinity) - node.definition.footprint.width;
+  const preferredX = Math.min(right, left + Math.max(inset, placement.rowWidth - inset));
+  const xs = Array.from({ length: Math.max(0, right - left + 1) }, (_, index) => left + index)
+    .sort((a, b) => Math.abs(a - preferredX) - Math.abs(b - preferredX));
+  const ys = Array.from({ length: bounds.height + range * 2 + 1 }, (_, index) => placement.minimumY + index)
+    .sort((a, b) => Math.abs(a - placement.minimumY - inset) - Math.abs(b - placement.minimumY - inset));
+  for (const y of ys) {
+    for (const x of xs) for (const rotation of ROTATIONS) {
+      if (placement.canPlace(node, { x, y }, rotation)) { placement.place(node, { x, y }, rotation); return; }
     }
   }
   throw new PlannerCandidateError("无法放置满足间距的气体环境设施。");

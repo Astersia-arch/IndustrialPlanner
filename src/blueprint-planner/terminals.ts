@@ -1,3 +1,4 @@
+import { PlannerItemRules } from "@/shared/planner-item-policy";
 import type { BlueprintPlannerFlow } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import { LOGISTICS_KIND } from "@/domain/shared/logistics";
@@ -38,6 +39,7 @@ function isRoundedRunningConsumptionShortfall(network: PlannerNetwork, itemId: s
 
 export function addTerminals(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement, separateOperatingSupply = false, fluidGroupSize = 64, compact = false, stashPackingVariant = 0): void {
   if (!Number.isSafeInteger(stashPackingVariant) || stashPackingVariant < 0) throw new Error("储存箱分组序号必须为非负整数。");
+  const itemRules = new PlannerItemRules(registry, network.request.options);
   const available = new Set([...network.request.plan.infiniteItemIds, ...network.request.plan.externalSupplies.map((entry) => entry.itemId)]);
   const balance = materialBalance(network);
   const sources: BlueprintPlannerFlow[] = [];
@@ -56,7 +58,7 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
   const externalSources: PlannerNode[] = [];
   for (const flow of sources) {
     const kind = itemLogisticsKind(registry, flow.itemId);
-    const mode = kind === LOGISTICS_KIND.belt ? network.request.options.solidSupply : network.request.options.fluidSupply;
+    const mode = itemRules.supply(flow.itemId);
     const deliveries: Array<{ perMinute: number; consumer?: PlannerNode; storageGroupIds?: readonly string[]; targets?: PlannerNode["supplyTargets"] }> = [];
 // AI-REMOVED 2026-09-16:
 // Reason: 按容量合并外供，禁止默认逐设备复制无限源。
@@ -114,7 +116,20 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
         network.initialSlots.push({ entityId: node.entity.id, storageGroupId: group.id, slotId: slot.id, itemType: flow.itemId, count: slot.capacity, ignoreStock: true });
         dockNodes.push(node);
       } else {
-        configureSource(node, flow.itemId, true);
+        // AI-REMOVED 2026-10-03:
+        // Reason: 暗管外供必须通过仓库物品链接无限取货，不能预填本地无限库存。
+        // Trigger: 用户要求生成蓝图对应“仓库物品链接 → 无限”的设置方式。
+        // Evidence: configureSource 仅写本地槽位；Registry 和 Inspector 使用 share-all 仓库链接及 ignoreStock。
+        // Replacement: 下方 buildWarehouseSlotLinkForEntity 与槽位 ignoreStock。
+        // Risk: Low；既有任务结果不自动重写。Human Review: Required
+        // Original code:
+        // configureSource(node, flow.itemId, true);
+        const group = node.definition.storageSlotGroups[0]!;
+        const slot = group.slots[0]!;
+        const link = registry.queries.buildWarehouseSlotLinkForEntity({ entityId: node.entity.id,
+          storageSlotGroupId: group.id, slotId: slot.id, itemId: flow.itemId });
+        network.slotLinks.push({ ...link, id: `eda-warehouse-${network.slotLinks.length}` });
+        node.entity.config["storageSlotGroups[0].slots[0].ignoreStock"] = true;
         const peers = delivery.targets?.map(target => network.nodes.find(peer => peer.entity.id === target.entityId)!) ?? [];
         placement.placeAnywhere(node, 0, delivery.consumer?.entity.position ?? terminalGroupCenter(peers));
       }
@@ -125,11 +140,18 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
     if (rate <= 1e-6) continue;
     const target = network.request.plan.targets.some((flow) => flow.itemId === itemId);
     const kind = itemLogisticsKind(registry, itemId);
-    const destroy = !target && network.request.options.byproducts === "destroy"
-      ? registry.recipeDefinitions.find((recipe) => recipe.outputs.length === 0 && recipe.inputs.length === 1
-        && recipe.inputs[0]!.itemId === itemId && recipe.gasDiffusionOutput === undefined && recipe.powerOutput === undefined
-        && !recipe.tags.includes(CONSUMPTION_RECIPE_TAG) && !recipe.machineId.startsWith("cheat_")
-        && isRecipeAvailableByActivity(recipe, network.request.plan.activeActivityIds)) : undefined;
+    const destroy = !target && itemRules.byproducts(itemId) === "destroy"
+      ? registry.recipeDefinitions.find((recipe) => {
+        const device = registry.queries.findEntityDefinition(recipe.machineId);
+        // 配方存在不代表能够施工；计算器中的虚拟倾倒动作没有实际设备通道，必须回退到输出。
+        return recipe.outputs.length === 0 && recipe.inputs.length === 1
+          && recipe.inputs[0]!.itemId === itemId && recipe.gasDiffusionOutput === undefined && recipe.powerOutput === undefined
+          && !recipe.tags.includes(CONSUMPTION_RECIPE_TAG) && !recipe.machineId.startsWith("cheat_")
+          && device !== null && !device.tags.includes("不可摆放")
+          && device.recipeChannels.some(channel => channel.type !== "consumption-channel")
+          && !device.placementBehaviors.some(behavior => behavior.type === "snap-to-outer-ring-edge")
+          && isRecipeAvailableByActivity(recipe, network.request.plan.activeActivityIds);
+      }) : undefined;
     if (destroy !== undefined) {
       const cycles = rate / destroy.inputs[0]!.amount;
       const count = Math.ceil(cycles * destroy.durationSeconds / 60 - 1e-6);
@@ -140,7 +162,7 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
       continue;
     }
     const definitionId = kind === LOGISTICS_KIND.pipe ? "udpipe_loader_1"
-      : network.request.options.solidOutput === "warehouse" ? "loader_1" : "storager_1";
+      : itemRules.output(itemId) === "warehouse" ? "loader_1" : "storager_1";
     const deliveries: Array<{ perMinute: number; producer?: PlannerNode; storageGroupIds?: readonly string[]; targets?: PlannerNode["outputSources"] }> = [];
 // AI-REMOVED 2026-09-16:
 // Reason: 合并流体产物，避免每台设备单独配置暗管入口。

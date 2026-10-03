@@ -196,5 +196,11 @@
     "title": "增量更新-v1.5.1.1",
     "version": "1.5.1.1",
     "kind": "incremental"
+  },
+  {
+    "file": "1.6.0.md",
+    "title": "版本更新-v1.6.0",
+    "version": "1.6.0",
+    "kind": "main"
   }
 ]

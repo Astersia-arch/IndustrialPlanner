@@ -1,3 +1,4 @@
+import { plannerOutputModeKey } from "./output-policy";
 import { observable, runInAction } from "mobx";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
@@ -373,7 +374,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             const cacheKey = `${maximumArea}/${minimum.width}/${minimum.height}`;
             let shapes = outlineCache.get(cacheKey);
             if (!shapes) { shapes = breadthOutlines(maximumArea, minimum); outlineCache.set(cacheKey, shapes); }
-            const mode = selection.request.options.solidOutput;
+            const mode = plannerOutputModeKey(selection.request.options);
             const visits = (key: string) => parallel.shards.reduce((sum, entry) => sum + (entry.shapeVisits[key] ?? 0), 0);
             // AI-REMOVED 2026-10-02:
             // Reason: 尺寸领取规则移至纯函数，供真实调度与回归测试共用。
@@ -430,7 +431,13 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             if (error instanceof PlannerCandidateError) {
               const used = error.search?.evaluations ?? observed;
               // AI-CORRECTION 2026-10-02: 显式尺寸不合时跳过该批；连续零提案仍停止以免无限循环。
-              if (used === 0 && !targetOutline) throw new Error(`当前布局无法启动搜索：${error.message}`);
+              // AI-REMOVED 2026-10-03:
+              // Reason: 一次初排失败不能代表所有摆位失败。
+              // Trigger: 环境设施位置与数量参与搜索。Evidence: eda2 的首轮固定坐标越界。
+              // Replacement: commit 后继续领取其他变体，保留连续零提案的上限。
+              // Risk: 不可行输入最多检查 64 次初排；Human Review: Required。
+              // Original code:
+              // if (used === 0 && !targetOutline) throw new Error(`当前布局无法启动搜索：${error.message}`);
               commit(used, null);
               lastFailure = error.message;
             } else if (task.abort.signal.aborted) {
@@ -447,7 +454,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             if (shapeKey) task.activeShapes.delete(shapeKey);
           }
           // AI-CORRECTION 2026-10-02: 广度轮换可能遇到多个固定设施无法容纳的盒子，按整轮计数。
-          if (zeroAttempts >= 64) throw new Error("连续零提案搜索，任务已停止。");
+          if (zeroAttempts >= 64) throw new Error(`连续 64 次初排未能启动搜索：${lastFailure ?? "未找到合法布局"}`);
         }
         // AI-REMOVED 2026-10-03:
         // Reason: 已结束计算的 Worker 不应占着通道等待串行仿真。
