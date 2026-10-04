@@ -139,6 +139,7 @@ import {
 import {
   convertSimulationPhaseTickBetweenRates,
   convertSimulationPhaseTickBetweenRatesExact,
+  isSimulationWholeSecondTick,
   DENSE_LOW_STANDARD_TICK_RATE_PER_SECOND,
   DENSE_STANDARD_TICK_RATE_PER_SECOND,
 } from "../contracts";
@@ -175,6 +176,8 @@ const DENSE_BACKPRESSURE_WALL_SECONDS = 0.5;
 const DENSE_RATE_SAMPLE_SIMULATION_SECONDS = 2;
 const DENSE_HIGH_RATE_CAPACITY_MARGIN = 1.1;
 const DENSE_LOW_RATE_RECOVERY_MARGIN = 2.5;
+const DENSE_RATE_SAMPLE_WALL_MS = 1_000;
+const DENSE_RATE_SWITCH_HOLD_MS = 5_000;
 const logger = createLogger("dense-simulation-runtime");
 
 interface DenseActiveTopologySource {
@@ -307,6 +310,10 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
   private pendingStandardTickRate: number | null = null;
   private rateSampleWallTimeMs = 0;
   private rateSampleSimulationSeconds = 0;
+  private rateSampleStartedAtMs = performance.now();
+  private lastStandardRateSwitchAtMs = Number.NEGATIVE_INFINITY;
+  private rateRecoveryWindows = 0;
+  private lastAdvanceExecutionMs = 0;
   // AI-REMOVED 2026-09-17:
   // Reason: Dense Host 不再持有多 Worker 区域 Session、Epoch 帧缓存或主线程仓库统计。
   // Trigger: 用户要求 Dense 多基地合成单图并直接共享同一个仓库。
@@ -513,6 +520,7 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
     //   && !isRegionalSimulationSpeed(value)
     // ) return;
     this.state.simulationSpeed = value;
+    this.rateRecoveryWindows = 0;
     this.resetDenseRateSample();
     if (this.projection !== null) {
       void this.bridge.sendCommands([{ type: "set-speed", simulationSpeed: value }]).then(() => {
@@ -971,6 +979,7 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
 
     try {
       const response = await this.bridge.advanceToTick(tickNumber, Number.MAX_SAFE_INTEGER);
+      this.lastAdvanceExecutionMs = response.type === "frame-delta" ? response.executionMs : 0;
       if (response.type === "presentation-checkpoint") {
         projection.replaceCheckpoint(response.delta);
       } else {
@@ -1047,6 +1056,8 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
     this.timelinePresentationActive = false;
     this.activeTopologySource = null;
     this.pendingStandardTickRate = null;
+    this.lastStandardRateSwitchAtMs = Number.NEGATIVE_INFINITY;
+    this.rateRecoveryWindows = 0;
     this.resetDenseRateSample();
     this.operatingStatusTopology = null;
     this.topologyStore.setSnapshot(null);
@@ -1641,10 +1652,23 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
   private async drainPlaybackAdvances(): Promise<void> {
     while (this.state.runningState === "start") {
       const currentTickNumber = this.projection?.tickNumber ?? 0;
-      const targetTickNumber = this.playbackTargetTickNumber;
+      let targetTickNumber = this.playbackTargetTickNumber;
       if (targetTickNumber <= currentTickNumber) return;
       const standardTickRate = this.requireCurrentStandardTickRate();
-      const advanceStartedAt = performance.now();
+      // 有调速请求时停在下一个整秒，避免一次批量推进跨过所有合法切换点。
+      if (this.pendingStandardTickRate !== null) {
+        const nextWholeSecond = 1 + (Math.floor(Math.max(0, currentTickNumber - 1) / standardTickRate) + 1) * standardTickRate;
+        targetTickNumber = Math.min(targetTickNumber, nextWholeSecond);
+      }
+      // AI-REMOVED 2026-10-04:
+      // Reason: 主线程消息延迟不能计入 Worker 计算能力。
+      // Trigger: 拖动与调速重编译导致频率震荡。
+      // Evidence: 性能轨迹中的长任务均位于 Host 调速链。
+      // Replacement: Worker 返回的 executionMs。
+      // Risk: Low
+      // Human Review: Required
+      // Original code:
+      // const advanceStartedAt = performance.now();
       await this.syncToTick(targetTickNumber);
       const advancedTicks = Math.max(
         0,
@@ -1654,7 +1678,7 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
       this.observeDenseRateCapacity({
         standardTickRate,
         advancedTicks,
-        wallTimeMs: Math.max(0.001, performance.now() - advanceStartedAt),
+        wallTimeMs: this.lastAdvanceExecutionMs,
       });
       await this.applyPendingDenseStandardTickRate();
     }
@@ -1693,7 +1717,8 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
     }
     this.rateSampleWallTimeMs += options.wallTimeMs;
     this.rateSampleSimulationSeconds += options.advancedTicks / options.standardTickRate;
-    if (this.rateSampleSimulationSeconds < DENSE_RATE_SAMPLE_SIMULATION_SECONDS) {
+    if (this.rateSampleSimulationSeconds < DENSE_RATE_SAMPLE_SIMULATION_SECONDS
+      || performance.now() - this.rateSampleStartedAtMs < DENSE_RATE_SAMPLE_WALL_MS) {
       return;
     }
 
@@ -1710,6 +1735,7 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
       && simulationSecondsPerWallSecond
         < this.state.simulationSpeed * DENSE_HIGH_RATE_CAPACITY_MARGIN
     ) {
+      this.rateRecoveryWindows = 0;
       this.requestDenseStandardTickRate(DENSE_LOW_STANDARD_TICK_RATE_PER_SECOND);
     } else if (
       options.standardTickRate === DENSE_LOW_STANDARD_TICK_RATE_PER_SECOND
@@ -1717,7 +1743,10 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
       && simulationSecondsPerWallSecond
         >= this.state.simulationSpeed * DENSE_LOW_RATE_RECOVERY_MARGIN
     ) {
-      this.requestDenseStandardTickRate(DENSE_STANDARD_TICK_RATE_PER_SECOND);
+      this.rateRecoveryWindows += 1;
+      if (this.rateRecoveryWindows >= 2) this.requestDenseStandardTickRate(DENSE_STANDARD_TICK_RATE_PER_SECOND);
+    } else {
+      this.rateRecoveryWindows = 0;
     }
     this.resetDenseRateSample();
   }
@@ -1734,6 +1763,9 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
       this.pendingStandardTickRate = null;
       return;
     }
+    // 低于 x4 的显式倍率调整仍可立即请求恢复；自动调速按真实时间冷却。
+    if (this.state.simulationSpeed >= DENSE_DYNAMIC_STANDARD_RATE_MINIMUM_SPEED
+      && performance.now() - this.lastStandardRateSwitchAtMs < DENSE_RATE_SWITCH_HOLD_MS) return;
     this.pendingStandardTickRate = standardTickRate;
     if (this.playbackAdvanceInFlight === null) {
       void this.applyPendingDenseStandardTickRate().catch((error: unknown) => {
@@ -1764,7 +1796,8 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
       return;
     }
     if (
-      convertSimulationPhaseTickBetweenRatesExact(
+      !isSimulationWholeSecondTick(this.primaryTickNumber, currentStandardTickRate)
+      || convertSimulationPhaseTickBetweenRatesExact(
         this.primaryTickNumber,
         currentStandardTickRate,
         requestedStandardTickRate,
@@ -1779,135 +1812,223 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
     );
   }
 
-  private async switchDenseStandardTickRate(
-    nextStandardTickRate: number,
-  ): Promise<void> {
-    const source = this.activeTopologySource;
-    const previousExecutionTopology = this.operatingStatusTopology;
+  // AI-REMOVED 2026-10-04:
+  // Reason: 切换时间单位不改变设备与连接，不能重编译两份拓扑并重建 Worker 会话。
+  // Trigger: 用户录制中 28 次调速长任务累计阻塞约 4.25 秒。
+  // Evidence: Trace-20261004T205802 的 switchDenseStandardTickRate / compileSimulationTopology 调用链。
+  // Replacement: 下方 switchDenseStandardTickRate 与 DenseWorkerRuntime.switchTickRate。
+  // Risk: 旧频率检查点清空，以当前完整状态重建预测；真实库存、预占和进度原位保留。
+  // Human Review: Required
+  // Original code:
+  //   private async switchDenseStandardTickRate(
+  //     nextStandardTickRate: number,
+  //   ): Promise<void> {
+  //     const source = this.activeTopologySource;
+  //     const previousExecutionTopology = this.operatingStatusTopology;
+  //     const previousStandardTickRate = this.requireCurrentStandardTickRate();
+  //     if (
+  //       source === null
+  //       || previousExecutionTopology === null
+  //       || previousStandardTickRate === nextStandardTickRate
+  //     ) {
+  //       return;
+  //     }
+  //
+  //     const compile = (document: WorldDocument) => compileSimulationTopology({
+  //       document,
+  //       registry: this.workspace.registry,
+  //       poweredEntityIds: computePoweredEntityIds(document, this.workspace.registry),
+  //       simulationMode: this.state.simulationMode,
+  //       activeActivityIds: this.options.getActiveActivityIds?.() ?? [],
+  //       standardTickRate: nextStandardTickRate,
+  //       ...(source.regionalResources.length === 0
+  //         ? {}
+  //         : { regionalResources: source.regionalResources }),
+  //     });
+  //     const executionTopology = appendUnknownEntityAdmissionDiagnostics(
+  //       compile(source.executionDocument),
+  //       source.executionExcludedIssues,
+  //     );
+  //     const executionCompileError = executionTopology.diagnostics.find(
+  //       (diagnostic) => diagnostic.severity === "error",
+  //     );
+  //     if (executionCompileError !== undefined) {
+  //       throw new Error(executionCompileError.message);
+  //     }
+  //     const presentationTopology = source.presentationDocument === null
+  //       ? null
+  //       : appendUnknownEntityAdmissionDiagnostics(
+  //           compile(source.presentationDocument),
+  //           source.presentationExcludedIssues,
+  //         );
+  //     const presentationCompileError = presentationTopology?.diagnostics.find(
+  //       (diagnostic) => diagnostic.severity === "error",
+  //     );
+  //     if (presentationCompileError !== undefined) {
+  //       throw new Error(presentationCompileError.message);
+  //     }
+  //     if (presentationTopology === null || source.presentationDocument === null) {
+  //       throw new Error("Dense standard tick rate transition requires a presentation topology.");
+  //     }
+  //     const presentationIdentity = createDensePresentationIdentity({
+  //       baseId: source.presentationDocument.baseId,
+  //       presentationTopology,
+  //       executionTopology,
+  //     });
+  //     const operatingStatusDeviceIds = resolveDenseOperatingStatusDeviceIds(
+  //       executionTopology,
+  //       presentationIdentity,
+  //     );
+  //
+  //     const migration = createSimulationTopologyMigration({
+  //       previousDocument: source.executionDocument,
+  //       nextDocument: source.executionDocument,
+  //       previousTopology: previousExecutionTopology,
+  //       nextTopology: executionTopology,
+  //       baseTickNumber: this.primaryTickNumber,
+  //     });
+  //     if (migration === null) {
+  //       throw new Error("Dense standard tick rate transition requires a migration source.");
+  //     }
+  //
+  //     const initialized = await this.initializeDenseTopology({
+  //       document: source.initializationDocument,
+  //       topology: executionTopology,
+  //       presentationIdentity,
+  //       operatingStatusDeviceIds,
+  //       migration,
+  //     });
+  //     // 初始化等待期间 RAF 仍会按旧频率累计墙钟目标；必须在提交新频率前读取最新值并一次换算。
+  //     const previousPlaybackTarget = this.playbackTargetTickNumber;
+  //     const previousPlaybackRemainder = this.playbackRemainderTicks;
+  //     const projection = new DenseProjectionStore(
+  //       initialized.response.layout.dictionary,
+  //       initialized.identity,
+  //       presentationIdentity,
+  //       operatingStatusDeviceIds,
+  //     );
+  //     projection.apply(initialized.response.initialDelta);
+  //
+  //     const convertedPlaybackTarget = convertSimulationPhaseTickBetweenRates(
+  //       previousPlaybackTarget,
+  //       previousStandardTickRate,
+  //       nextStandardTickRate,
+  //     );
+  //     const convertedWholeTarget = Math.floor(convertedPlaybackTarget);
+  //     let convertedRemainder = previousPlaybackRemainder
+  //       * nextStandardTickRate
+  //       / previousStandardTickRate
+  //       + convertedPlaybackTarget
+  //       - convertedWholeTarget;
+  //     let normalizedTarget = convertedWholeTarget;
+  //     if (convertedRemainder >= 1) {
+  //       const extraWholeTicks = Math.floor(convertedRemainder);
+  //       normalizedTarget += extraWholeTicks;
+  //       convertedRemainder -= extraWholeTicks;
+  //     }
+  //
+  //     this.projection = projection;
+  //     this.primaryTickNumber = initialized.response.initialDelta.tickNumber;
+  //     this.timelineBufferedThroughTick = this.primaryTickNumber;
+  //     this.runtimeRetainedStateCount = initialized.response.runtimeRetainedStateCount;
+  //     this.playbackTargetTickNumber = Math.max(this.primaryTickNumber, normalizedTarget);
+  //     this.playbackRemainderTicks = convertedRemainder;
+  //     this.timelinePresentationActive = false;
+  //     this.executionTopology = executionTopology;
+  //     this.presentationIdentity = presentationIdentity;
+  //     this.denseSessionIdentity = initialized.identity;
+  //     this.operatingStatusTopology = createDenseOperatingStatusTopology(
+  //       executionTopology,
+  //       presentationIdentity,
+  //     );
+  //     const publishedTopology = presentationTopology;
+  //     this.topologyStore.setSnapshot(publishedTopology);
+  //     this.activeTopologySource = {
+  //       ...source,
+  //       operatingStatusDeviceIds: [...operatingStatusDeviceIds],
+  //       presentationIdentity,
+  //       executionDictionary: initialized.response.layout.dictionary,
+  //     };
+  //     this.resetDenseRateSample();
+  //
+  //     runInAction(() => {
+  //       this.state.currentPlaybackTickNumber = this.primaryTickNumber;
+  //       this.state.runtimeStatus = {
+  //         mode: "running",
+  //         topologyId: publishedTopology.topologyId,
+  //         documentHash: publishedTopology.documentHash,
+  //         retainedFromTick: this.primaryTickNumber,
+  //         latestTickNumber: this.primaryTickNumber,
+  //         bufferSize: this.runtimeRetainedStateCount,
+  //         maxBufferSize: 1,
+  //         dynamicTickRate: nextStandardTickRate,
+  //         error: null,
+  //       };
+  //       if (this.state.timeline.enabled) {
+  //         const timelineStepTicks = resolveDenseTimelineStepStandardTicks(
+  //           nextStandardTickRate,
+  //         );
+  //         const cursorTickNumber = Math.max(
+  //           0,
+  //           Math.floor(
+  //             (this.primaryTickNumber - DENSE_TIMELINE_ORIGIN_STANDARD_TICK)
+  //               / timelineStepTicks,
+  //           ),
+  //         );
+  //         this.state.timeline = {
+  //           ...this.state.timeline,
+  //           readiness: "preparing",
+  //           windowStartTickNumber: cursorTickNumber,
+  //           cursorTickNumber,
+  //           availableFromTickNumber: cursorTickNumber,
+  //           availableToTickNumber: cursorTickNumber + DENSE_TIMELINE_CAPACITY_TICKS,
+  //           isSeeking: false,
+  //         };
+  //       }
+  //     });
+  //     if (this.state.timeline.enabled) {
+  //       await this.ensureTimelineBuffer();
+  //       runInAction(() => {
+  //         this.state.timeline.readiness = "ready";
+  //       });
+  //     }
+  //   }
+
+  private async switchDenseStandardTickRate(nextStandardTickRate: number): Promise<void> {
+    const projection = this.projection;
+    const executionTopology = this.executionTopology;
+    const presentationTopology = this.topologyStore.getSnapshot();
     const previousStandardTickRate = this.requireCurrentStandardTickRate();
-    if (
-      source === null
-      || previousExecutionTopology === null
-      || previousStandardTickRate === nextStandardTickRate
-    ) {
-      return;
-    }
+    if (projection === null || executionTopology === null || presentationTopology === null
+      || previousStandardTickRate === nextStandardTickRate) return;
 
-    const compile = (document: WorldDocument) => compileSimulationTopology({
-      document,
-      registry: this.workspace.registry,
-      poweredEntityIds: computePoweredEntityIds(document, this.workspace.registry),
-      simulationMode: this.state.simulationMode,
-      activeActivityIds: this.options.getActiveActivityIds?.() ?? [],
-      standardTickRate: nextStandardTickRate,
-      ...(source.regionalResources.length === 0
-        ? {}
-        : { regionalResources: source.regionalResources }),
-    });
-    const executionTopology = appendUnknownEntityAdmissionDiagnostics(
-      compile(source.executionDocument),
-      source.executionExcludedIssues,
-    );
-    const executionCompileError = executionTopology.diagnostics.find(
-      (diagnostic) => diagnostic.severity === "error",
-    );
-    if (executionCompileError !== undefined) {
-      throw new Error(executionCompileError.message);
-    }
-    const presentationTopology = source.presentationDocument === null
-      ? null
-      : appendUnknownEntityAdmissionDiagnostics(
-          compile(source.presentationDocument),
-          source.presentationExcludedIssues,
-        );
-    const presentationCompileError = presentationTopology?.diagnostics.find(
-      (diagnostic) => diagnostic.severity === "error",
-    );
-    if (presentationCompileError !== undefined) {
-      throw new Error(presentationCompileError.message);
-    }
-    if (presentationTopology === null || source.presentationDocument === null) {
-      throw new Error("Dense standard tick rate transition requires a presentation topology.");
-    }
-    const presentationIdentity = createDensePresentationIdentity({
-      baseId: source.presentationDocument.baseId,
-      presentationTopology,
-      executionTopology,
-    });
-    const operatingStatusDeviceIds = resolveDenseOperatingStatusDeviceIds(
-      executionTopology,
-      presentationIdentity,
-    );
-
-    const migration = createSimulationTopologyMigration({
-      previousDocument: source.executionDocument,
-      nextDocument: source.executionDocument,
-      previousTopology: previousExecutionTopology,
-      nextTopology: executionTopology,
-      baseTickNumber: this.primaryTickNumber,
-    });
-    if (migration === null) {
-      throw new Error("Dense standard tick rate transition requires a migration source.");
-    }
-
-    const initialized = await this.initializeDenseTopology({
-      document: source.initializationDocument,
-      topology: executionTopology,
-      presentationIdentity,
-      operatingStatusDeviceIds,
-      migration,
-    });
-    // 初始化等待期间 RAF 仍会按旧频率累计墙钟目标；必须在提交新频率前读取最新值并一次换算。
+    const switched = await this.bridge.switchTickRate(this.primaryTickNumber, nextStandardTickRate);
+    // stop/reset 可以在 RPC 等待期间清理会话；迟到响应不得重新发布旧状态。
+    if (this.projection !== projection || this.executionTopology !== executionTopology) return;
     const previousPlaybackTarget = this.playbackTargetTickNumber;
     const previousPlaybackRemainder = this.playbackRemainderTicks;
-    const projection = new DenseProjectionStore(
-      initialized.response.layout.dictionary,
-      initialized.identity,
-      presentationIdentity,
-      operatingStatusDeviceIds,
-    );
-    projection.apply(initialized.response.initialDelta);
-
+    projection.replaceCheckpoint(switched.delta);
     const convertedPlaybackTarget = convertSimulationPhaseTickBetweenRates(
-      previousPlaybackTarget,
-      previousStandardTickRate,
-      nextStandardTickRate,
+      previousPlaybackTarget, previousStandardTickRate, nextStandardTickRate,
     );
     const convertedWholeTarget = Math.floor(convertedPlaybackTarget);
-    let convertedRemainder = previousPlaybackRemainder
-      * nextStandardTickRate
-      / previousStandardTickRate
-      + convertedPlaybackTarget
-      - convertedWholeTarget;
-    let normalizedTarget = convertedWholeTarget;
-    if (convertedRemainder >= 1) {
-      const extraWholeTicks = Math.floor(convertedRemainder);
-      normalizedTarget += extraWholeTicks;
-      convertedRemainder -= extraWholeTicks;
-    }
-
-    this.projection = projection;
-    this.primaryTickNumber = initialized.response.initialDelta.tickNumber;
+    const convertedRemainder = previousPlaybackRemainder * nextStandardTickRate / previousStandardTickRate
+      + convertedPlaybackTarget - convertedWholeTarget;
+    const extraWholeTicks = Math.floor(convertedRemainder);
+    this.primaryTickNumber = switched.delta.tickNumber;
     this.timelineBufferedThroughTick = this.primaryTickNumber;
-    this.runtimeRetainedStateCount = initialized.response.runtimeRetainedStateCount;
-    this.playbackTargetTickNumber = Math.max(this.primaryTickNumber, normalizedTarget);
-    this.playbackRemainderTicks = convertedRemainder;
+    this.runtimeRetainedStateCount = switched.runtimeRetainedStateCount;
+    this.playbackTargetTickNumber = Math.max(this.primaryTickNumber, convertedWholeTarget + extraWholeTicks);
+    this.playbackRemainderTicks = convertedRemainder - extraWholeTicks;
     this.timelinePresentationActive = false;
-    this.executionTopology = executionTopology;
-    this.presentationIdentity = presentationIdentity;
-    this.denseSessionIdentity = initialized.identity;
-    this.operatingStatusTopology = createDenseOperatingStatusTopology(
-      executionTopology,
-      presentationIdentity,
-    );
-    const publishedTopology = presentationTopology;
+    this.executionTopology = { ...executionTopology, standardTickRate: nextStandardTickRate };
+    if (this.operatingStatusTopology !== null) {
+      this.operatingStatusTopology = { ...this.operatingStatusTopology, standardTickRate: nextStandardTickRate };
+    }
+    const publishedTopology = { ...presentationTopology, standardTickRate: nextStandardTickRate };
     this.topologyStore.setSnapshot(publishedTopology);
-    this.activeTopologySource = {
-      ...source,
-      operatingStatusDeviceIds: [...operatingStatusDeviceIds],
-      presentationIdentity,
-      executionDictionary: initialized.response.layout.dictionary,
-    };
+    this.lastStandardRateSwitchAtMs = performance.now();
+    this.rateRecoveryWindows = 0;
     this.resetDenseRateSample();
 
     runInAction(() => {
@@ -1965,6 +2086,7 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
   private resetDenseRateSample(): void {
     this.rateSampleWallTimeMs = 0;
     this.rateSampleSimulationSeconds = 0;
+    this.rateSampleStartedAtMs = performance.now();
   }
 
   private flushPlaybackPerformanceWindow(): void {
@@ -2088,6 +2210,8 @@ class DenseSimulationController implements SimulationAction, SimulationInternalA
     this.timelineBufferedThroughTick = 0;
     this.activeTopologySource = null;
     this.pendingStandardTickRate = null;
+    this.lastStandardRateSwitchAtMs = Number.NEGATIVE_INFINITY;
+    this.rateRecoveryWindows = 0;
     this.resetDenseRateSample();
     this.operatingStatusTopology = null;
     this.topologyStore.setSnapshot(null);

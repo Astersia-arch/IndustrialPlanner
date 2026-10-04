@@ -56,6 +56,11 @@ export type DenseWorkerCommand =
 
 export type DenseWorkerRequest =
   | (DenseProtocolIdentity & {
+      readonly type: "switch-tick-rate";
+      readonly tickNumber: number;
+      readonly standardTickRate: number;
+    })
+  | (DenseProtocolIdentity & {
       readonly type: "initialize-session";
       readonly topology: CompiledSimulationTopology;
       readonly perfEnabled: boolean;
@@ -132,6 +137,8 @@ export type DenseWorkerResponse =
     })
   | (DenseProtocolIdentity & {
       readonly type: "frame-delta";
+      /** Worker 推进与帧编码耗时，不包含主线程消息排队。 */
+      readonly executionMs: number;
       readonly delta: DenseFrameDelta;
       readonly bufferIds: Uint32Array;
       readonly runtimeRetainedStateCount: number;

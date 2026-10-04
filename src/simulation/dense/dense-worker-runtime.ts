@@ -30,7 +30,7 @@ interface DenseWorkerSession {
   readonly gate: DenseMessageSequenceGate;
   readonly kernel: DenseSimulationKernel;
   emitter: DenseFrameEmitter;
-  readonly topology: CompiledSimulationTopology;
+  topology: CompiledSimulationTopology;
   readonly layout: DenseTopologyLayout;
   readonly checkpoints: Map<number, DenseKernelCheckpoint>;
   runningState: "start" | "pause" | "stop";
@@ -63,6 +63,8 @@ export class DenseWorkerRuntime {
       const session = this.requireSession(request);
       session.gate.accept(request);
       switch (request.type) {
+        case "switch-tick-rate":
+          return this.switchTickRate(session, request);
         case "advance-budget":
           return this.advance(session, request);
         case "command-batch":
@@ -184,6 +186,7 @@ export class DenseWorkerRuntime {
       };
     }
 
+    const startedAtMs = performance.now();
     const result = session.kernel.advanceToTick(request.targetTickNumber, (committed) => {
       if (committed.tickNumber % session.topology.standardTickRate === 0) {
         this.retainCheckpoint(session, session.kernel.createCheckpoint());
@@ -192,10 +195,12 @@ export class DenseWorkerRuntime {
     if (result === null) {
       throw new Error("Dense runtime advance did not produce a committed tick.");
     }
+    const delta = session.emitter.emitTick(session.kernel, result);
     return {
       ...createResponseIdentity(request),
       type: "frame-delta",
-      delta: session.emitter.emitTick(session.kernel, result),
+      delta,
+      executionMs: Math.max(0.001, performance.now() - startedAtMs),
       bufferIds: new Uint32Array(),
       runtimeRetainedStateCount: session.checkpoints.size,
     };
@@ -209,6 +214,27 @@ export class DenseWorkerRuntime {
       this.applyCommand(session, command);
     }
     return this.createCommandAck(session, request, request.sequence);
+  }
+
+  private switchTickRate(
+    session: DenseWorkerSession,
+    request: Extract<DenseWorkerRequest, { readonly type: "switch-tick-rate" }>,
+  ): Extract<DenseWorkerResponse, { readonly type: "presentation-checkpoint" }> {
+    if (request.tickNumber !== session.kernel.tickNumber) {
+      throw new Error("Dense tick rate switch anchor does not match the committed tick.");
+    }
+    session.kernel.switchStandardTickRate(request.standardTickRate);
+    session.topology = session.kernel.topology;
+    // 旧检查点的 tick 坐标和预测区间失效；保留当前完整状态作为新时间单位的恢复锚点。
+    session.checkpoints.clear();
+    session.checkpoints.set(session.kernel.tickNumber, session.kernel.createCheckpoint());
+    return {
+      ...createResponseIdentity(request),
+      type: "presentation-checkpoint",
+      delta: session.emitter.emitCheckpoint(session.kernel),
+      bufferIds: new Uint32Array(),
+      runtimeRetainedStateCount: session.checkpoints.size,
+    };
   }
 
   /*

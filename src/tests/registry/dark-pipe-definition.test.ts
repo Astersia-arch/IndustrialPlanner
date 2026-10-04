@@ -221,6 +221,7 @@ describe("dark pipe definitions", () => {
       durationSeconds: 1,
       inputs: [{ itemId: RecipeItemDomainId.Fluid, amount: 1 }],
       outputs: [{ itemId: "same-as-input", amount: 1 }],
+      primaryOutputs: [],
       machineId,
       recipeType: "reserved-item",
     });

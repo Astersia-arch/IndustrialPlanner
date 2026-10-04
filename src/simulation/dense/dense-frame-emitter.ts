@@ -51,7 +51,7 @@ export class DenseFrameEmitter {
   private readonly presentationRoutingCursorFlags: Uint8Array | null;
 
   public constructor(
-    private readonly topology: CompiledSimulationTopology,
+    topology: CompiledSimulationTopology,
     private readonly layout: DenseTopologyLayout,
     private readonly session: {
       readonly sessionId: string;
@@ -272,8 +272,8 @@ export class DenseFrameEmitter {
       frameSequence,
       fromTickNumber: options.tickNumber,
       tickNumber: options.tickNumber,
-      standardTickRate: this.topology.standardTickRate,
-      tickRate: this.topology.standardTickRate,
+      standardTickRate: options.kernel.topology.standardTickRate,
+      tickRate: options.kernel.topology.standardTickRate,
       status: options.status,
       totalPowerDemand: options.kernel.effectiveTotalPowerDemand,
       currentPowerGeneration: options.kernel.currentPowerGeneration,

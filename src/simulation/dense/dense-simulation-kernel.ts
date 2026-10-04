@@ -21,6 +21,9 @@ import {
   convertSimulationPhaseTickBetweenRates,
   convertSimulationPhaseTickBetweenRatesExact,
   resolveRecipePhaseTicks,
+  DENSE_STANDARD_TICK_RATE_PER_SECOND,
+  DENSE_LOW_STANDARD_TICK_RATE_PER_SECOND,
+  isSimulationWholeSecondTick,
 } from "../contracts";
 import type { RegionWarehouseDeposit, RegionalWarehouseOutletTable } from "../regional";
 import { DenseIndexSet } from "./dense-index-set";
@@ -83,6 +86,7 @@ export interface DenseWarehouseStatsBucket {
 }
 
 export interface DenseKernelCheckpoint {
+  readonly standardTickRate: number;
   readonly tickNumber: number;
   readonly transfers: DenseKernelTransferBatch;
   readonly slotItemIndexes: Int32Array;
@@ -165,7 +169,7 @@ const BASE_BATTERY_CAPACITY_J = 100_000_000;
 
 export class DenseSimulationKernel {
   public readonly state: DenseRuntimeState;
-  private readonly recipePrograms: DenseRecipeProgramSet;
+  private recipePrograms: DenseRecipeProgramSet;
   private readonly lookup: DenseTopologyLookup;
   private readonly channelRecipeIndexes: Int32Array;
   private readonly channelProgressTicks: Float64Array;
@@ -191,7 +195,7 @@ export class DenseSimulationKernel {
   private readonly warehouseLastChangedTicks: Float64Array;
   private readonly regionalResourceRemainderSixths: Float64Array;
   private readonly producerDeviceFlags: Uint8Array;
-  private readonly warehouseStatsWindowCapacity: number;
+  private warehouseStatsWindowCapacity: number;
   private readonly regionalOptions: DenseRegionalKernelOptions | null;
   private readonly regionalOutletIdsByEdgeIndex: readonly (string | null)[];
   private readonly regionalDeposits = new Map<number, number>();
@@ -214,7 +218,7 @@ export class DenseSimulationKernel {
   private currentTickTransfers = createEmptyDenseTransfers();
 
   public constructor(
-    public readonly topology: CompiledSimulationTopology,
+    public topology: CompiledSimulationTopology,
     public readonly layout: DenseTopologyLayout,
     private readonly registry: RegistryContract,
     regionalOptions?: DenseRegionalKernelOptions,
@@ -450,6 +454,7 @@ export class DenseSimulationKernel {
 
   public createCheckpoint(): DenseKernelCheckpoint {
     return {
+      standardTickRate: this.topology.standardTickRate,
       tickNumber: this.currentTickNumber,
       transfers: cloneDenseTransfers(this.currentTickTransfers),
       slotItemIndexes: this.state.slotItemIndexes.slice(),
@@ -488,6 +493,9 @@ export class DenseSimulationKernel {
   }
 
   public restoreCheckpoint(checkpoint: DenseKernelCheckpoint): void {
+    if (checkpoint.standardTickRate !== this.topology.standardTickRate) {
+      throw new Error("Dense checkpoint time unit does not match the current standard tick rate.");
+    }
     this.assertCheckpointShape(checkpoint);
     this.currentTickNumber = checkpoint.tickNumber;
     this.currentTickTransfers = cloneDenseTransfers(checkpoint.transfers);
@@ -537,6 +545,50 @@ export class DenseSimulationKernel {
     this.activeGasDiffusions = this.collectActiveGasDiffusions();
     this.refreshPowerState(false);
     this.state.clearDirtyState();
+  }
+
+  /** 结构与库存保持原位；只换算当前频率定义的时长和历史时间坐标。 */
+  public switchStandardTickRate(nextRate: number): void {
+    const previousRate = this.topology.standardTickRate;
+    if ((nextRate !== DENSE_STANDARD_TICK_RATE_PER_SECOND
+      && nextRate !== DENSE_LOW_STANDARD_TICK_RATE_PER_SECOND)
+      || !isSimulationWholeSecondTick(this.currentTickNumber, previousRate)
+      || this.regionalGateTransfers !== null) {
+      throw new Error(`Dense tick rate switch requires a committed whole-second boundary and 4/2 TPS; tick=${this.currentTickNumber}, rate=${nextRate}.`);
+    }
+    if (previousRate === nextRate) return;
+    const scale = nextRate / previousRate;
+    const convertTick = (tick: number) => convertSimulationPhaseTickBetweenRates(tick, previousRate, nextRate);
+    this.recipePrograms = {
+      ...this.recipePrograms,
+      channels: this.recipePrograms.channels.map((channel) => ({
+        ...channel,
+        transportPeriodTicks: channel.transportPeriodTicks * scale,
+        candidates: channel.candidates.map((recipe) => ({
+          ...recipe, durationTicks: recipe.durationTicks * scale,
+        })),
+      })),
+    };
+    for (let index = 0; index < this.channelProgressTicks.length; index += 1) {
+      // 断电等条件可能留下四分之一秒进度；Float64 保留半个低频 tick，不舍入。
+      this.channelProgressTicks[index] = this.channelProgressTicks[index]! * scale;
+    }
+    for (let index = 0; index < this.deviceTransportPeriods.length; index += 1) {
+      this.deviceTransportPeriods[index] = this.deviceTransportPeriods[index]! * scale;
+    }
+    for (let index = 0; index < this.admission.windowStartTicks.length; index += 1) {
+      this.admission.windowStartTicks[index] = convertTick(this.admission.windowStartTicks[index]!);
+      this.admission.moveTicks[index] = this.admission.moveTicks[index]!.map(convertTick);
+    }
+    this.warehouseStatsBuckets = this.warehouseStatsBuckets.map((bucket) => ({
+      ...bucket, tickNumber: convertTick(bucket.tickNumber),
+    }));
+    for (let index = 0; index < this.warehouseLastChangedTicks.length; index += 1) {
+      this.warehouseLastChangedTicks[index] = convertTick(this.warehouseLastChangedTicks[index]!);
+    }
+    this.warehouseStatsWindowCapacity = Math.max(1, nextRate * 60);
+    this.currentTickNumber = convertTick(this.currentTickNumber);
+    this.topology = { ...this.topology, standardTickRate: nextRate };
   }
 
   public restoreMigratedRuntime(

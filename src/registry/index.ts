@@ -73,12 +73,25 @@ export const createRegistryContract = (): RegistryContract => {
     const entityVariantDefinitions = { ...ENTITY_VARIANT_DEFINITIONS }
     const itemDefinitions = [...ITEM_DEFINITIONS]
     validateItemFluidColors(itemDefinitions)
+    const itemIds = new Set(itemDefinitions.map((item) => item.id))
     const recipeDefinitions = RECIPE_DEFINITIONS.map((recipe) => ({
         ...recipe,
         tags: WIKI_DEFAULT_RECIPE_IDS.has(recipe.id)
             ? [...recipe.tags, WIKI_DEFAULT_CRAFT_RECIPE_TAG]
             : [...recipe.tags],
-        primaryOutputs: recipe.outputs.length > 0 ? [recipe.outputs[0]!.itemId] : [],
+        // AI-REMOVED 2026-10-04:
+        // Reason: 无条件使用首个产物会把运输占位符当成可显示物品。
+        // Trigger: 暗管出口运输时显示红色图标。
+        // Evidence: 两种出口配方输出 same-as-input，Registry 中没有对应物品和图标。
+        // Replacement: 下方仅对注册物品派生主要产物的规则。
+        // Risk: Low - 真实首个产物的图标和运输配方保持原有语义。
+        // Human Review: Required
+        //
+        // Original code:
+        // primaryOutputs: recipe.outputs.length > 0 ? [recipe.outputs[0]!.itemId] : [],
+        primaryOutputs: recipe.outputs.length > 0 && itemIds.has(recipe.outputs[0]!.itemId)
+            ? [recipe.outputs[0]!.itemId]
+            : [],
     }))
     validateWikiDefaultCraftDefinitions(recipeDefinitions)
 

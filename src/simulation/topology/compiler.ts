@@ -376,7 +376,15 @@ export function compileSimulationTopology(
     simulationMode: options.simulationMode,
     documentHash,
     registryHash,
-    standardTickRate,
+    // AI-REMOVED 2026-10-04:
+    // Reason: 运行频率不是连接结构身份；原地调速必须保留拓扑索引。
+    // Trigger: 快速拖动时调速反复全量编译，造成约 150 ms 主线程停顿。
+    // Evidence: Trace-20261004T205802 中 28 次长任务进入 switchDenseStandardTickRate。
+    // Replacement: topology.standardTickRate 与 Dense Kernel 原地调速。
+    // Risk: 拓扑 ID 不再区分时间单位，帧与检查点必须使用各自的频率。
+    // Human Review: Required
+    // Original code:
+    // standardTickRate,
     totalPowerDemand,
     activeActivityIds,
     devices,

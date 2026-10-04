@@ -28,6 +28,10 @@ export interface DenseEngineSessionIdentity {
 }
 
 export interface DenseEngineBridge {
+  switchTickRate(
+    tickNumber: number,
+    standardTickRate: number,
+  ): Promise<Extract<DenseWorkerResponse, { readonly type: "presentation-checkpoint" }>>;
   initialize(options: {
     readonly identity: DenseEngineSessionIdentity;
     readonly topology: CompiledSimulationTopology;
@@ -78,6 +82,12 @@ class LocalDenseEngineBridge implements DenseEngineBridge {
 
   public constructor(registry: RegistryContract) {
     this.runtime = new DenseWorkerRuntime(registry);
+  }
+
+  public switchTickRate(tickNumber: number, standardTickRate: number): Promise<Extract<DenseWorkerResponse, { readonly type: "presentation-checkpoint" }>> {
+    return Promise.resolve(this.expectResponse(this.runtime.handleRequest({
+      ...this.createIdentity(), type: "switch-tick-rate", tickNumber, standardTickRate,
+    }), "presentation-checkpoint"));
   }
 
   public initialize(options: {
@@ -211,6 +221,11 @@ class LocalDenseEngineBridge implements DenseEngineBridge {
 }
 
 class BrowserDenseEngineBridge implements DenseEngineBridge {
+  public switchTickRate(tickNumber: number, standardTickRate: number): Promise<Extract<DenseWorkerResponse, { readonly type: "presentation-checkpoint" }>> {
+    return this.request({
+      ...this.createIdentity(), type: "switch-tick-rate", tickNumber, standardTickRate,
+    }, "presentation-checkpoint");
+  }
   private readonly worker: Worker;
   private readonly runtimeAttachment: WorkerRuntimeAttachment;
   private identity: DenseEngineSessionIdentity | null = null;

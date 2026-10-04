@@ -202,5 +202,11 @@
     "title": "增量更新-v1.5.1.2",
     "version": "1.5.1.2",
     "kind": "incremental"
+  },
+  {
+    "file": "incremental/1.5.1/1.5.1.3.md",
+    "title": "增量更新-v1.5.1.3",
+    "version": "1.5.1.3",
+    "kind": "incremental"
   }
 ]

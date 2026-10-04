@@ -5,6 +5,13 @@ export const RECIPE_PHASE_DURATION_SECONDS = 0.5
 export const DEFAULT_SIMULATION_SPEED = 1
 export const DYNAMIC_SIMULATION_TICK_RATES = [20, 10, 4, 2] as const
 
+/** tick 1 是业务时间原点；完整整秒结算之后才能原地改变 Dense 时间单位。 */
+export function isSimulationWholeSecondTick(tickNumber: number, standardTickRate: number): boolean {
+	return Number.isSafeInteger(tickNumber) && tickNumber >= 0
+		&& Number.isSafeInteger(standardTickRate) && standardTickRate > 0
+		&& (tickNumber === 0 || (tickNumber - 1) % standardTickRate === 0)
+}
+
 export type DynamicSimulationTickRate = typeof DYNAMIC_SIMULATION_TICK_RATES[number]
 
 // 除 add time 使用 simulationSpeed 外，所有 tick <-> second 换算都必须走 standard tick rate。
