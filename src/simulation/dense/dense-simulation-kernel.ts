@@ -178,6 +178,7 @@ export class DenseSimulationKernel {
   private readonly physicalConnectionCount: number;
   private readonly usedPhysicalConnectionFlags: Uint8Array;
   private readonly higherPriorityPhysicalIndexesByEdgeIndex: readonly Uint32Array[];
+  private readonly inputRoutingEdgeIndexesByGroupIndex: ReadonlyMap<number, Uint32Array>;
   private readonly movedRoutingPortFlags: Uint8Array;
   private readonly routingBucketHeads: Int32Array;
   private readonly routingEdgeNextIndexes: Int32Array;
@@ -264,6 +265,8 @@ export class DenseSimulationKernel {
     this.usedPhysicalConnectionFlags = new Uint8Array(this.physicalConnectionCount);
     this.higherPriorityPhysicalIndexesByEdgeIndex =
       this.compileHigherPriorityPhysicalIndexesByEdgeIndex();
+    this.inputRoutingEdgeIndexesByGroupIndex =
+      this.compileInputRoutingEdgeIndexesByGroupIndex();
     this.movedRoutingPortFlags = new Uint8Array(
       layout.routingGroupConnectedFlags.length,
     );
@@ -1235,7 +1238,10 @@ export class DenseSimulationKernel {
               continue;
             }
             const selection = this.selectTransfer(edgeIndex);
-            if (selection === null) {
+            if (
+              selection === null
+              || this.hasAvailableEarlierInput(edgeIndex, allowPriorityFallback)
+            ) {
               continue;
             }
             const sourceStorageIndex = this.layout.slotStorageIndexes[
@@ -1393,6 +1399,54 @@ export class DenseSimulationKernel {
     return this.higherPriorityPhysicalIndexesByEdgeIndex[edgeIndex]?.some(
       (physicalIndex) => this.usedPhysicalConnectionFlags[physicalIndex] === 0,
     ) === true;
+  }
+
+  private compileInputRoutingEdgeIndexesByGroupIndex(): ReadonlyMap<number, Uint32Array> {
+    const indexesByGroupIndex = new Map<number, number[]>();
+    for (let edgeIndex = 0; edgeIndex < this.layout.dictionary.edgeIds.length; edgeIndex += 1) {
+      const groupIndex = this.layout.edgeTargetRoutingGroupIndexes[edgeIndex]!;
+      const portCount = this.layout.routingGroupPortOffsets[groupIndex + 1]!
+        - this.layout.routingGroupPortOffsets[groupIndex]!;
+      if (portCount <= 1) {
+        continue;
+      }
+      const indexes = indexesByGroupIndex.get(groupIndex) ?? [];
+      indexes.push(edgeIndex);
+      indexesByGroupIndex.set(groupIndex, indexes);
+    }
+    return new Map([...indexesByGroupIndex].map(([groupIndex, indexes]) =>
+      [groupIndex, Uint32Array.from(indexes)],
+    ));
+  }
+
+  private hasAvailableEarlierInput(edgeIndex: number, allowPriorityFallback: boolean): boolean {
+    const targetRank = this.resolveEdgeRoutingRank(edgeIndex, false);
+    if (targetRank === 0) {
+      return false;
+    }
+    const groupIndex = this.layout.edgeTargetRoutingGroupIndexes[edgeIndex]!;
+    const sourceRank = this.resolveEdgeRoutingRank(edgeIndex, true);
+    // 缓存可能在本轮扫描中途腾空；后续入口必须重新检查之前因满载而跳过的入口。
+    // 仅让位于当前输出顺位之前的候选，保持输出调度顺序并避免互相等待。
+    for (const earlierEdgeIndex of this.inputRoutingEdgeIndexesByGroupIndex.get(groupIndex) ?? []) {
+      if (
+        this.resolveEdgeRoutingRank(earlierEdgeIndex, false) >= targetRank
+        || this.resolveEdgeRoutingRank(earlierEdgeIndex, true) > sourceRank
+        || this.regionalOutletIdsByEdgeIndex[earlierEdgeIndex] !== null
+        || this.usedPhysicalConnectionFlags[
+          this.edgePhysicalConnectionIndexes[earlierEdgeIndex]!
+        ] !== 0
+        || (!allowPriorityFallback
+          && this.hasUnspentHigherPriorityPhysicalConnection(earlierEdgeIndex))
+        || !this.canEdgeTransferAtCurrentPhase(earlierEdgeIndex)
+      ) {
+        continue;
+      }
+      if (this.selectTransfer(earlierEdgeIndex) !== null) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private markRoutingPortsMoved(edgeIndex: number): void {

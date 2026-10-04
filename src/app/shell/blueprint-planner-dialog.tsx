@@ -203,9 +203,31 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
       record: { ...result.blueprint, parentFolderId: result.folderId }, source, initialMousePosition: null });
     if (entered.status === "handled") controller.close(); else setError(t("eda.placeFailed"));
   });
+  const getConfiguredRequest = () => {
+    const request = controller.getRequest();
+    // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
+    const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? request.plan.supplyPolicies;
+    const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
+    const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
+      itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
+      ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
+      ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
+    })) : request.options.itemPolicies;
+    return { ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } };
+  };
   const download = () => act(() => {
-    if (!planner || selectedId === null) return;
-    const url = URL.createObjectURL(new Blob([JSON.stringify(planner.queries.exportTask(selectedId))], { type: "application/json" }));
+    // AI-REMOVED 2026-10-04:
+    // Reason: 下载入口需要支持尚未启动的配置草稿。
+    // Trigger: 用户要求创建任务即可下载。
+    // Evidence: 草稿有 plan，但 viewTaskId 为 null；原分支直接返回。
+    // Replacement: 下方按任务 ID 导出检查点或调用 exportDraft。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // if (!planner || selectedId === null) return;
+    // const url = URL.createObjectURL(new Blob([JSON.stringify(planner.queries.exportTask(selectedId))], { type: "application/json" }));
+    if (!planner || selectedId === null && plan === null) return;
+    const file = selectedId === null ? planner.queries.exportDraft(getConfiguredRequest()) : planner.queries.exportTask(selectedId);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url; link.download = `${(plan?.name || "eda-task").replace(/[/\\:*?"<>|]/g, "-")}.eda-task.json`;
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -249,9 +271,9 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
       </aside>
       <div className={styles.main}>
         <div className={styles.scroll}>
-              {selectedId !== null ? <div className={styles.taskActions}>
-                <button type="button" onClick={download}>{t("eda.downloadTask")}</button>
-                <button type="button" disabled={busy || fileBusy} onClick={() => act(async () => {
+              {selectedId !== null || plan !== null ? <div className={styles.taskActions}>
+                <button type="button" disabled={!planner || fileBusy} onClick={download}>{t("eda.downloadTask")}</button>
+                {selectedId !== null ? <button type="button" disabled={busy || fileBusy} onClick={() => act(async () => {
                   if (!planner || !window.confirm(t("eda.confirmDelete"))) return;
                   setFileBusy(true);
                   try {
@@ -259,7 +281,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
                     const next = planner.queries.listTasks()[0];
                     if (next) select(next.taskId); else controller.selectTask(null);
                   } finally { setFileBusy(false); }
-                })}>{t("eda.deleteTask")}</button>
+                })}>{t("eda.deleteTask")}</button> : null}
               </div> : null}
           {plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
             <button type="button" onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
@@ -372,16 +394,25 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
           {progress === null && plan !== null ? <button type="button" className={styles.primary}
             disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
               if (planner) {
-                const request = controller.getRequest();
-                // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
-                const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? [];
-                const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
-                const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
-                  itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
-                  ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
-                  ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
-                })) : request.options.itemPolicies;
-                select(planner.actions.start({ ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } }));
+                // AI-REMOVED 2026-10-04:
+                // Reason: 启动与下载共用可见配置的整理逻辑。
+                // Trigger: 用户要求草稿下载包含当前任务及配置。
+                // Evidence: 原逐物品与环境规则只在启动点击处理器中固化。
+                // Replacement: 本组件 getConfiguredRequest。
+                // Risk: Low；环境视图无效时导出保留原规则，启动仍按原条件禁用。
+                // Human Review: Required
+                // Original code:
+                // const request = controller.getRequest();
+                // // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
+                // const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? [];
+                // const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
+                // const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
+                //   itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
+                //   ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
+                //   ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
+                // })) : request.options.itemPolicies;
+                // select(planner.actions.start({ ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } }));
+                select(planner.actions.start(getConfiguredRequest()));
               }
             })}>{t("eda.start")}</button> : null}
         </footer>

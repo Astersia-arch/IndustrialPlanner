@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import type { BlueprintPlannerRequest, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+import type { WorkspaceContract } from "@/domain/document/workspace-contract";
+import { createWorkspaceState } from "@/domain/document/workspace-state";
 import { createRegistryContract } from "@/registry";
 import { PlannerSearchPortfolio } from "@/blueprint-planner/search-portfolio";
 import { capturePlannerSeed } from "@/blueprint-planner/search-seed";
@@ -9,6 +11,7 @@ import { emptyPlannerCheckpoint, parsePlannerTaskFile, PLANNER_ALGORITHM_VERSION
 import { createBlueprintPlannerHost } from "@/blueprint-planner/blueprint-planner-host";
 import { PlannerBatchSession } from "@/scripts/eda/planner-runner";
 import yazhen from "./fixtures/yazhen-syringe.json";
+import environment from "./fixtures/environment-supply.json";
 
 function taskFile(): BlueprintPlannerTaskFile {
   return { formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: "test-task",
@@ -16,6 +19,53 @@ function taskFile(): BlueprintPlannerTaskFile {
     progress: { taskId: "test-task", status: "waiting", phase: "preparing", startedAt: 1,
       elapsedMs: 0, estimatedProgress: null, evaluatedProposals: 0, roundEvaluatedProposals: 0, candidateCount: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } };
 }
+
+it("未启动草稿可导出并导入，保留当前配置且不需要仿真服务", async () => {
+  const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),
+    app: null, audio: null, editor: null, render: null, simulation: null, sync: null, blueprintPlanner: null };
+  const host = createBlueprintPlannerHost(workspace, { storage: null });
+  const request = structuredClone(environment) as BlueprintPlannerRequest;
+  const configured: BlueprintPlannerRequest = { ...request, options: { ...request.options,
+    concurrency: "auto", evaluationsPerRound: 70_000,
+    itemPolicies: [{ itemId: "item_liquid_acid", supply: "external" }] } };
+  try {
+    const revision = host.state.revision;
+    const file = host.queries.exportDraft(configured);
+    const second = host.queries.exportDraft(configured);
+    expect(second.taskId).not.toBe(file.taskId);
+    expect(host.queries.listTasks()).toEqual([]);
+    expect(host.state.activeTaskId).toBeNull();
+    expect(host.state.revision).toBe(revision);
+    const parsed = parsePlannerTaskFile(JSON.parse(JSON.stringify(file)), workspace.registry);
+    expect(parsed.request).toEqual(configured);
+    expect(parsed.checkpoint).toEqual(emptyPlannerCheckpoint());
+    expect(parsed.progress).toMatchObject({ taskId: file.taskId, status: "waiting", elapsedMs: 0,
+      evaluatedProposals: 0, roundEvaluatedProposals: 0, candidateCount: 0, validatedCandidateCount: 0 });
+    const id = await host.actions.importTask(parsed);
+    expect(host.queries.getLastRequest(id)).toEqual(configured);
+    expect(host.queries.getTask(id)?.status).toBe("waiting");
+    expect(host.queries.getResult(id)).toBeNull();
+    expect(host.state.activeTaskId).toBeNull();
+    Object.assign(configured.options, { evaluationsPerRound: 90_000 });
+    Object.assign(file.request.options, { evaluationsPerRound: 20_000 });
+    expect(second.request.options.evaluationsPerRound).toBe(70_000);
+    expect(host.queries.getLastRequest(id)?.options.evaluationsPerRound).toBe(70_000);
+  } finally { host.dispose(); }
+});
+
+it("草稿下载不受启动准入限制，仍完整保留未满足条件的配置", () => {
+  const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),
+    app: null, audio: null, editor: null, render: null, simulation: null, sync: null, blueprintPlanner: null };
+  const host = createBlueprintPlannerHost(workspace, { storage: null });
+  const request = taskFile().request;
+  const invalid = { ...request, plan: { ...request.plan, containsModules: true },
+    options: { ...request.options, evaluationsPerRound: 0 } };
+  try {
+    expect(host.queries.exportDraft(invalid).request).toEqual(invalid);
+    expect(host.queries.listTasks()).toEqual([]);
+    expect(host.state.activeTaskId).toBeNull();
+  } finally { host.dispose(); }
+});
 
 it("检查点往返保持布局池的访问次数、轮换顺序和独立输出拓扑", () => {
   const registry = createRegistryContract();

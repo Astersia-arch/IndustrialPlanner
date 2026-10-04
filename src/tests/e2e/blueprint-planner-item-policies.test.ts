@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { chromium, expect, test } from "playwright/test";
 import type { PlannerCheckpoint } from "@/blueprint-planner/task-checkpoint";
 import type { BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
-import environment from "../blueprint-planner/fixtures/environment-supply.json";
+import environment from "../blueprint-planner/fixtures/environment-supply.json" with { type: "json" };
 
 const execute = promisify(execFile);
 const profiles = [
@@ -17,7 +17,7 @@ const profiles = [
 // 三档开发验收完成后另行编写；测试只管理自己的 CLI 会话，服务由项目运行器负责。
 test.describe.configure({ mode: "serial" });
 for (const profile of profiles) {
-  test(`环境树表与逐物品规则持久化 [${profile.name}]`, async ({ baseURL }, testInfo) => {
+  test(`环境树表、草稿下载与逐物品规则持久化 [${profile.name}]`, async ({ baseURL }, testInfo) => {
     test.setTimeout(240_000);
     const directory = resolve(testInfo.outputPath("cli")), session = `eda-policies-${process.pid}-${profile.name}`;
     await mkdir(directory, { recursive: true });
@@ -78,6 +78,22 @@ for (const profile of profiles) {
       const before = await dialog.ariaSnapshot();
       await dialog.getByRole('spinbutton', {name:'提案次数（万次）'}).fill('1');
       await dialog.getByRole('checkbox', {name:'CPU+GPU 并行计算'}).uncheck();
+      // 2026-10-04：三档草稿下载开发验证完成后独立补充正式回归，下载不得偷偷启动计算。
+      const draftDownload = dialog.getByRole('button', {name:'下载任务',exact:true});
+      assert(await draftDownload.isEnabled(), '未启动草稿不可下载');
+      assert(await dialog.getByRole('button', {name:'删除任务',exact:true}).count() === 0, '草稿误显示删除历史任务');
+      const pendingDownload = page.waitForEvent('download');
+      await draftDownload.click();
+      await (await pendingDownload).saveAs(${JSON.stringify(resolve(directory, "draft.eda-task.json"))});
+      const draftState = await page.evaluate(() => {
+        const host = window.__industrialPlannerAppHost;
+        return {taskId:host.blueprintPlannerDialog.viewTaskId, activeTaskId:host.workspace.blueprintPlanner.state.activeTaskId,
+          historyCount:host.workspace.blueprintPlanner.queries.listTasks().length};
+      });
+      assert(draftState.taskId === null && draftState.activeTaskId === null && draftState.historyCount === 0,
+        '草稿下载修改了任务历史或启动了计算');
+      await draftDownload.scrollIntoViewIfNeeded();
+      await page.screenshot({path:${JSON.stringify(resolve(directory, "draft-download.png"))}});
       await dialog.getByRole('button', {name:'开始规划',exact:true}).click();
       await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.state.activeTaskId === null, null, {timeout:120000});
       const task = await page.evaluate(() => { const host = window.__industrialPlannerAppHost;
@@ -103,6 +119,10 @@ for (const profile of profiles) {
       const output = await invoke([`-s=${session}`, "run-code", `--filename=${scenario}`], "scenario.log");
       expect(output).toContain('"passed":true');
       const result = JSON.parse(output.slice(output.indexOf("### Result") + 10, output.indexOf("### Ran Playwright code")).trim()) as { task: BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint } };
+      const draft = JSON.parse(await readFile(resolve(directory, "draft.eda-task.json"), "utf8")) as BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
+      expect(draft.request).toEqual(result.task.request);
+      expect(draft.progress).toMatchObject({ status: "waiting", elapsedMs: 0, evaluatedProposals: 0, candidateCount: 0 });
+      expect(draft.checkpoint).toMatchObject({ attempt: 0, evaluations: 0, best: null, pendingCandidate: null, result: null });
       if (result.task.checkpoint.best) {
         const success = resolve(".temp/eda/success", `${session}-${Date.now()}`);
         await mkdir(success, { recursive: true });

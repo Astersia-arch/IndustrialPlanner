@@ -1,7 +1,7 @@
 import { plannerOutputModeKey } from "./output-policy";
 import { observable, runInAction } from "mobx";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
-import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import { createUuid } from "@/domain/shared/uuid";
     // AI-REMOVED 2026-09-30: 浏览器蓝图库只在保存时加载，避免无头入口依赖浏览器环境。
     // Trigger: Node 客户端启动。Evidence: 同步存储依赖 import.meta.env。
@@ -122,6 +122,14 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     if (disposed) throw new Error("规划器已关闭。");
     if (!loaded) throw new Error("正在读取历史计算任务，请稍候。");
   };
+  // 草稿只封装输入与空检查点；下载不触发计算，也不写入任务历史。
+  const createTaskFile = (request: BlueprintPlannerRequest, taskId = createUuid()): BlueprintPlannerTaskFile => ({
+    formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId,
+    request: structuredClone(request), checkpoint: emptyPlannerCheckpoint(), progress: { taskId, status: "waiting",
+      phase: "preparing", startedAt: Date.now(), elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
+      evaluatedProposals: 0, roundEvaluatedProposals: 0,
+      validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null },
+  });
   const requireTask = (id: string) => {
     assertReady();
     const blocked = blockedTasks.get(id);
@@ -762,11 +770,19 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         validateTaskRequest(workspace.registry, request);
         if (state.activeTaskId !== null) throw new Error("已有任务正在计算。");
         const id = createUuid();
-        const task = materialize({ formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: id,
-          request: structuredClone(request), checkpoint: emptyPlannerCheckpoint(), progress: { taskId: id, status: "waiting",
-            phase: "preparing", startedAt: Date.now(), elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
-            evaluatedProposals: 0, roundEvaluatedProposals: 0,
-            validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } });
+        // AI-REMOVED 2026-10-04:
+        // Reason: 启动与草稿导出共用任务文件封装，避免格式和初始计数分叉。
+        // Trigger: 用户要求任务创建后无需成功启动即可下载。
+        // Evidence: 原任务文件仅在 start 内构造；导入已支持空检查点。
+        // Replacement: 本文件 createTaskFile。
+        // Risk: Low。Human Review: Required
+        // Original code:
+        // const task = materialize({ formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: id,
+        //   request: structuredClone(request), checkpoint: emptyPlannerCheckpoint(), progress: { taskId: id, status: "waiting",
+        //     phase: "preparing", startedAt: Date.now(), elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
+        //     evaluatedProposals: 0, roundEvaluatedProposals: 0,
+        //     validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } });
+        const task = materialize(createTaskFile(request, id));
         tasks.set(id, task);
         launch(task, request.options.evaluationsPerRound);
         return id;
@@ -840,6 +856,10 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       exportTask: id => {
         assertReady();
         return blockedTasks.has(id) ? structuredClone(blockedTasks.get(id)!.file) : snapshot(requireTask(id));
+      },
+      exportDraft: request => {
+        assertReady();
+        return createTaskFile(request);
       },
     },
     dispose() {
