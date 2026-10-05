@@ -3,7 +3,10 @@ import type { SimulationBlueprintRunReport } from "@/domain/simulation";
 import type { PlannerSupplyAudit } from "./supply-audit";
 
 export function meetsOperatingLimits(audit: PlannerSupplyAudit, report: SimulationBlueprintRunReport): boolean {
-  return audit.operatingLimits.every(limit => {
+  return (audit.startupProduction ?? []).every(limit => {
+    const measured = report.probes.find(probe => probe.id === `startup:${limit.entityId}`)?.perMinute;
+    return measured !== undefined && Number.isFinite(measured) && measured + 1e-6 >= limit.perMinute;
+  }) && audit.operatingLimits.every(limit => {
     const measured = report.probes.find(probe => probe.id === `operating:${limit.entityId}`)?.perMinute;
     return measured !== undefined && Number.isFinite(measured) && measured >= 0 && measured <= limit.perMinute + 1e-6;
   });

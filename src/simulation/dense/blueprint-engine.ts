@@ -15,6 +15,10 @@ export function createDenseBlueprintEngine(
   return {
     get tickNumber() { return kernel.tickNumber; },
     get isPowerOutage() { return kernel.isPowerOutage; },
+    patchRuntimeSlot(patch) {
+      if (disposed) throw new Error("Isolated simulation is disposed.");
+      kernel.patchRuntimeSlot(patch);
+    },
     advance() {
       if (disposed) throw new Error("Isolated simulation is disposed.");
       kernel.advanceToTick(kernel.tickNumber + 1);

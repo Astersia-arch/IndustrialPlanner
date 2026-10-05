@@ -740,7 +740,7 @@ export const ProductionPlanningPanel = observer(function ProductionPlanningPanel
   };
 
   const openAutomaticPlanning = () => {
-    if (calculation === null) return;
+    if (calculation === null || appHost.workspace.blueprintPlanner === null || appHost.blueprintPlannerDialog.taskLocked) return;
     const document = appHost.workspace.editor?.document.getSnapshot();
     if (document === undefined) return;
     appHost.blueprintPlannerDialog.open(createBlueprintPlannerPlan({
@@ -898,7 +898,7 @@ export const ProductionPlanningPanel = observer(function ProductionPlanningPanel
               {appHost.blueprintPlannerDialog.enabled ? <button type="button"
                 className={cm(styles, "production-planning-icon-text-button")}
                 disabled={useModules || calculation === null || calculation.plan.recipeTotals.some((entry) => entry.module !== null)
-                  || appHost.workspace.blueprintPlanner?.state.activeTaskId !== null}
+                  || appHost.workspace.blueprintPlanner === null || appHost.blueprintPlannerDialog.taskLocked}
                 onClick={openAutomaticPlanning}>
                 <LucideFactory /><span>{t("eda.planThisLine")}</span>
               </button> : null}

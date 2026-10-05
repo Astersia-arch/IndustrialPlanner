@@ -1,4 +1,4 @@
-import type { BlueprintPlannerProductionPlan, BlueprintPlannerSupplyPolicy } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerSupplyPolicy } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { RecipeDefinition } from "@/domain/registry/types/recipe-definition";
 import { CONSUMPTION_RECIPE_TAG } from "./consumption-channel";
@@ -18,7 +18,8 @@ export interface PlannerSupplyRow {
 export interface PlannerSupplyView {
   readonly environments: readonly { readonly itemId: string; readonly deviceCount: number }[];
   readonly rows: readonly PlannerSupplyRow[];
-  readonly issues: readonly { readonly kind: "cycle" | "unavailable"; readonly itemIds: readonly string[] }[];
+  readonly issues: readonly { readonly kind: "cycle" | "startup" | "unavailable"; readonly itemIds: readonly string[] }[];
+  readonly startupItemIds: readonly string[];
 }
 
 /** App 的路线预览与 EDA 的实际补料共用规则，避免界面展示一条路线而 Worker 选择另一条。 */
@@ -30,7 +31,8 @@ export class PlannerSupplyRules {
   private readonly defaultRecipes = new Map<string, RecipeDefinition>();
   private readonly consumption: ReturnType<typeof buildDeviceRunningConsumptionRecipesByMachine>;
 
-  constructor(private readonly registry: RegistryContract, private readonly plan: BlueprintPlannerProductionPlan) {
+  constructor(private readonly registry: RegistryContract, private readonly plan: BlueprintPlannerProductionPlan,
+    private readonly converterStartup: BlueprintPlannerOptions["converterStartup"] = "reject") {
     this.external = new Set([...plan.infiniteItemIds, ...plan.externalSupplies.map(flow => flow.itemId)]);
     this.consumption = buildDeviceRunningConsumptionRecipesByMachine(registry.recipeDefinitions);
     const available = sortRecipesByDefaultPriority(registry.recipeDefinitions.filter(recipe =>
@@ -116,6 +118,18 @@ export class PlannerSupplyRules {
     ];
   }
 
+  /** 只识别产物供给自身运行耗材的单物料回路；普通加工原料环仍按不可用循环处理。 */
+  selfConsumption(recipe: RecipeDefinition): { readonly itemId: string; readonly perMinute: number; readonly netCapacityPerMinute: number } | null {
+    const consumption = resolveCompanionDeviceRunningConsumptionRecipe(recipe, this.consumption);
+    if (consumption?.inputs.length !== 1) return null;
+    const input = consumption.inputs[0]!;
+    const output = recipe.outputs.find(flow => flow.itemId === input.itemId);
+    if (!output || recipe.inputs.some(flow => flow.itemId === input.itemId) || recipe.requiredGasDiffusion === input.itemId) return null;
+    const perMinute = input.amount * 60 / consumption.durationSeconds;
+    return { itemId: input.itemId, perMinute,
+      netCapacityPerMinute: output.amount * 60 / recipe.durationSeconds - perMinute };
+  }
+
   view(): PlannerSupplyView {
     const environments = new Map<string, number>();
     for (const entry of this.plan.recipes) {
@@ -126,9 +140,17 @@ export class PlannerSupplyRules {
     }
     const rows = new Map<string, PlannerSupplyRow>();
     const issues: PlannerSupplyView["issues"][number][] = [];
+    const startupItemIds = new Set<string>();
     const visit = (itemId: string, path: readonly string[], operating: boolean) => {
       const resolved = this.resolve(itemId);
       if (path.includes(itemId)) {
+        const recipe = resolved.policy?.source === "production" ? this.registry.queries.findRecipeDefinition(resolved.policy.recipeId) : null;
+        const self = recipe ? this.selfConsumption(recipe) : null;
+        if (path.at(-1) === itemId && self?.itemId === itemId && self.netCapacityPerMinute > 1e-6) {
+          startupItemIds.add(itemId);
+          if ((this.converterStartup ?? "reject") === "reject") issues.push({ kind: "startup", itemIds: [itemId] });
+          return;
+        }
         issues.push({ kind: "cycle", itemIds: [...path.slice(path.indexOf(itemId)), itemId] }); return;
       }
       const previous = rows.get(itemId);
@@ -138,12 +160,19 @@ export class PlannerSupplyRules {
       }
       rows.set(itemId, { ...resolved, parents: path.slice(-1), operating });
       if (!resolved.policy) { issues.push({ kind: "unavailable", itemIds: [itemId] }); return; }
-      if (resolved.policy.source === "external" || resolved.inherited) return;
+      if (resolved.policy.source === "external") return;
       const recipe = this.registry.queries.findRecipeDefinition(resolved.policy.recipeId)!;
+      if (resolved.inherited && !this.selfConsumption(recipe)) return;
       if (recipe.requiredGasDiffusion && !environments.has(recipe.requiredGasDiffusion)) environments.set(recipe.requiredGasDiffusion, 0);
       for (const input of this.dependencies(recipe)) visit(input.itemId, [...path, itemId], input.operating);
     };
     for (const itemId of environments.keys()) visit(itemId, [], false);
-    return { environments: [...environments].map(([itemId, deviceCount]) => ({ itemId, deviceCount })), rows: [...rows.values()], issues };
+    for (const entry of this.plan.recipes) {
+      const recipe = this.registry.queries.findRecipeDefinition(entry.recipeId);
+      const self = recipe ? this.selfConsumption(recipe) : null;
+      if (self) visit(self.itemId, [], true);
+    }
+    return { environments: [...environments].map(([itemId, deviceCount]) => ({ itemId, deviceCount })), rows: [...rows.values()], issues,
+      startupItemIds: [...startupItemIds] };
   }
 }

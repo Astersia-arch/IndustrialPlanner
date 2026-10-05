@@ -35,7 +35,28 @@ describe("环境供料的共享规则", () => {
     expect(view.rows.find(row => row.itemId === "item_liquid_xiranite")?.policy).toMatchObject({ recipeId: "r_mix_pool_liquid_xiranite_from_xiranite_powder_and_water_basic" });
     const cyclic = new PlannerSupplyRules(registry, { ...plan,
       supplyPolicies: [{ itemId: "item_liquid_xiranite", source: "production", recipeId: "liquid_transmuter_1_liquid_liquid_xiranite_1" }] });
-    expect(cyclic.view().issues).toContainEqual({ kind: "cycle", itemIds: ["item_liquid_xiranite", "item_liquid_xiranite"] });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 可自持的运行耗材自循环改为独立的启动策略诊断。
+    // Trigger: 用户授权三种转化设备启动方式。Evidence: PlannerSupplyRules.selfConsumption。
+    // Replacement: 下方 startup 断言。Risk: Low；普通循环仍拒绝。Human Review: Required
+    // Original code:
+    // expect(cyclic.view().issues).toContainEqual({ kind: "cycle", itemIds: ["item_liquid_xiranite", "item_liquid_xiranite"] });
+    expect(cyclic.view().issues).toContainEqual({ kind: "startup", itemIds: ["item_liquid_xiranite"] });
+  });
+
+  it.each(["manual", "tank"] as const)("%s 只允许正净产出的耗材自循环，普通供料环仍拒绝", mode => {
+    const registry = createRegistryContract();
+    const plan = { ...request().plan, supplyPolicies: [
+      { itemId: "item_liquid_xiranite", source: "production" as const, recipeId: "liquid_transmuter_1_liquid_liquid_xiranite_1" },
+    ] };
+    const view = new PlannerSupplyRules(registry, plan, mode).view();
+    expect(view.issues).toEqual([]);
+    expect(view.startupItemIds).toEqual(["item_liquid_xiranite"]);
+    const cyclic = { ...plan, externalSupplies: plan.externalSupplies.filter(flow => flow.itemId !== "item_gas_xiranite"),
+      supplyPolicies: [...plan.supplyPolicies, { itemId: "item_gas_xiranite", source: "production" as const, recipeId: "liquid_transmuter_1_gas_gas_xiranite_1" }] };
+    expect(new PlannerSupplyRules(registry, cyclic, mode).view().issues.some(issue => issue.kind === "cycle")).toBe(true);
+    Object.assign(registry.queries.findRecipeDefinition("liquid_transmuter_1_liquid_liquid_xiranite_1")!, { durationSeconds: 12 });
+    expect(new PlannerSupplyRules(registry, plan, mode).view().issues.some(issue => issue.kind === "cycle")).toBe(true);
   });
 
   it("拒绝无效、重复和不能产出目标物品的规则", () => {

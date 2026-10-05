@@ -1,4 +1,5 @@
 import type { RegistryContract } from "@/domain/registry/registry-contract";
+import { PlannerSupplyRules } from "@/shared/planner-supply";
 import type { PlannerNetwork, PlannerWire } from "./model";
 import { PlannerCandidateError } from "./model";
 import type { PlannerRouter } from "./router";
@@ -7,6 +8,8 @@ export interface PlannerSupplyAudit {
   readonly operatingLimits: readonly { entityId: string; itemId: string; perMinute: number }[];
   readonly splitterCount: number;
   readonly bufferedAdmissions: number;
+  /** 自循环产出的真实通量必须覆盖全部计划消耗，不能靠罐体库存代替持续生产。 */
+  readonly startupProduction?: readonly { entityId: string; itemId: string; perMinute: number }[];
 }
 
 /** 在交付前用实际路由长度核验，不以曼哈顿距离代替缓冲管道。 */
@@ -123,5 +126,11 @@ export function auditPlannerSupply(registry: RegistryContract, network: PlannerN
     };
     if (!outgoing.every(wire => metered(wire, new Set([id])))) throw new PlannerCandidateError(`非均分支路没有完整准入口约束：${id}`);
   }
-  return { operatingLimits: [...operatingLimits.values()], splitterCount: splitters.size, bufferedAdmissions };
+  const rules = new PlannerSupplyRules(registry, network.request.plan, network.request.options.converterStartup);
+  const startupProduction = network.nodes.flatMap(node => {
+    const self = node.recipe ? rules.selfConsumption(node.recipe) : null;
+    const output = self ? node.outputs.find(flow => flow.itemId === self.itemId) : null;
+    return output ? [{ entityId: node.entity.id, itemId: output.itemId, perMinute: output.perMinute }] : [];
+  });
+  return { operatingLimits: [...operatingLimits.values()], splitterCount: splitters.size, bufferedAdmissions, startupProduction };
 }

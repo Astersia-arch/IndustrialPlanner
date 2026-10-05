@@ -112,6 +112,11 @@ export const LeftToolbar = observer(function LeftToolbar({
   const helpDialogVisible = appHost.internalState.workbench.dialogState.help.visible;
   const settingsDialogVisible = appHost.internalState.workbench.dialogState.settings.visible;
   const debugLogDialogVisible = appHost.internalState.workbench.dialogState["debug-log"]?.visible ?? false;
+  const plannerVisible = appHost.blueprintPlannerDialog.dialogState.visible;
+  const plannerBusy = appHost.blueprintPlannerDialog.taskLocked;
+  const plannerIndicator = plannerBusy && !plannerVisible;
+  const plannerStatus = appHost.workspace.blueprintPlanner?.queries.getTask(appHost.blueprintPlannerDialog.activeTaskId ?? undefined)?.status;
+  const plannerLabel = plannerBusy ? `${t("eda.toolbar")} · ${t(plannerStatus === "saving" ? "eda.saving" : "eda.running")}` : t("eda.toolbar");
   const primaryToolbarItems = PRIMARY_TOOLBAR_ITEMS.filter((item) => {
     if (item.panel === "region" && !appHost.state.settings.showRegionAnnotations) {
       return false;
@@ -157,9 +162,9 @@ export const LeftToolbar = observer(function LeftToolbar({
       </div>
       <div className={cm(styles, "toolbar-rail-group toolbar-rail-utility")}>
         {appHost.blueprintPlannerDialog.enabled ? <button
-          type="button" aria-label={t("eda.toolbar")} title={t("eda.title")}
-          aria-pressed={appHost.blueprintPlannerDialog.dialogState.visible}
-          className={cm(styles, appHost.blueprintPlannerDialog.dialogState.visible ? "rail-button rail-button-utility is-active" : "rail-button rail-button-utility")}
+          type="button" aria-label={plannerLabel} title={plannerBusy ? plannerLabel : t("eda.title")}
+          aria-pressed={plannerVisible}
+          className={cm(styles, `rail-button rail-button-utility${plannerVisible ? " is-active" : ""}${plannerIndicator ? " eda-task-indicator" : ""}`)}
           onClick={() => appHost.blueprintPlannerDialog.open()}>
           <span className={cm(styles, "rail-button-short")}><WorkbenchIcon kind="toolbox" /></span>
           <span className={cm(styles, "rail-button-label")}>{t("eda.toolbar")}</span>

@@ -9,7 +9,7 @@ import { resolveEntityGridRect } from "@/shared/geometry/power-range";
 import { createProductionNetwork, supplyAuxiliaryDemand } from "./production-network";
 import { createPlainNode, PlannerPlacement, placeProduction, redundantEnvironmentStations } from "./placement";
 import { addTerminals, configureSource, getPlannerStashDrainPorts, materialBalance } from "./terminals";
-import { connectPlantStartups, placePower, preparePlantStartups } from "./support";
+import { connectPlantStartups, placePower, preparePlantStartups, prepareConverterStartups, configureConverterStartupInventory, scheduleConverterStartups } from "./support";
 import { wireProductionNetwork } from "./wiring";
 import { PlannerRouter } from "./router";
 import { getPlannerPorts, opposite, resolveTransportPose, transportCapacity } from "./geometry";
@@ -263,6 +263,7 @@ async function createPlannerAttempt(
   // Risk: Low。Human Review: Required。
   // Original code: await placePower(registry, network, placement, checkBudget);
   startups = preparePlantStartups(registry, network, placement);
+  prepareConverterStartups(registry, network, placement);
   addTerminals(registry, network, placement, profile.separateOperatingSupply === 1, profile.fluidGroupSize, strategy === "compact", options.stashPackingVariant);
   }
   checkBudget();
@@ -544,6 +545,8 @@ async function createPlannerAttempt(
     });
   }
   const entities = [...network.nodes.map((node) => node.entity), ...router.entities];
+  configureConverterStartupInventory(network, id => arrival[graph.groupIndexByNodeId.get(id)!]!);
+  const scheduledSlots = scheduleConverterStartups(registry, network, id => arrival[graph.groupIndexByNodeId.get(id)!]!);
   const rects = entities.map((entity) => resolveEntityGridRect({ entity, definition: registry.queries.findEntityDefinition(entity.definitionId)! }));
   const left = Math.min(...rects.map((rect) => rect.x)), top = Math.min(...rects.map((rect) => rect.y));
   const width = Math.max(...rects.map((rect) => rect.x + rect.width)) - left;
@@ -590,12 +593,14 @@ async function createPlannerAttempt(
     metrics, connections, search: statistics, supplyAudit, seed,
     execution: {
       blueprint,
-      scene: { externalEntities: fixtures, externalSlotLinks: [], initialSlots: network.initialSlots, powerMode: "infinite" },
+      scene: { externalEntities: fixtures, externalSlotLinks: [], initialSlots: network.initialSlots, scheduledSlots, powerMode: "infinite" },
       probes: [...request.plan.targets.map((flow) => ({
         id: flow.itemId, itemId: flow.itemId, direction: "input" as const,
         entityIds: network.nodes.filter((node) => node.purpose === "product" && node.inputs.some((input) => input.itemId === flow.itemId)).map((node) => node.entity.id),
       })), ...supplyAudit.operatingLimits.map(limit => ({ id: `operating:${limit.entityId}`, itemId: limit.itemId,
-        direction: "output" as const, entityIds: [limit.entityId] }))],
+        direction: "output" as const, entityIds: [limit.entityId] })), ...(supplyAudit.startupProduction ?? []).map(limit => ({
+        id: `startup:${limit.entityId}`, itemId: limit.itemId, direction: "output" as const, entityIds: [limit.entityId],
+      }))],
       warmupSeconds: Math.max(180, Math.ceil(Math.max(...arrival) * 3)),
       observationSeconds: 120, inventorySampleCount: 9, maxWallTimeMs: 120_000,
       activeActivityIds: request.plan.activeActivityIds,

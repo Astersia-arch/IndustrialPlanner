@@ -18,6 +18,7 @@ export function createLegacyBlueprintEngine(
     get tickNumber() { return snapshot.tickNumber; },
     get isPowerOutage() { return snapshot.isPowerOutage; },
     advance() { snapshot = runtime.advanceIsolated(); },
+    patchRuntimeSlot(patch) { snapshot = runtime.patchIsolatedSlot(patch); },
     visitTransfers(visit) { snapshot.transfers.forEach(visit); },
     readSlots: () => Object.values(snapshot.slots),
     readDevices: () => Object.values(snapshot.devices),

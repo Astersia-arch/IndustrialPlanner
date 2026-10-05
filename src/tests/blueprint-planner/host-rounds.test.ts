@@ -89,7 +89,9 @@ describe("EDA Host 多轮规划", () => {
       expect(host.queries.getResult(taskId)?.folderId).toBeNull();
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(100);
 
-      await host.actions.save(taskId);
+      const saving = host.actions.save(taskId);
+      await expect(host.actions.importTask(host.queries.exportTask(taskId))).rejects.toThrow("已有任务");
+      await saving;
       expect(host.queries.getTask()?.status).toBe("completed");
       expect(host.queries.getResult(taskId)?.metrics.area).toBe(100);
       await expect(host.actions.save(taskId)).rejects.toThrow("当前没有可保存的新结果");

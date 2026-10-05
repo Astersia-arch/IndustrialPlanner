@@ -139,11 +139,20 @@ for (const profile of profiles) {
       assert(progress.areaHistory.length > 0, '已验证面积曲线必须记录下降点');
       assert(await dialog.getByRole('img',{name:/提案次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
       // 三种 Screen Profile 开发验证后补入正式回归：X 对数、Y 线性，面积范围不强制包含零。
+      // AI-CORRECTION 2026-10-05: X 轴也从实际记录起步；末尾可见刻度保留完整数字，其余千级以上刻度使用 K/M。
       const curve = dialog.getByRole('img',{name:/提案次数与已验证最优面积/});
       const labels = await curve.locator('text').allTextContents();
       assert(labels.filter(label => label.includes('（对数坐标）')).length === 1, '只有 X 轴标注对数坐标');
       assert(labels.includes('已验证最优面积') && labels.includes('累计提案（对数坐标）'), '坐标轴标题缺失');
-      assert(labels.filter(label => label === '0').length === 1, '只有 X 轴强制显示零刻度');
+      const minimumCount = progress.areaHistory[0].evaluatedProposals;
+      const maximumCount = progress.evaluatedProposals;
+      assert(labels.filter(label => label === '0').length === (minimumCount === 0 ? 1 : 0), '坐标轴不能强制包含不存在的零记录');
+      const proposalLabels = await curve.locator('g text[y="178"]').allTextContents();
+      const lastCount = progress.areaHistory.at(-1).evaluatedProposals;
+      assert([lastCount.toLocaleString('zh-CN'), maximumCount.toLocaleString('zh-CN')].includes(proposalLabels.at(-1)),
+        '最后一个可见提案刻度必须保留完整数字');
+      assert(proposalLabels.slice(0, -1).every(label => /[KM]$/.test(label) || /^\\d{1,3}$/.test(label)),
+        '其余提案刻度必须使用 K/M 缩写');
       const coordinates = await curve.locator('circle').evaluateAll(circles => circles.map(circle => ({
         x: Number(circle.getAttribute('cx')), y: Number(circle.getAttribute('cy')),
       })));
@@ -152,7 +161,10 @@ for (const profile of profiles) {
       const padding = Math.max(1, (maximum - minimum) * 0.1), lower = Math.max(0, minimum - padding);
       assert(coordinates.length === progress.areaHistory.length, '下降数据点丢失');
       for (const [index, point] of progress.areaHistory.entries()) {
-        const expectedX = 58 + Math.log1p(point.evaluatedProposals) / Math.log1p(Math.max(1, progress.evaluatedProposals)) * 530;
+        const offset = minimumCount === 0 ? 1 : 0;
+        const expectedX = minimumCount === maximumCount ? 323 : 58
+          + (Math.log(point.evaluatedProposals + offset) - Math.log(minimumCount + offset))
+          / (Math.log(maximumCount + offset) - Math.log(minimumCount + offset)) * 530;
         const expectedY = 160 - (point.bestArea - lower) / (maximum + padding - lower) * 126;
         assert(Math.abs(coordinates[index].x - expectedX) < 0.001 && Math.abs(coordinates[index].y - expectedY) < 0.001,
           '曲线未使用 X 对数、Y 线性的真实面积坐标');

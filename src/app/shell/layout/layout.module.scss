@@ -504,6 +504,30 @@
   min-height: calc(54px * var(--left-toolbar-button-scale, 1));
 }
 
+.rail-button.eda-task-indicator {
+  position: relative;
+  color: var(--accent-strong);
+}
+
+.eda-task-indicator::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 2px solid var(--accent-strong);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: eda-task-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes eda-task-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eda-task-indicator::after { animation: none; opacity: 1; }
+}
+
 .toolbar-meta {
   justify-content: flex-end;
   color: var(--text-1);

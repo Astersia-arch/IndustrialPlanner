@@ -6,6 +6,11 @@ export interface SimulationBlueprintScene {
   readonly externalEntities: readonly WorldEntity[];
   readonly externalSlotLinks: readonly SlotLinkDefinition[];
   readonly initialSlots: readonly SimulationRuntimeSlotPatch[];
+  /** 在指定仿真时刻补料一次；仅作用于独立执行场景，不写入交付蓝图。 */
+  readonly scheduledSlots?: readonly {
+    readonly simulationSeconds: number;
+    readonly patch: SimulationRuntimeSlotPatch;
+  }[];
   readonly powerMode: WorldDocumentSettings["powerMode"];
 }
 

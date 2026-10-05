@@ -1,5 +1,5 @@
 import { makeAutoObservable, observable, toJS } from "mobx";
-import type { BlueprintPlannerItemPolicy, BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerRequest, BlueprintPlannerSupplyPolicy } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerContract, BlueprintPlannerItemPolicy, BlueprintPlannerOptions, BlueprintPlannerProductionPlan, BlueprintPlannerRequest, BlueprintPlannerSupplyPolicy } from "@/domain/blueprint-planner";
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
 import { runStorageEffect } from "@/shared/storage/storage-failure";
 import { createDefaultDialogStateForKey } from "../state";
@@ -14,12 +14,15 @@ export class BlueprintPlannerDialogController {
   viewTaskId: string | null = null;
   options: BlueprintPlannerOptions = {
     solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
-    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", evaluationsPerRound: 500_000, concurrency: "auto",
+    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", converterStartup: "reject", evaluationsPerRound: 500_000, concurrency: "auto",
   };
 
-  constructor() {
+  constructor(private readonly getPlanner: () => BlueprintPlannerContract | null) {
     const saved = readFromLocalStorage<Partial<BlueprintPlannerOptions>>(OPTIONS_KEY);
     if (saved !== null) {
+      if (saved.converterStartup !== undefined && ["manual", "tank", "reject"].includes(saved.converterStartup)) {
+        this.options = { ...this.options, converterStartup: saved.converterStartup };
+      }
       for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
         const choices = {
           solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "free"],
@@ -50,8 +53,11 @@ export class BlueprintPlannerDialogController {
       // AI-CORRECTION 2026-10-03：复选框关闭保存为 1；旧多 Worker 数字仍迁移为自动。
       if (saved.concurrency === 1) this.options = { ...this.options, concurrency: 1 };
     }
-    makeAutoObservable(this, { plan: observable.ref }, { autoBind: true });
+    makeAutoObservable<BlueprintPlannerDialogController, "getPlanner">(this, { plan: observable.ref, getPlanner: false }, { autoBind: true });
   }
+
+  get activeTaskId(): string | null { return this.getPlanner()?.state.activeTaskId ?? null; }
+  get taskLocked(): boolean { return this.activeTaskId !== null; }
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
@@ -60,18 +66,25 @@ export class BlueprintPlannerDialogController {
   }
 
   open(plan?: BlueprintPlannerProductionPlan, options?: BlueprintPlannerOptions): void {
+    const activeTaskId = this.activeTaskId;
+    if (activeTaskId !== null) {
+      this.selectTask(activeTaskId, this.getPlanner()?.queries.getLastRequest(activeTaskId) ?? undefined);
+      this.dialogState.visible = true;
+      return;
+    }
     if (plan !== undefined) {
       this.plan = structuredClone(plan); this.viewTaskId = null;
-      this.options = options ? toJS(options) : { ...this.options, itemPolicies: [] };
+      this.options = options ? { ...toJS(options), converterStartup: options.converterStartup ?? "reject" } : { ...this.options, itemPolicies: [] };
     }
     this.dialogState.visible = true;
   }
 
   selectTask(taskId: string | null, request?: BlueprintPlannerRequest): void {
+    if (this.taskLocked && taskId !== this.activeTaskId) return;
     this.viewTaskId = taskId;
     if (taskId === null || !request) this.plan = null;
     if (request) { this.plan = structuredClone(request.plan); this.options = {
-      ...structuredClone(request.options), concurrency: request.options.concurrency === 1 ? 1 : "auto",
+      ...structuredClone(request.options), converterStartup: request.options.converterStartup ?? "reject", concurrency: request.options.concurrency === 1 ? 1 : "auto",
     }; }
   }
 

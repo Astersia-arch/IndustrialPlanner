@@ -40,7 +40,8 @@ export async function wireProductionNetwork(registry: RegistryContract, network:
     for (const [itemId, amount] of consumer.amounts) {
       let remaining = amount;
       const providers = [...(suppliers.get(itemId) ?? [])].sort((left, right) =>
-        distance(left.allocation.port, consumer.port) - distance(right.allocation.port, consumer.port));
+        Number(Boolean(right.allocation.node.supplyTarget)) - Number(Boolean(left.allocation.node.supplyTarget))
+        || distance(left.allocation.port, consumer.port) - distance(right.allocation.port, consumer.port));
       for (const provider of providers) {
         if (remaining < 1e-6) break;
         if (provider.remaining < 1e-6) continue;
@@ -257,6 +258,8 @@ function allocatePorts(registry: RegistryContract, nodes: readonly PlannerNode[]
         allocation.consumption ||= direction === "input" && flow.storageGroupIds !== undefined
           && node.definition.recipeChannels.some((channel) => channel.type === "consumption-channel"
             && channel.ingredientStorageGroupIds.some((id) => flow.storageGroupIds!.includes(id)));
+        // 2026-10-05：启动罐的回填量也必须限速，否则回流优先级会先填满 500 容量而饿死净产物分支。
+        allocation.consumption ||= direction === "input" && node.purpose === "startup" && node.supplyTarget !== undefined;
       }
       if (remaining > 1e-6) throw new PlannerCandidateError(`设备端口运力不足：${node.definition.id} / ${flow.itemId}`);
     }

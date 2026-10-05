@@ -125,7 +125,8 @@ export class BuildingEffectsScene {
         retainedTiles.add(tile);
         const scene = this.height.get(tile, assets, retainedHeights);
         if (!template || !color || !scene) { ready = false; continue; }
-        const key = `${effect.ring}:${effect.resourceId}:${frameIndex}:${tile}`;
+        // 同一资源统一使用场景时钟；帧号和颜色页变化只更新材质，不改变批次身份。
+        const key = `${effect.ring}:${effect.resourceId}:${tile}`;
         let group = groups.get(key);
         if (!group) { group = { placements: [], tile, resourceId: effect.resourceId,
           page: frame.page, frame: frameIndex }; groups.set(key, group); }
@@ -176,7 +177,11 @@ export class BuildingEffectsScene {
       }
       this.batchSignature = signature;
     }
-    for (const { batch, frame } of this.batches.values()) batch.frame(frame);
+    for (const [key, group] of groups) {
+      const entry = this.batches.get(key)!;
+      entry.frame = group.frame;
+      entry.batch.frame(entry.frame, assets.color(manifest.effects[entry.resourceId]!.pages[group.page]!.file)!);
+    }
     this.height.retain(retainedTiles);
     assets.retain(retainedHeights, retainedColors);
   }

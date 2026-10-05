@@ -1,6 +1,9 @@
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import type { WorldEntity } from "@/domain/document/world-document";
+import type { SimulationBlueprintScene } from "@/domain/simulation";
 import { LOGISTICS_KIND } from "@/domain/shared/logistics";
+import { ItemDomainFlag } from "@/domain/shared/item-domain-flags";
+import { PlannerSupplyRules } from "@/shared/planner-supply";
 import { resolveEntityGridRect, resolvePowerRangeGridRect, areGridRectsIntersecting } from "@/shared/geometry/power-range";
 import { buildLayoutGraph } from "./layout-graph";
 import { filterPort, findLogisticsDevice, getPlannerPorts } from "./geometry";
@@ -13,6 +16,82 @@ export interface PlantStartup {
   readonly source: PlannerNode;
   readonly admission: PlannerNode;
   readonly itemId: string;
+}
+
+/** 启动库存有限；持续运行仍由产物回流并经过原有工作消耗限速。 */
+export function prepareConverterStartups(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement): void {
+  const mode = network.request.options.converterStartup ?? "reject";
+  const rules = new PlannerSupplyRules(registry, network.request.plan, mode);
+  for (const producer of [...network.nodes]) {
+    const self = producer.recipe ? rules.selfConsumption(producer.recipe) : null;
+    if (!self) continue;
+    if (mode === "reject" || self.netCapacityPerMinute <= 1e-6) throw new PlannerCandidateError(`转化设备自循环无法启动：${producer.entity.id}`);
+    const input = producer.inputs.find(flow => flow.itemId === self.itemId && flow.storageGroupIds?.some(id =>
+      producer.definition.recipeChannels.some(channel => channel.type === "consumption-channel" && channel.ingredientStorageGroupIds.includes(id))));
+    const group = producer.definition.storageSlotGroups.find(entry => input?.storageGroupIds?.includes(entry.id));
+    const slot = group?.slots[0];
+    if (!input || !group || !slot) throw new PlannerCandidateError("转化设备缺少可初始化的运行耗材槽。");
+    if (mode === "manual") {
+      // AI-REMOVED 2026-10-05:
+      // Reason: 第 0 秒补入的 5 个耗材可能在上游原料抵达前耗尽。
+      // Trigger: 用户要求一次性手动启动，真实 Dense 液体/气体测试发现提前耗尽。
+      // Evidence: 原料延迟到达后目标与启动产出探针均为零。
+      // Replacement: scheduleConverterStartups 使用最终路由到达时间安排一次补料。
+      // Risk: Low
+      // Human Review: Required
+      // Original code:
+      // network.initialSlots.push({ entityId: producer.entity.id, storageGroupId: group.id, slotId: slot.id,
+      //   itemType: self.itemId, count: slot.capacity, ignoreStock: false });
+      continue;
+    }
+    const domain = registry.queries.resolveItemDomain(self.itemId);
+    if (domain !== ItemDomainFlag.Liquid && domain !== ItemDomainFlag.Gas) throw new PlannerCandidateError("转化设备启动耗材必须是液体或气体。");
+    const tank = createPlainNode(registry, domain === ItemDomainFlag.Gas ? "gas_storager_1" : "liquid_storager_1",
+      `eda-converter-startup-${network.nodes.length}`, "startup");
+    const storage = tank.definition.storageSlotGroups[0]!;
+    tank.inputs.push({ itemId: self.itemId, perMinute: input.perMinute, storageGroupIds: [storage.id] });
+    tank.outputs.push({ itemId: self.itemId, perMinute: input.perMinute, storageGroupIds: [storage.id] });
+    // 罐体只供给该设备的耗材口，由该设备的真实产出补回，不充当额外的稳态来源。
+    Object.assign(tank, { supplyTarget: { entityId: producer.entity.id, storageGroupIds: input.storageGroupIds },
+      outputSource: { entityId: producer.entity.id, storageGroupIds: producer.outputs.find(flow => flow.itemId === self.itemId)!.storageGroupIds } });
+    tank.entity.config["storageSlotGroups[0].slots[0].initialItemType"] = self.itemId;
+    tank.entity.config["storageSlotGroups[0].slots[0].lock"] = self.itemId;
+    tank.entity.config["storageSlotGroups[0].slots[0].ignoreStock"] = false;
+    placement.placeAnywhere(tank, 0, producer.entity.position);
+    network.nodes.push(tank);
+  }
+}
+
+/** 手动启动仅进入独立验证场景；原料到达后补满一次耗材槽。 */
+export function scheduleConverterStartups(
+  registry: RegistryContract, network: PlannerNetwork, startupSeconds: (entityId: string) => number,
+): NonNullable<SimulationBlueprintScene["scheduledSlots"]> {
+  if (network.request.options.converterStartup !== "manual") return [];
+  const rules = new PlannerSupplyRules(registry, network.request.plan, "manual");
+  return network.nodes.flatMap(producer => {
+    const self = producer.recipe ? rules.selfConsumption(producer.recipe) : null;
+    if (!self) return [];
+    const groupIds = producer.definition.recipeChannels.filter(channel => channel.type === "consumption-channel")
+      .flatMap(channel => channel.ingredientStorageGroupIds);
+    return producer.definition.storageSlotGroups.filter(group => groupIds.includes(group.id)).flatMap(group => group.slots.map(slot => ({
+      simulationSeconds: startupSeconds(producer.entity.id),
+      patch: { entityId: producer.entity.id, storageGroupId: group.id, slotId: slot.id,
+        itemType: self.itemId, count: slot.capacity, ignoreStock: false },
+    })));
+  });
+}
+
+/** 使用最终路由的启动等待时间估算罐体库存，拒绝超容量候选，不预填整罐掩盖缺料。 */
+export function configureConverterStartupInventory(network: PlannerNetwork, startupSeconds: (entityId: string) => number): void {
+  for (const tank of network.nodes.filter(node => node.purpose === "startup" && node.supplyTarget
+    && ["liquid_storager_1", "gas_storager_1"].includes(node.definition.id))) {
+    const target = network.nodes.find(node => node.entity.id === tank.supplyTarget!.entityId)!;
+    const group = target.definition.storageSlotGroups.find(entry => tank.supplyTarget!.storageGroupIds?.includes(entry.id))!;
+    const count = group.slots.reduce((sum, slot) => sum + slot.capacity, 0)
+      + Math.ceil(tank.outputs[0]!.perMinute * (startupSeconds(target.entity.id) + 10) / 60);
+    if (count > tank.definition.storageSlotGroups[0]!.slots[0]!.capacity) throw new PlannerCandidateError("转化设备回流过长，启动罐容量不足。");
+    tank.entity.config["storageSlotGroups[0].slots[0].initialCount"] = count;
+  }
 }
 
 export function preparePlantStartups(registry: RegistryContract, network: PlannerNetwork, placement: PlannerPlacement): PlantStartup[] {

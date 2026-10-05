@@ -78,6 +78,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   let writes: Promise<void> = Promise.resolve();
   const pendingWrites = new Set<PlannerTask>();
   let writing = false;
+  // 导入包含异步持久化；从准入到提交占用入口，避免导入期间启动计算。
+  let importing = false;
   const notify = () => runInAction(() => { state.revision++; });
   const elapsed = (task: PlannerTask) => task.file.progress.elapsedMs + (task.resumedAt === null ? 0 : performance.now() - task.resumedAt);
   // 只保存已完成的搜索阶段；运行中的计数没有可恢复的退火状态，刷新后必须从安全边界重做。
@@ -692,7 +694,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   //     } finally { settle(task); }
   //   }
   function launch(task: PlannerTask, evaluations: number, concurrency: number | "auto" = task.file.request.options.concurrency ?? 1): void {
-    if (state.activeTaskId !== null) throw new Error("已有任务正在计算或保存。");
+    if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
     // AI-REMOVED 2026-09-30:
     // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
     // Trigger: 用户批准本轮接口与交互调整。
@@ -721,7 +723,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   }
 
   async function save(task: PlannerTask): Promise<void> {
-    if (state.activeTaskId !== null || task.running !== null) throw new Error("请等待当前计算或保存结束。");
+    if (state.activeTaskId !== null || task.running !== null || importing) throw new Error("请等待当前计算、保存或导入结束。");
     const result = task.file.checkpoint.result;
     if (result === null || result.blueprint.blueprintId === task.file.checkpoint.savedBlueprintId) throw new Error("当前没有可保存的新结果。");
     runInAction(() => { state.activeTaskId = task.file.taskId; });
@@ -768,7 +770,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       start(request) {
         assertReady();
         validateTaskRequest(workspace.registry, request);
-        if (state.activeTaskId !== null) throw new Error("已有任务正在计算。");
+        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
         const id = createUuid();
         // AI-REMOVED 2026-10-04:
         // Reason: 启动与草稿导出共用任务文件封装，避免格式和初始计数分叉。
@@ -808,36 +810,41 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         notify();
       },
       async importTask(file) {
-        await ready;
-        assertReady();
-        let task: PlannerTask;
-        try { task = materialize(file); } catch (error) {
-          if (!file || typeof file !== "object" || typeof file.taskId !== "string" || !file.taskId) throw error;
+        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        importing = true;
+        try {
+          await ready;
+          assertReady();
+          let task: PlannerTask;
+          try { task = materialize(file); } catch (error) {
+            if (!file || typeof file !== "object" || typeof file.taskId !== "string" || !file.taskId) throw error;
+            const id = createUuid();
+            const retained = { ...structuredClone(file), taskId: id };
+            await storage?.save(retained);
+            retainBlocked(retained, error);
+            latestId = id;
+            notify();
+            return id;
+          }
+          // 导入始终创建独立任务，不能覆盖正在计算的同名任务或本机历史。
+          // AI-CORRECTION 2026-10-05：活动任务存在时禁止导入；导入提交前也禁止启动、续算和保存。
           const id = createUuid();
-          const retained = { ...structuredClone(file), taskId: id };
-          await storage?.save(retained);
-          retainBlocked(retained, error);
+          task.file = { ...task.file, taskId: id, progress: { ...task.file.progress, taskId: id, status: "waiting",
+            message: file.algorithmVersion === task.file.algorithmVersion ? "任务已导入，可以继续计算。" : task.file.progress.message, estimatedProgress: null } };
+          const result = task.file.checkpoint.result;
+          const blueprint = task.file.checkpoint.best?.candidate.execution.blueprint;
+          if (blueprint) blueprint.blueprintId = createUuid();
+          const pendingBlueprint = task.file.checkpoint.pendingCandidate?.execution.blueprint;
+          if (pendingBlueprint && pendingBlueprint !== blueprint) pendingBlueprint.blueprintId = createUuid();
+          if (result !== null) task.file.checkpoint.result = { ...result, taskId: id, folderId: null,
+            blueprint: { ...result.blueprint, blueprintId: blueprint!.blueprintId } };
+          task.file.checkpoint.savedBlueprintId = null;
+          await storage?.save(snapshot(task));
+          tasks.set(id, task);
           latestId = id;
           notify();
           return id;
-        }
-        // 导入始终创建独立任务，不能覆盖正在计算的同名任务或本机历史。
-        const id = createUuid();
-        task.file = { ...task.file, taskId: id, progress: { ...task.file.progress, taskId: id, status: "waiting",
-          message: file.algorithmVersion === task.file.algorithmVersion ? "任务已导入，可以继续计算。" : task.file.progress.message, estimatedProgress: null } };
-        const result = task.file.checkpoint.result;
-        const blueprint = task.file.checkpoint.best?.candidate.execution.blueprint;
-        if (blueprint) blueprint.blueprintId = createUuid();
-        const pendingBlueprint = task.file.checkpoint.pendingCandidate?.execution.blueprint;
-        if (pendingBlueprint && pendingBlueprint !== blueprint) pendingBlueprint.blueprintId = createUuid();
-        if (result !== null) task.file.checkpoint.result = { ...result, taskId: id, folderId: null,
-          blueprint: { ...result.blueprint, blueprintId: blueprint!.blueprintId } };
-        task.file.checkpoint.savedBlueprintId = null;
-        await storage?.save(snapshot(task));
-        tasks.set(id, task);
-        latestId = id;
-        notify();
-        return id;
+        } finally { importing = false; }
       },
     },
     queries: {

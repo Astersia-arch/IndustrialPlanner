@@ -101,14 +101,34 @@ export async function executeBlueprint(
           samples.push({ simulationSeconds: engine!.tickNumber / standardTickRate, itemAmounts });
         };
         const warmupEndTick = Math.ceil(request.warmupSeconds * standardTickRate);
+        // 相同时刻保留声明顺序；向上对齐真实 tick，且不修改调用方的场景。
+        const scheduledSlots = [...(request.scene.scheduledSlots ?? [])]
+          .sort((left, right) => left.simulationSeconds - right.simulationSeconds).map(entry => ({
+          tickNumber: Math.ceil(entry.simulationSeconds * standardTickRate), patch: entry.patch,
+        }));
+        let nextScheduledSlot = 0;
         let nextSample = 1;
         let nextYield = performance.now() + 12;
         while (!interrupted()) {
+          if (observedSeconds >= request.observationSeconds) break;
+          while (nextScheduledSlot < scheduledSlots.length
+            && scheduledSlots[nextScheduledSlot]!.tickNumber <= engine.tickNumber) {
+            engine.patchRuntimeSlot(scheduledSlots[nextScheduledSlot]!.patch);
+            nextScheduledSlot += 1;
+          }
           if (observationStartTick === null && engine.tickNumber >= warmupEndTick) {
             observationStartTick = engine.tickNumber;
             sampleInventory();
           }
-          if (observedSeconds >= request.observationSeconds) break;
+          // AI-REMOVED 2026-10-05:
+          // Reason: 结束边界必须在定时补料之前判定，避免结束后补料改变最终库存。
+          // Trigger: 独立执行新增一次性定时补料。
+          // Evidence: 原结束判定位于采样后，无法保护先于采样的调度。
+          // Replacement: 本循环起始处相同的结束判定。
+          // Risk: Low
+          // Human Review: Required
+          // Original code:
+          // if (observedSeconds >= request.observationSeconds) break;
           engine.advance();
           if (observationStartTick !== null) {
             observedSeconds = (engine.tickNumber - observationStartTick) / standardTickRate;
@@ -218,6 +238,19 @@ export function validateBlueprintRequest(registry: RegistryContract, request: Si
     if (!Number.isFinite(patch.count) || patch.count < 0 || (patch.itemType !== null && !items.has(patch.itemType))) {
       throw new Error("Invalid blueprint initial inventory.");
     }
+  }
+  if (request.scene.scheduledSlots !== undefined && !Array.isArray(request.scene.scheduledSlots)) {
+    throw new Error("Invalid blueprint scheduled inventory.");
+  }
+  for (const entry of request.scene.scheduledSlots ?? []) {
+    if (!Number.isFinite(entry.simulationSeconds) || entry.simulationSeconds < 0
+      || !Number.isSafeInteger(Math.ceil(entry.simulationSeconds * STANDARD_TICK_RATE_PER_SECOND))) {
+      throw new Error("Invalid blueprint inventory schedule time.");
+    }
+    const patch = entry.patch;
+    validateSlot(patch.entityId, patch.storageGroupId, patch.slotId);
+    if (!Number.isFinite(patch.count) || patch.count < 0 || (patch.itemType !== null && !items.has(patch.itemType))
+      || typeof patch.ignoreStock !== "boolean") throw new Error("Invalid blueprint scheduled inventory.");
   }
   const probes = new Set<string>();
   for (const probe of request.probes) {

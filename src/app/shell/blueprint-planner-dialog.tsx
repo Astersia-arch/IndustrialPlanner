@@ -51,7 +51,8 @@ function AreaCurve({ points, proposals, label, xLabel, yLabel }: {
   const width = 600, left = 58, right = 588, top = 34, bottom = 160;
   const ticks = plannerAreaTicks(points, proposals, left, right);
   const height = bottom + 46;
-  const maxX = Math.max(1, proposals);
+  const minX = points[0]!.evaluatedProposals;
+  const maxX = Math.max(minX, proposals);
   // AI-REMOVED 2026-10-03:
   // Reason: Y 轴改为从零开始的 log(1+x)，不再用极值差拉伸。
   // Trigger: 用户要求面积图两轴从零开始的对数坐标。
@@ -64,7 +65,7 @@ function AreaCurve({ points, proposals, label, xLabel, yLabel }: {
   // AI-CORRECTION 2026-10-03: 用户取消 Y 轴对数与零起点，恢复实际极值范围；单点与留白统一由 plannerAreaCoordinate 处理。
   const minArea = Math.min(...points.map(point => point.bestArea));
   const maxArea = Math.max(...points.map(point => point.bestArea));
-  const x = (value: number) => plannerLogCoordinate(value, maxX, left, right);
+  const x = (value: number) => plannerLogCoordinate(value, minX, maxX, left, right);
   const y = (value: number) => plannerAreaCoordinate(value, minArea, maxArea, top, bottom);
   // AI-REMOVED 2026-10-03:
   // Reason: Y 轴改为实际面积范围内的线性刻度。
@@ -162,12 +163,12 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   }, [planner, revision]);
   const supply = useMemo(() => {
     if (!controller.plan) return { view: null, error: null };
-    try { return { view: new PlannerSupplyRules(appHost.workspace.registry, controller.plan).view(), error: null }; }
+    try { return { view: new PlannerSupplyRules(appHost.workspace.registry, controller.plan, controller.options.converterStartup).view(), error: null }; }
     catch (failure) { return { view: null, error: failure instanceof Error ? failure.message : String(failure) }; }
-  }, [appHost.workspace.registry, controller.plan]);
+  }, [appHost.workspace.registry, controller.plan, controller.options.converterStartup]);
   if (!controller.dialogState.visible) return null;
-  const busy = progress !== null && ["running", "saving"].includes(progress.status);
-  const anyBusy = planner?.state.activeTaskId != null;
+  const busy = controller.taskLocked || fileBusy;
+  const anyBusy = controller.taskLocked;
   const compact = appHost.state.screenProfile.deviceClass === "mobile";
   const plan = controller.plan;
   const validRoundSettings = Number.isSafeInteger(controller.options.evaluationsPerRound) && controller.options.evaluationsPerRound >= 10_000
@@ -187,11 +188,13 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
   };
   const select = (id: string) => {
+    if (controller.taskLocked && id !== controller.activeTaskId) return;
     const request = planner?.queries.getLastRequest(id);
     controller.selectTask(id, request ?? undefined);
     setError(null);
   };
   const openProductionPlanning = () => {
+    if (controller.taskLocked || fileBusy) return;
     controller.close();
     appHost.internalActions.setDialogTab("toolbox", "production-planning");
     appHost.internalActions.openDialog("toolbox");
@@ -247,22 +250,23 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     <div className={`${styles.content} ${compact ? styles.compact : ""}`}>
       <aside className={styles.history} aria-label={t("eda.history")}>
         <strong>{t("eda.history")}</strong>
-        <button type="button" onClick={openProductionPlanning}>{t("eda.newTask")}</button>
-        <button type="button" disabled={fileBusy} onClick={() => inputRef.current?.click()}>{t("eda.importTask")}</button>
-        <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+        <button type="button" disabled={busy} onClick={openProductionPlanning}>{t("eda.newTask")}</button>
+        <button type="button" disabled={busy} onClick={() => inputRef.current?.click()}>{t("eda.importTask")}</button>
+        <input ref={inputRef} type="file" accept=".json,application/json" hidden disabled={busy} onChange={event => {
           const file = event.target.files?.[0]; event.target.value = "";
-          if (!file || !planner) return;
+          if (!file || !planner || controller.taskLocked || fileBusy) return;
           act(async () => {
             setFileBusy(true);
             try {
               if (file.size > 100 * 1024 * 1024) throw new Error(t("eda.fileTooLarge"));
               const id = await planner.actions.importTask(JSON.parse(await file.text()) as BlueprintPlannerTaskFile);
-              select(id);
+              controller.selectTask(id, planner.queries.getLastRequest(id) ?? undefined);
             } finally { setFileBusy(false); }
           });
         }} />
         <div className={styles.taskList}>
           {history.length === 0 ? <p>{t("eda.noHistory")}</p> : history.map(task => <button type="button" key={task.taskId}
+            disabled={fileBusy || anyBusy && task.taskId !== controller.activeTaskId}
             className={styles.task} aria-pressed={selectedId === task.taskId} onClick={() => select(task.taskId)}>
             <strong>{task.name}</strong><span>{t("eda.productionMode")} · {statusLabel(task.status)}</span>
             <time>{new Date(task.startedAt).toLocaleString()}</time>
@@ -284,7 +288,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
                 })}>{t("eda.deleteTask")}</button> : null}
               </div> : null}
           {plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
-            <button type="button" onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
+            <button type="button" disabled={busy} onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
             <div className={styles.heading}><div><span>{t("eda.productionMode")}</span><p className={styles.target}>{plan.name}</p></div>
 
             </div>
@@ -340,6 +344,13 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               <label className={styles.parallel}><input type="checkbox" checked={controller.options.concurrency === "auto"}
                 onChange={event => controller.updateOptions({ concurrency: event.target.checked ? "auto" : 1 })} />
                 <span>{t("eda.concurrency")}</span></label>
+              <label><span>{t("eda.converterStartup")}</span>
+                <select disabled={progress !== null} value={controller.options.converterStartup ?? "reject"}
+                  onChange={event => controller.updateOptions({ converterStartup: event.target.value as "manual" | "tank" | "reject" })}>
+                  <option value="manual">{t("eda.converterStartupManual")}</option>
+                  <option value="tank">{t("eda.converterStartupTank")}</option>
+                  <option value="reject">{t("eda.converterStartupReject")}</option>
+                </select></label>
             </fieldset>
             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
           </> : null}
@@ -386,13 +397,13 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               // controller.close();
 
             }}>{t("eda.preview")}</button>
-            <button type="button" className={styles.primary} disabled={anyBusy || result.folderId !== null}
+            <button type="button" className={styles.primary} disabled={busy || result.folderId !== null}
               onClick={() => act(() => planner?.actions.save(result.taskId))}>{t(progress?.status === "save-failed" ? "eda.retrySave" : "eda.save")}</button>
             <button type="button" onPointerUp={event => place(event.pointerType === "mouse" ? "mouse" : "touch")}
               onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
           </> : null}
           {progress === null && plan !== null ? <button type="button" className={styles.primary}
-            disabled={plan.containsModules || !planner || anyBusy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
+            disabled={plan.containsModules || !planner || busy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
               if (planner) {
                 // AI-REMOVED 2026-10-04:
                 // Reason: 启动与下载共用可见配置的整理逻辑。

@@ -328,6 +328,20 @@ export class SimulationWorkerRuntime {
     return snapshot;
   }
 
+  /** 独立场景补料沿用运行时槽修改，但不回退时间或启动播放预取。 */
+  public patchIsolatedSlot(patch: SimulationRuntimeSlotPatch): RuntimeTickSnapshot {
+    if (this.runtimeState === null) throw new Error("Isolated simulation is not initialized.");
+    const tickNumber = this.runtimeState.tickNumber;
+    this.lastRequestedTickNumber = tickNumber;
+    this.patchRuntimeSlot(patch);
+    if (this.fillTimerId !== null) clearTimeout(this.fillTimerId);
+    this.fillTimerId = null;
+    this.tickSnapshots.clear();
+    this.tickRuntimeStates.clear();
+    this.nextTickNumber = tickNumber + this.standardStepTicks;
+    return this.createSnapshotFromRuntimeState(this.runtimeState);
+  }
+
   public disposeIsolated(): void {
     if (this.fillTimerId !== null) clearTimeout(this.fillTimerId);
     this.fillTimerId = null;

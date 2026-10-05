@@ -51,6 +51,8 @@ export interface BlueprintPlannerOptions {
   readonly solidOutput: "warehouse" | "stash" | "auto";
   readonly byproducts: "destroy" | "output";
   readonly plantStartup: "preload" | "warehouse";
+  /** 转化设备耗材自循环的启动方式；旧任务缺省为拒绝启动。 */
+  readonly converterStartup?: "manual" | "tank" | "reject";
   // AI-REMOVED 2026-09-30:
   // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
   // Trigger: 用户批准本轮接口与交互调整。

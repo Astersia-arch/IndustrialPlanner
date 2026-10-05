@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { BlueprintPlannerRequest, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import { createWorkspaceState } from "@/domain/document/workspace-state";
@@ -131,6 +131,9 @@ it("真实 Worker 与仿真 Host 支持多任务导入、续算检查点与删�
     expect(first).not.toBe(second);
     host.actions.continuePlanning(first, 10_000);
     expect(() => host.actions.continuePlanning(second, 10_000)).toThrow("已有任务");
+    await expect(host.actions.importTask(taskFile())).rejects.toThrow("已有任务");
+    expect(host.queries.listTasks().map(task => task.taskId)).toEqual(expect.arrayContaining([first, second]));
+    expect(host.queries.listTasks()).toHaveLength(2);
     while (host.state.activeTaskId !== null) await new Promise(resolve => setTimeout(resolve, 20));
     const file = parsePlannerTaskFile(JSON.parse(JSON.stringify(host.queries.exportTask(first))), session.workspace.registry);
     expect(file.checkpoint.attempt).toBeGreaterThan(0);
@@ -252,3 +255,72 @@ it("恢复隔离不兼容记录、保留原文且允许删除；旧算法重置�
     expect(records.get("blocked")).toEqual(original);
   } finally { host.dispose(); await session.dispose(); }
 }, 30_000);
+
+it("异步导入提交前禁止启动、续算、保存及再次导入，提交后释放入口", async () => {
+  const file = taskFile();
+  const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),
+    app: null, audio: null, editor: null, render: null, simulation: null, sync: null, blueprintPlanner: null };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let writing = false;
+  const storage = { load: async () => [file], delete: async () => {},
+    save: async () => { writing = true; await gate; } };
+  const host = createBlueprintPlannerHost(workspace, { storage });
+  const pending = host.actions.importTask(file);
+  try {
+    await vi.waitFor(() => expect(writing).toBe(true));
+    expect(() => host.actions.start(file.request)).toThrow("导入");
+    expect(() => host.actions.continuePlanning(file.taskId, 10_000)).toThrow("导入");
+    await expect(host.actions.save(file.taskId)).rejects.toThrow("导入");
+    await expect(host.actions.importTask(file)).rejects.toThrow("导入");
+    expect(host.queries.listTasks()).toHaveLength(1);
+    release();
+    const imported = await pending;
+    expect(imported).not.toBe(file.taskId);
+    expect(host.queries.listTasks()).toHaveLength(2);
+    await host.actions.importTask(file);
+    expect(host.queries.listTasks()).toHaveLength(3);
+  } finally {
+    release();
+    await pending.catch(() => {});
+    host.dispose();
+  }
+});
+
+it("导入校验或持久化失败后释放入口，不创建半完成任务", async () => {
+  const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),
+    app: null, audio: null, editor: null, render: null, simulation: null, sync: null, blueprintPlanner: null };
+  let failWrite = true;
+  const storage = { load: async () => [], delete: async () => {},
+    save: async () => { if (failWrite) throw new Error("导入写入失败"); } };
+  const host = createBlueprintPlannerHost(workspace, { storage });
+  try {
+    await expect(host.actions.importTask(null as unknown as BlueprintPlannerTaskFile)).rejects.toThrow();
+    await expect(host.actions.importTask(taskFile())).rejects.toThrow("导入写入失败");
+    expect(host.queries.listTasks()).toHaveLength(0);
+    failWrite = false;
+    const id = await host.actions.importTask(taskFile());
+    expect(host.queries.getTask(id)?.status).toBe("waiting");
+    expect(host.queries.listTasks()).toHaveLength(1);
+  } finally { host.dispose(); }
+});
+
+it("真实 Worker 暂停请求发出后仍禁止导入，完成收尾后恢复导入", async () => {
+  const session = new PlannerBatchSession();
+  const host = createBlueprintPlannerHost(session.workspace, { storage: null, roundLimit: () => 10,
+    worker: {
+      build: (...args) => session.planner.build(args[0], args[1], args[2], { maxEvaluations: args[3] }, args[5], args[4]),
+      dispose: () => {},
+    },
+  });
+  try {
+    const id = await host.actions.importTask(taskFile());
+    host.actions.continuePlanning(id, 10_000);
+    host.actions.cancel(id);
+    expect(host.state.activeTaskId).toBe(id);
+    await expect(host.actions.importTask(taskFile())).rejects.toThrow("已有任务");
+    await vi.waitFor(() => expect(host.state.activeTaskId).toBeNull());
+    await host.actions.importTask(taskFile());
+    expect(host.queries.listTasks()).toHaveLength(2);
+  } finally { host.dispose(); await session.dispose(); }
+});

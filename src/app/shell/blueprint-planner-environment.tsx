@@ -50,7 +50,7 @@ export function BlueprintPlannerEnvironment({ plan, registry, view, disabled, is
     includeInactiveActivityContent: false, activeActivityIds: plan.activeActivityIds,
   }), [registry, plan.activeActivityIds]);
   const rows = useMemo(() => buildEnvironmentTreeRows(view), [view]);
-  if (!view.environments.length) return null;
+  if (!view.environments.length && !view.rows.length) return null;
   const itemName = (id: string) => {
     const item = registry.queries.findItemDefinition(id);
     return item ? t(item.nameKey) : id;
@@ -106,7 +106,8 @@ export function BlueprintPlannerEnvironment({ plan, registry, view, disabled, is
         </fieldset>} />
     </div>
     {view.issues.map((issue, index) => <p key={index} role="alert" className={styles.error}>
-      {issue.kind === "cycle" ? t("eda.supplyCycle").replace("{items}", issue.itemIds.map(itemName).join(" → "))
+      {issue.kind === "startup" ? t("eda.supplyStartup").replace("{item}", itemName(issue.itemIds[0]!))
+        : issue.kind === "cycle" ? t("eda.supplyCycle").replace("{items}", issue.itemIds.map(itemName).join(" → "))
         : t("eda.supplyUnavailable").replace("{item}", itemName(issue.itemIds[0]!))}
     </p>)}
   </section>;

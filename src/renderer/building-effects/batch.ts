@@ -32,6 +32,7 @@ finalColor=texture(uColorTexture,clamp(vUV,uColorBounds.xy,uColorBounds.zw))*uCo
 }`;
 
 /** 同一资源页、区域和阶段共用一次绘制；实例高度作为顶点属性传入。 */
+// AI-CORRECTION 2026-10-05: 同资源、区域的实例共用稳定批次；动画阶段及颜色页切换仅更新 UV、uniform 和纹理绑定，避免逐帧销毁重建。
 export class BuildingEffectBatch {
   public readonly mesh: Mesh<Geometry, Shader>;
   private readonly uniforms: UniformGroup;
@@ -39,7 +40,7 @@ export class BuildingEffectBatch {
   private lastFrame = -1;
 
   public constructor(parent: Container, placements: readonly EffectPlacement[], private readonly resource: BuildingEffectResource,
-    tile: string, scene: Texture, height: Texture, color: Texture, page: number, min: number, max: number) {
+    private readonly tile: string, scene: Texture, height: Texture, color: Texture, page: number, min: number, max: number) {
     const positions = new Float32Array(placements.length * 8);
     this.uvs = new Float32Array(placements.length * 8);
     const heightUVs = new Float32Array(placements.length * 8);
@@ -75,10 +76,13 @@ export class BuildingEffectBatch {
     parent.addChild(this.mesh);
   }
 
-  public frame(index: number): void {
+  public frame(index: number, color: Texture): void {
+    // 颜色页重载后，即使动画帧号未变也要替换已释放的旧纹理源。
+    this.mesh.shader!.resources.uColorTexture = color.source;
     if (index === this.lastFrame) return;
     this.lastFrame = index;
     const f = this.resource.frames[index]!, p = this.resource.pages[f.page]!;
+    this.mesh.label = `building-effect-batch:${this.tile}:${f.page}`;
     const uv = [f.x / p.width, f.y / p.height, (f.x + f.width) / p.width, f.y / p.height,
       (f.x + f.width) / p.width, (f.y + f.height) / p.height, f.x / p.width, (f.y + f.height) / p.height];
     for (let i = 0; i < this.uvs.length; i += 8) this.uvs.set(uv, i);
@@ -89,6 +93,7 @@ export class BuildingEffectBatch {
   }
 
   public destroy(): void {
-    this.mesh.shader?.destroy(); this.mesh.geometry.destroy(); this.mesh.destroy();
+    // Geometry 内的顶点与索引缓冲均由本批次独占，销毁时立即释放；共享纹理和 GlProgram 仍归素材缓存所有。
+    this.mesh.shader?.destroy(); this.mesh.geometry.destroy(true); this.mesh.destroy();
   }
 }

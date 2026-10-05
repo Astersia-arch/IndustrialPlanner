@@ -12,6 +12,7 @@ export interface BlueprintExecutionEngine {
   readonly tickNumber: number;
   readonly isPowerOutage: boolean;
   advance(): void;
+  patchRuntimeSlot(patch: SimulationRuntimeSlotPatch): void;
   visitTransfers(visit: (transfer: RuntimeTransferSnapshot) => void): void;
   readSlots(): readonly RuntimeSlotSnapshot[];
   readDevices(): readonly RuntimeDeviceSnapshot[];

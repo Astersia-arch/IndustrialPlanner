@@ -1,0 +1,77 @@
+{
+  "plan": {
+    "name": "液化息壤自循环启动验证",
+    "sourceBaseId": "wuling_protocol_core",
+    "targets": [
+      {
+        "itemId": "item_gas_copper_enr2",
+        "perMinute": 30
+      }
+    ],
+    "externalSupplies": [
+      {
+        "itemId": "item_gas_copper_enr",
+        "perMinute": 60
+      },
+      {
+        "itemId": "item_gas_xiranite",
+        "perMinute": 30
+      }
+    ],
+    "infiniteItemIds": [],
+    "byproductItemIds": [],
+    "containsModules": false,
+    "unresolvedPerMinute": 0,
+    "activeActivityIds": [],
+    "recipes": [
+      {
+        "recipeId": "gas_reactor_gas_copper_enr2_1",
+        "cyclesPerMinute": 30,
+        "deviceCount": 1,
+        "inputs": [
+          {
+            "itemId": "item_gas_copper_enr",
+            "perMinute": 60
+          },
+          {
+            "itemId": "item_gas_xiranite",
+            "perMinute": 30
+          }
+        ],
+        "outputs": [
+          {
+            "itemId": "item_gas_copper_enr2",
+            "perMinute": 30
+          }
+        ],
+        "runningInputs": []
+      }
+    ],
+    "supplyPolicies": [
+      {
+        "itemId": "item_gas_acid",
+        "source": "production",
+        "recipeId": "liquid_transmuter_1_gas_gas_acid_1"
+      },
+      {
+        "itemId": "item_liquid_acid",
+        "source": "external"
+      },
+      {
+        "itemId": "item_liquid_xiranite",
+        "source": "production",
+        "recipeId": "liquid_transmuter_1_liquid_liquid_xiranite_1"
+      }
+    ]
+  },
+  "options": {
+    "solidSupply": "warehouse",
+    "fluidSupply": "conduit",
+    "warehouseBus": "straight",
+    "solidOutput": "stash",
+    "byproducts": "destroy",
+    "plantStartup": "preload",
+    "evaluationsPerRound": 10000,
+    "concurrency": 1
+  }
+}

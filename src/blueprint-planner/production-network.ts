@@ -138,9 +138,14 @@ export function validatePlannerRequest(registry: RegistryContract, request: Blue
     }
   }
   if (plan.infiniteItemIds.some((itemId) => registry.queries.findItemDefinition(itemId) === null)) throw new Error("外部供给包含未知物料。");
-  const view = new PlannerSupplyRules(registry, plan).view();
+  if (options.converterStartup !== undefined && !["manual", "tank", "reject"].includes(options.converterStartup)) throw new Error("未知转化设备启动方式。");
+  const view = new PlannerSupplyRules(registry, plan, options.converterStartup).view();
   if (view.issues.length) {
     const issue = view.issues[0]!;
+    if (issue.kind === "startup") {
+      const item = registry.queries.findItemDefinition(issue.itemIds[0]!)!;
+      throw new Error(`${lookupText("zh-CN", item.nameKey) ?? item.id} 自循环 需要外部启动器启动，请调整启动设置。`);
+    }
     throw new Error(`${issue.kind === "cycle" ? "供料路线存在循环" : "缺少可用供料路线"}：${issue.itemIds.map(id => {
       const item = registry.queries.findItemDefinition(id);
       return item ? lookupText("zh-CN", item.nameKey) ?? id : id;
@@ -153,7 +158,7 @@ export function validatePlannerRequest(registry: RegistryContract, request: Blue
 export function supplyAuxiliaryDemand(
   registry: RegistryContract, network: PlannerNetwork, itemId: string, perMinute: number,
 ): PlannerNode[] {
-  const rules = new PlannerSupplyRules(registry, network.request.plan);
+  const rules = new PlannerSupplyRules(registry, network.request.plan, network.request.options.converterStartup);
   const changed = new Set<PlannerNode>();
   const balance = (item: string) => network.nodes.reduce((sum, node) => sum
     + node.outputs.filter(flow => flow.itemId === item).reduce((total, flow) => total + flow.perMinute, 0)
@@ -168,6 +173,10 @@ export function supplyAuxiliaryDemand(
     const recipe = registry.queries.findRecipeDefinition(policy.recipeId)!;
     const output = recipe.outputs.find(flow => flow.itemId === item)!;
     const maximumCycles = 60 / recipe.durationSeconds;
+    const self = rules.selfConsumption(recipe);
+    if (self && (self.netCapacityPerMinute <= EPSILON || (network.request.options.converterStartup ?? "reject") === "reject")) {
+      throw new PlannerCandidateError(`辅助生产自循环无法启动：${item}`);
+    }
     let remaining = rate / output.amount;
     const inputIncrease = new Map<string, number>();
     const grow = (node: PlannerNode | undefined, cycles: number) => {
@@ -192,10 +201,12 @@ export function supplyAuxiliaryDemand(
       if (remaining <= EPSILON) break;
     }
     while (remaining > EPSILON) {
-      const cycles = Math.min(remaining, maximumCycles);
+      const cycles = Math.min(remaining + (self?.perMinute ?? 0) / output.amount, maximumCycles);
+      if (self) remaining += self.perMinute / output.amount;
       grow(undefined, cycles); remaining -= cycles;
     }
     for (const [input, increase] of inputIncrease) {
+      if (input === self?.itemId) continue;
       // 先消耗全网已有余量；不能借补料顺带掩盖主方案原本的缺口。
       const deficit = Math.min(increase, Math.max(0, -balance(input)));
       add(input, deficit, [...path, item]);
