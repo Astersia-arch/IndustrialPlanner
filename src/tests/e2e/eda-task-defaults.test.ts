@@ -34,7 +34,21 @@ for (const profile of SCREEN_PROFILES) {
         controller.selectTask(id, planner.queries.getLastRequest(id));
       });
       const retained = {attempts:await attempts.inputValue(),parallel:await dialog.getByRole('checkbox',{name:'CPU+GPU 并行计算'}).isChecked()};
-      await dialog.getByRole('button',{name:'重新规划',exact:true}).click();
+      const original = await page.evaluate(() => {
+        const h = window.__industrialPlannerAppHost;
+        return h.workspace.blueprintPlanner.queries.exportTask(h.blueprintPlannerDialog.viewTaskId);
+      });
+      const footerLayout = await dialog.locator('footer').getByRole('button',{name:'下载任务',exact:true}).evaluate(element => {
+        const footer = element.closest('footer'), button = element.getBoundingClientRect(), bounds = footer.getBoundingClientRect();
+        return {leftAligned:Math.abs(button.left-bounds.left-parseFloat(getComputedStyle(footer).paddingLeft)) < 2,
+          visible:bounds.bottom <= innerHeight + 2 && footer.scrollWidth <= footer.clientWidth + 2};
+      });
+      await dialog.getByRole('button',{name:'复制任务',exact:true}).click();
+      const copyPreservedHistory = await page.evaluate(file => {
+        const h = window.__industrialPlannerAppHost, p = h.workspace.blueprintPlanner;
+        return h.blueprintPlannerDialog.viewTaskId === null && p.queries.listTasks().length === 1
+          && JSON.stringify(p.queries.exportTask(file.taskId)) === JSON.stringify(file);
+      },original);
       const reset = await page.evaluate(() => JSON.parse(JSON.stringify(window.__industrialPlannerAppHost.blueprintPlannerDialog.options)));
       const resetInput = await attempts.inputValue();
       const canvas = dialog.locator('[class*="production-flow-canvas"]');
@@ -69,11 +83,12 @@ for (const profile of SCREEN_PROFILES) {
       await canvas.getByRole('button',{name:'+',exact:true}).click();
       const zoomChanged = await surface.getAttribute('style') !== before;
       await canvas.getByRole('button',{name:'重置布局',exact:true}).click();
-      return {initial,defaults,retained,reset,resetInput,bounds,scrollTop,graphUnchanged,zoomChanged,
+      return {initial,defaults,retained,reset,resetInput,bounds,scrollTop,graphUnchanged,zoomChanged,copyPreservedHistory,footerLayout,
         resetView:await surface.getAttribute('style')===before};
     }`) as { initial: string; defaults: unknown; retained: { attempts: string; parallel: boolean }; reset: unknown;
       resetInput: string; bounds: { height: number; parentHeight: number; touchAction: string }; scrollTop: number;
-      graphUnchanged: boolean; zoomChanged: boolean; resetView: boolean };
+      graphUnchanged: boolean; zoomChanged: boolean; resetView: boolean; copyPreservedHistory: boolean;
+      footerLayout: { leftAligned: boolean; visible: boolean } };
     expect(result.initial).toBe("500");
     expect(result.retained).toEqual({ attempts: "7", parallel: false });
     expect(result.reset).toEqual(result.defaults);
@@ -84,5 +99,28 @@ for (const profile of SCREEN_PROFILES) {
     expect(result.graphUnchanged).toBe(true);
     expect(result.zoomChanged).toBe(true);
     expect(result.resetView).toBe(true);
+    expect(result.copyPreservedHistory).toBe(true);
+    expect(result.footerLayout).toEqual({ leftAligned: true, visible: true });
+    const prompt = await cli.runCode(`async page => {
+      const id = await page.evaluate(() => {
+        const h=window.__industrialPlannerAppHost, p=h.workspace.blueprintPlanner, id=p.queries.listTasks()[0].taskId;
+        h.blueprintPlannerDialog.selectTask(id,p.queries.getLastRequest(id));
+        return id;
+      });
+      page.__cancelledDeleteTaskId=id;
+      await page.getByRole('dialog').filter({has:page.locator('#blueprint-planner-title')})
+        .locator('footer').getByRole('button',{name:'删除任务',exact:true}).click();
+    }`, "delete-prompt.log");
+    expect(prompt).toContain("删除后不可恢复");
+    await cli.invoke(["dialog-dismiss"], "delete-cancel.log");
+    const cancelled = await cli.runJson(`async page => {
+      const state = await page.evaluate(() => {
+        const h=window.__industrialPlannerAppHost;
+        return {count:h.workspace.blueprintPlanner.queries.listTasks().length,selected:h.blueprintPlannerDialog.viewTaskId};
+      });
+      return {count:state.count,selectedUnchanged:state.selected===page.__cancelledDeleteTaskId,
+        deleteEnabled:await page.getByRole('button',{name:'删除任务',exact:true}).isEnabled()};
+    }`, "delete-cancelled-state.log");
+    expect(cancelled).toEqual({ count: 1, selectedUnchanged: true, deleteEnabled: true });
   });
 }
