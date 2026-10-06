@@ -14,6 +14,7 @@ interface ProductionFlowGraphProps {
   readonly index?: ProductionPlanningIndex;
   readonly input?: ProductionFlowGraphInput;
   readonly fitToView?: boolean;
+  readonly interactionMode?: "edit" | "browse";
   readonly onViewportChange?: (viewport: ViewportState) => void;
   readonly t: (key: string) => string;
 }
@@ -71,6 +72,7 @@ export function ProductionFlowGraph({
   index,
   input,
   fitToView = false,
+  interactionMode = "edit",
   onViewportChange,
   t,
 }: ProductionFlowGraphProps) {
@@ -101,35 +103,38 @@ export function ProductionFlowGraph({
     });
   }, [onViewportChange]);
 
+  const fit = useCallback(() => {
+    const element = canvasRef.current;
+    if (!fitToView || element === null) return;
+    if (initialLayout.nodes.length === 0) return;
+    // AI-REMOVED 2026-09-30:
+    // Reason: 虚拟 Sankey 高度包含空白，不适合作为任务摘要的缩放边界。
+    // Trigger: 手机流程图文字过小。Evidence: 三屏截图。
+    // Replacement: 下方按实际卡片与回流线计算边界。Risk: Low。Human Review: Required
+    // Original code:
+    // const bounds = getGraphBounds(initialLayout);
+    // const width = bounds.width + 44, height = bounds.height + 44;
+    // const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, element.clientHeight / height)));
+    // setViewport({ x: Math.max(0, (element.clientWidth - width * scale) / 2),
+    //   y: Math.max(0, (element.clientHeight - height * scale) / 2), scale });
+    const left = Math.min(...initialLayout.nodes.map(node => node.x0)) - 48;
+    const top = Math.min(...initialLayout.nodes.map(getNodeCardTop)) + 10;
+    const width = Math.max(...initialLayout.nodes.map(node => node.x1)) + 92 - left;
+    const height = Math.max(...initialLayout.nodes.map(node => getNodeCardTop(node) + NODE_CARD_HEIGHT)) + 122 - top;
+    const availableHeight = Math.max(1, element.clientHeight - 44);
+    const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, availableHeight / height)));
+    setViewport({ x: (element.clientWidth - width * scale) / 2 - left * scale,
+      y: 44 + (availableHeight - height * scale) / 2 - top * scale, scale });
+  }, [fitToView, initialLayout, setViewport]);
+
   useEffect(() => {
     const element = canvasRef.current;
     if (!fitToView || element === null) return;
-    const fit = () => {
-      if (initialLayout.nodes.length === 0) return;
-      // AI-REMOVED 2026-09-30:
-      // Reason: 虚拟 Sankey 高度包含空白，不适合作为任务摘要的缩放边界。
-      // Trigger: 手机流程图文字过小。Evidence: 三屏截图。
-      // Replacement: 下方按实际卡片与回流线计算边界。Risk: Low。Human Review: Required
-      // Original code:
-      // const bounds = getGraphBounds(initialLayout);
-      // const width = bounds.width + 44, height = bounds.height + 44;
-      // const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, element.clientHeight / height)));
-      // setViewport({ x: Math.max(0, (element.clientWidth - width * scale) / 2),
-      //   y: Math.max(0, (element.clientHeight - height * scale) / 2), scale });
-      const left = Math.min(...initialLayout.nodes.map(node => node.x0)) - 48;
-      const top = Math.min(...initialLayout.nodes.map(getNodeCardTop)) + 10;
-      const width = Math.max(...initialLayout.nodes.map(node => node.x1)) + 92 - left;
-      const height = Math.max(...initialLayout.nodes.map(node => getNodeCardTop(node) + NODE_CARD_HEIGHT)) + 122 - top;
-      const availableHeight = Math.max(1, element.clientHeight - 44);
-      const scale = Math.min(1, Math.max(MIN_SCALE, Math.min(element.clientWidth / width, availableHeight / height)));
-      setViewport({ x: (element.clientWidth - width * scale) / 2 - left * scale,
-        y: 44 + (availableHeight - height * scale) / 2 - top * scale, scale });
-    };
     const observer = new ResizeObserver(fit);
     observer.observe(element);
     fit();
     return () => observer.disconnect();
-  }, [fitToView, initialLayout, setViewport]);
+  }, [fit, fitToView]);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -151,7 +156,9 @@ export function ProductionFlowGraph({
 
   const resetNodeLayout = useCallback(() => {
     setGraph(cloneSankeyGraph(initialLayout));
-  }, [initialLayout]);
+    // 内嵌浏览图不能拖动；重置同时恢复完整图的视野。独立编辑图仍保持原视野。
+    fit();
+  }, [fit, initialLayout]);
 
   // --- wheel zoom (centered on cursor) ---
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
@@ -368,12 +375,12 @@ export function ProductionFlowGraph({
   return (
     <div
       ref={canvasRef}
-      className={styles["production-flow-canvas"]}
-      onWheel={handleWheel}
-      onPointerDown={handleCanvasPointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      className={`${styles["production-flow-canvas"]} ${fitToView ? styles["production-flow-fit"] : ""} ${interactionMode === "browse" ? styles["production-flow-browse"] : ""}`}
+      onWheel={interactionMode === "edit" ? handleWheel : undefined}
+      onPointerDown={interactionMode === "edit" ? handleCanvasPointerDown : undefined}
+      onPointerMove={interactionMode === "edit" ? handlePointerMove : undefined}
+      onPointerUp={interactionMode === "edit" ? handlePointerUp : undefined}
+      onPointerCancel={interactionMode === "edit" ? handlePointerUp : undefined}
     >
       <div className={styles["production-flow-toolbar"]}>
         <button type="button" onClick={() => setViewport({ x: 22, y: 22, scale: 1 })}>1:1</button>
@@ -407,7 +414,7 @@ export function ProductionFlowGraph({
               key={node.id}
               node={node}
               displayMode={displayMode}
-              onPointerDown={handleNodePointerDown}
+              onPointerDown={interactionMode === "edit" ? handleNodePointerDown : undefined}
             />
           ))}
         </div>
@@ -423,7 +430,7 @@ function FlowNode({
 }: {
   readonly node: SankeyNode<ProductionFlowNode>;
   readonly displayMode: ProductionPlanningDisplayMode;
-  readonly onPointerDown: (event: React.PointerEvent<HTMLDivElement>, node: SankeyNode<ProductionFlowNode>) => void;
+  readonly onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: SankeyNode<ProductionFlowNode>) => void;
 }) {
   const className = [
     styles["production-flow-node"],
@@ -444,7 +451,7 @@ function FlowNode({
         width: node.x1 - node.x0,
         height: NODE_CARD_HEIGHT,
       }}
-      onPointerDown={(event) => onPointerDown(event, node)}
+      onPointerDown={(event) => onPointerDown?.(event, node)}
     >
       <CompositeItemIcon iconSrcs={node.source.iconSrcs} size={32} />
       <div>

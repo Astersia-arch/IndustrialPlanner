@@ -1,6 +1,19 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate, shouldWarnPlannerConcurrency } from "@/app/shell/blueprint-planner-statistics";
+import { formatPlannerElapsed, plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate, shouldWarnPlannerConcurrency } from "@/app/shell/blueprint-planner-statistics";
+
+describe("EDA 已用时间", () => {
+  it.each([
+    [0, "0分0秒"], [59_999, "0分59秒"], [60_000, "1分0秒"], [1_115_000, "18分35秒"],
+    [3_599_999, "59分59秒"], [3_600_000, "1小时0分0秒"], [86_399_999, "23小时59分59秒"],
+    [86_400_000, "1天0小时0分0秒"], [183_845_000, "2天3小时4分5秒"],
+  ])("%i 毫秒按单位显示为 %s", (milliseconds, expected) => {
+    expect(formatPlannerElapsed(milliseconds, ["天", "小时", "分", "秒"])).toBe(expected);
+  });
+  it("时间单位由界面语言提供", () => {
+    expect(formatPlannerElapsed(3_661_000, ["d", "h", "m", "s"])).toBe("1h1m1s");
+  });
+});
 
 describe("EDA 提案速度", () => {
   const initial = { taskId: "first", status: "running" as const, evaluatedProposals: 100,

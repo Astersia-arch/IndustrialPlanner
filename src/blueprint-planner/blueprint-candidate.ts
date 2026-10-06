@@ -12,6 +12,8 @@ import { PlannerRouter } from "./router";
 import type { PlannerRoutingBackend } from "./routing-backend";
 import { blueprintRecognitionScene } from "./blueprint-scene";
 import { measurePlannerQuality, boundedPlannerScore } from "./quality";
+import { assertPlannerOutline } from "./search-outline";
+import { assertPlannerCandidateBounds } from "./verification";
 import { collectPoweredEntityIds } from "@/shared/geometry/power-range";
 
 /** 按原图个体选择删减，不按设备类型预排序；小集合完整轮换，大集合先覆盖所有单减。 */
@@ -97,6 +99,7 @@ export async function createBlueprintCandidate(registry: RegistryContract, reque
   const source = reduction ? original : options.seed ?? original;
   const { network, wires: originalWires } = restorePlannerSeed(registry, request, source);
   const outline = options.targetOutline ?? { width: source.width, height: source.height };
+  assertPlannerOutline(outline);
   const statistics: PlannerSearchStatistics = { strategy: "compact", seed: variant, evaluationLimit: options.maxEvaluations ?? 5000,
     outline, evaluations: 0, acceptedMoves: 0, routingAttempts: 0, initialWireLength: 0, finalWireLength: 0 };
   try {
@@ -148,13 +151,15 @@ export async function createBlueprintCandidate(registry: RegistryContract, reque
         // 输出方式中立：原有“同面积优先少箱”只属于产线生成，不影响蓝图优化。
         statistics.quality = { ...quality, outputStashCount: 0 };
         const area = outline.width * outline.height;
-        return { execution, connections: [], search: statistics,
+        const candidate: PlannerCandidate = { execution, connections: [], search: statistics,
           seed: capturePlannerSeed(request, network, wires, router.routes, outline.width, outline.height),
           supplyAudit: { operatingLimits: [], splitterCount: 0, bufferedAdmissions: 0 },
           metrics: { width: outline.width, height: outline.height, area, entityCount: entities.length,
             productionDeviceCount: network.nodes.filter(node => node.purpose === "production").length,
             gasDiffuserCount: network.nodes.filter(node => node.purpose === "environment").length, additionalGasDiffuserCount: 0,
             score: boundedPlannerScore(area, quality.secondary) } };
+        assertPlannerCandidateBounds(registry, candidate);
+        return candidate;
       } catch (error) {
         if (!(error instanceof PlannerCandidateError)) throw error;
         for (const wire of wires) search.penalize(wire.source.entityId, wire.target.entityId);

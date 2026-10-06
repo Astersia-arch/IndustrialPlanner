@@ -40,6 +40,8 @@ import {
   readSimplifiedDeviceIconPreference,
   resolveDeviceBodyPresentation,
   resolveDeviceLabelIconTextureKey,
+  isDeviceLogisticsEndpoint,
+  shouldForceBlueprintDeviceTexture,
   // AI-REMOVED 2026-09-05: REQ-025 本体和 mask 统一由 resolveDeviceBodyPresentation 选择。
   // Evidence: syncDeviceTextures 同时决定静态纹理和动画资格。Replacement: resolveDeviceBodyPresentation。
   // Risk: Low; Human Review: Required. Original code:
@@ -713,7 +715,10 @@ export class GenericDeviceSprite extends BaseRenderSprite {
     // AI-CORRECTION 2026-08-26: 上述“白色预览特效”仅指扫描线；preview 边框现使用 selection 橙色。
     // 原始逻辑（2026-05-24 版）根据 invalidPlacement 切换白/红色，已被当前装饰层替代。
     const borderColor = this.resolveSelectionCollectionOverlayColor(context);
-    const useBlueprintStyle = readSimplifiedDeviceIconPreference(context.workspace.app);
+    const useBlueprintStyle = resolveDeviceBodyPresentation(this.definition, context.workspace.app, {
+      forceBlueprint: this.shouldForceBlueprintPreviewTexture(context),
+      allowAnimation: false,
+    }).blueprint;
     const scanlineTint = useBlueprintStyle
       ? BLUEPRINT_SCANLINE_TINT
       : DEFAULT_SCANLINE_TINT;
@@ -823,7 +828,10 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       this.loadScanlineTexture();
     }
 
-    const useBlueprintStyle = readSimplifiedDeviceIconPreference(context.workspace.app);
+    const useBlueprintStyle = resolveDeviceBodyPresentation(this.definition, context.workspace.app, {
+      forceBlueprint: this.shouldForceBlueprintPreviewTexture(context),
+      allowAnimation: false,
+    }).blueprint;
     const tilePixelSize = this.scanlineTexture?.width ?? 64;
 
     this.selectionTiling.visible = true;
@@ -2133,6 +2141,7 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       definition: this.definition,
       layout,
       app: context.workspace.app,
+      forceBlueprint: this.shouldForceBlueprintPreviewTexture(context),
     });
 
     // 可用端口（方向 + kind 均匹配）→ 箭头
@@ -2347,31 +2356,52 @@ export class GenericDeviceSprite extends BaseRenderSprite {
   }
 
   private shouldDrawLogisticsEndpointOverlay(context: RenderSpriteSyncContext): boolean {
-    const draft = context.workspace.editor?.queries?.resolveLogisticsDraftState?.();
-    const sourceEntityId = draft?.source?.type === "device-port"
-      ? draft.source.entityId
-      : null;
-    const targetEntityId = draft?.target?.type === "device-port"
-      ? draft.target.entityId
-      : null;
-
-    return this.entityId === sourceEntityId || this.entityId === targetEntityId;
+    // AI-REMOVED 2026-10-06:
+    // Reason: 端点判断收敛到布局与纹理共用的显示策略，避免两处规则分叉。
+    // Trigger: 管道准入口蓝图预览被俯视画布拉成 1×3。
+    // Evidence: 原布局只检查全局设置，纹理还检查 preview 与物流端点。
+    // Replacement: device-texture-key.ts 的 isDeviceLogisticsEndpoint。
+    // Risk: Low；保留 source/target 的 device-port 语义。
+    // Human Review: Required
+    // Original code:
+    // const draft = context.workspace.editor?.queries?.resolveLogisticsDraftState?.();
+    // const sourceEntityId = draft?.source?.type === "device-port"
+    //   ? draft.source.entityId
+    //   : null;
+    // const targetEntityId = draft?.target?.type === "device-port"
+    //   ? draft.target.entityId
+    //   : null;
+    // return this.entityId === sourceEntityId || this.entityId === targetEntityId;
+    return isDeviceLogisticsEndpoint(this.entityId, context.workspace);
   }
 
   private shouldForceBlueprintPreviewTexture(context: RenderSpriteSyncContext): boolean {
-    const queries = this.renderHost.workspace.registry.queries
     // 这里只强制处理 8 个物流设备；传送带物流设备不包括传送带节，
     // 管道物流设备不包括管道节。
-    if (
-      !queries.isBeltLogistics(this.definition.id)
-      && !queries.isPipeLogistics(this.definition.id)
-    ) {
-      return false
-    }
-
-    const collections = context.workspace.editor?.state.collections
-    const isPreview = collections?.[EntityCollectionType.preview]?.contains(this.entityId) ?? false
-    return isPreview || this.shouldDrawLogisticsEndpointOverlay(context)
+    // AI-REMOVED 2026-10-06:
+    // Reason: 私有强制蓝图判断无法供场景布局复用，迁至共享的 Renderer 显示策略。
+    // Trigger: 管道准入口预览使用蓝图纹理却保留 1×3 俯视布局。
+    // Evidence: scene 与 sprite 分别按全局设置和交互状态选择素材范围。
+    // Replacement: device-texture-key.ts 的 shouldForceBlueprintDeviceTexture。
+    // Risk: Low；仍通过 RegistryQuery 限定八种物流设备。
+    // Human Review: Required
+    // Original code:
+    // const queries = this.renderHost.workspace.registry.queries
+    // if (
+    //   !queries.isBeltLogistics(this.definition.id)
+    //   && !queries.isPipeLogistics(this.definition.id)
+    // ) {
+    //   return false
+    // }
+    // const collections = context.workspace.editor?.state.collections
+    // const isPreview = collections?.[EntityCollectionType.preview]?.contains(this.entityId) ?? false
+    // return isPreview || this.shouldDrawLogisticsEndpointOverlay(context)
+    return shouldForceBlueprintDeviceTexture(
+      this.entityId,
+      this.definition.id,
+      this.renderHost.workspace.registry.queries,
+      context.workspace,
+    )
   }
 
   private getPortChevronSprite(index: number): Sprite {
@@ -2851,10 +2881,12 @@ function resolvePortOverlayLayout(options: {
   definition: EntityDefinition;
   layout: RenderSpriteLayout;
   app: RenderSpriteSyncContext["workspace"]["app"];
+  forceBlueprint: boolean;
 }): RenderSpriteLayout {
   const spriteOffset = resolveEffectiveSpriteOffsetForPortOverlay(
     options.definition,
     options.app,
+    options.forceBlueprint,
   );
 
   if (spriteOffset === undefined) {
@@ -2892,14 +2924,26 @@ function resolvePortOverlayLayout(options: {
 function resolveEffectiveSpriteOffsetForPortOverlay(
   definition: EntityDefinition,
   app: RenderSpriteSyncContext["workspace"]["app"],
+  forceBlueprint: boolean,
 ): { x: number; y: number; width: number; height: number } | undefined {
-  if (definition.spriteOffset === undefined) {
-    return undefined;
-  }
-
-  return readSimplifiedDeviceIconPreference(app)
-    ? definition.spriteOffset.blueprint
-    : definition.spriteOffset.topView;
+  // AI-REMOVED 2026-10-06:
+  // Reason: 端口覆盖层必须按实际素材范围反算 footprint，不能独立只读全局偏好。
+  // Trigger: 修复管道准入口强制蓝图预览的 1×3 拉伸。
+  // Evidence: 预览布局改为一格后，继续减去 topView 偏移会导致端口错位。
+  // Replacement: 下方 resolveDeviceBodyPresentation.spriteOffset。
+  // Risk: Low；保留显式 blueprint 偏移支持。
+  // Human Review: Required
+  // Original code:
+  // if (definition.spriteOffset === undefined) {
+  //   return undefined;
+  // }
+  // return readSimplifiedDeviceIconPreference(app)
+  //   ? definition.spriteOffset.blueprint
+  //   : definition.spriteOffset.topView;
+  return resolveDeviceBodyPresentation(definition, app, {
+    forceBlueprint,
+    allowAnimation: false,
+  }).spriteOffset;
 }
 
 function resolvePortChevronMaterial(

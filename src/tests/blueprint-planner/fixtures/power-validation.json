@@ -1,0 +1,130 @@
+{
+  "request": {
+    "plan": {
+      "name": "植物回流",
+      "sourceBaseId": "wuling_protocol_core",
+      "targets": [
+        {
+          "itemId": "item_plant_moss_3",
+          "perMinute": 30
+        }
+      ],
+      "recipes": [
+        {
+          "recipeId": "r_seedcol_moss_seed_from_moss_basic",
+          "cyclesPerMinute": 30,
+          "deviceCount": 1,
+          "inputs": [
+            {
+              "itemId": "item_plant_moss_3",
+              "perMinute": 30
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_plant_moss_seed_3",
+              "perMinute": 60
+            }
+          ],
+          "runningInputs": []
+        },
+        {
+          "recipeId": "r_planter_moss_from_moss_seed_basic",
+          "cyclesPerMinute": 60,
+          "deviceCount": 2,
+          "inputs": [
+            {
+              "itemId": "item_plant_moss_seed_3",
+              "perMinute": 60
+            }
+          ],
+          "outputs": [
+            {
+              "itemId": "item_plant_moss_3",
+              "perMinute": 60
+            }
+          ],
+          "runningInputs": []
+        }
+      ],
+      "externalSupplies": [],
+      "infiniteItemIds": [],
+      "byproductItemIds": [],
+      "containsModules": false,
+      "unresolvedPerMinute": 0,
+      "activeActivityIds": []
+    },
+    "options": {
+      "solidSupply": "warehouse",
+      "fluidSupply": "conduit",
+      "warehouseBus": "straight",
+      "solidOutput": "stash",
+      "byproducts": "output",
+      "plantStartup": "preload",
+      "budgetMs": 60000,
+      "evaluationsPerRound": 5000000,
+      "concurrency": "auto"
+    }
+  },
+  "execution": {
+    "scene": {
+      "externalEntities": [
+        {
+          "id": "eda-validation-drain-0",
+          "definitionId": "belt_straight_1x1",
+          "rotation": 270,
+          "position": {
+            "x": 1,
+            "y": 7
+          },
+          "config": {},
+          "tags": []
+        },
+        {
+          "id": "eda-validation-sink-0",
+          "definitionId": "cheat_infinite_solid",
+          "position": {
+            "x": 1,
+            "y": 6
+          },
+          "rotation": 0,
+          "config": {},
+          "tags": []
+        }
+      ],
+      "externalSlotLinks": [],
+      "initialSlots": [],
+      "scheduledSlots": [],
+      "powerMode": "infinite"
+    },
+    "probes": [
+      {
+        "id": "item_plant_moss_3",
+        "itemId": "item_plant_moss_3",
+        "direction": "input",
+        "entityIds": [
+          "eda-output-3"
+        ]
+      }
+    ],
+    "warmupSeconds": 180,
+    "observationSeconds": 120,
+    "inventorySampleCount": 9,
+    "maxWallTimeMs": 30000,
+    "activeActivityIds": [],
+    "engine": {
+      "kind": "dense-v2",
+      "ticksPerSecond": 2
+    }
+  },
+  "metrics": {
+    "width": 10,
+    "height": 12,
+    "area": 120,
+    "entityCount": 12,
+    "productionDeviceCount": 3,
+    "gasDiffuserCount": 0,
+    "additionalGasDiffuserCount": 0,
+    "score": 120.49694431896086
+  }
+}

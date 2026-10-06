@@ -8,7 +8,7 @@ import { ProductionFlowGraph, type ProductionFlowGraphInput } from "./flow";
 export function PlannerTaskFlow({ plan, registry, t }: { plan: BlueprintPlannerProductionPlan;
   registry: RegistryContract; t: (key: string) => string }) {
   const input = useMemo(() => buildPlannerTaskFlow(plan, registry, t), [plan, registry, t]);
-  return <ProductionFlowGraph input={input} displayMode="device" fitToView t={t} />;
+  return <ProductionFlowGraph input={input} displayMode="device" fitToView interactionMode="browse" t={t} />;
 }
 
 export function buildPlannerTaskFlow(plan: BlueprintPlannerProductionPlan, registry: RegistryContract,

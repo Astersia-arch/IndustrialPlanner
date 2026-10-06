@@ -12,6 +12,10 @@ import { createBlueprintPlannerHost } from "@/blueprint-planner/blueprint-planne
 import { PlannerBatchSession } from "@/scripts/eda/planner-runner";
 import yazhen from "./fixtures/yazhen-syringe.json";
 import environment from "./fixtures/environment-supply.json";
+import powerFixture from "./fixtures/power-validation.json";
+import type { PlannerCandidate } from "@/blueprint-planner/candidate";
+import type { SimulationBlueprintRunRequest } from "@/domain/simulation";
+import { loadBlueprintFromFile } from "../simulation/blueprint-test-helpers";
 
 function taskFile(): BlueprintPlannerTaskFile {
   return { formatVersion: 1, algorithmVersion: PLANNER_ALGORITHM_VERSION, taskId: "test-task",
@@ -19,6 +23,27 @@ function taskFile(): BlueprintPlannerTaskFile {
     progress: { taskId: "test-task", status: "waiting", phase: "preparing", startedAt: 1,
       elapsedMs: 0, estimatedProgress: null, evaluatedProposals: 0, roundEvaluatedProposals: 0, candidateCount: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } };
 }
+
+it("恢复检查点拒绝超限宽高，并保持原始任务数据不变", () => {
+  const registry = createRegistryContract();
+  const candidate: PlannerCandidate = {
+    execution: { ...powerFixture.execution,
+      blueprint: loadBlueprintFromFile("src/tests/fixtures/blueprints/blueprint-planner/power-validation/covered.schema6.json") } as SimulationBlueprintRunRequest,
+    metrics: powerFixture.metrics, connections: [], supplyAudit: { operatingLimits: [], splitterCount: 0, bufferedAdmissions: 0 },
+    search: { seed: 0, evaluationLimit: 10000, evaluations: 0, acceptedMoves: 0, routingAttempts: 0,
+      initialWireLength: 0, finalWireLength: 0, outline: powerFixture.metrics },
+  };
+  const file = { ...taskFile(), request: powerFixture.request as BlueprintPlannerRequest,
+    checkpoint: { ...emptyPlannerCheckpoint(), pendingCandidate: candidate } };
+  expect(parsePlannerTaskFile(structuredClone(file), registry).checkpoint.pendingCandidate?.metrics).toEqual(candidate.metrics);
+  for (const metrics of [{ ...candidate.metrics, width: 71, height: 60, area: 4260 },
+    { ...candidate.metrics, width: 60, height: 71, area: 4260 }]) {
+    const invalid = { ...file, checkpoint: { ...file.checkpoint, pendingCandidate: { ...candidate, metrics } } };
+    const original = JSON.stringify(invalid);
+    expect(() => parsePlannerTaskFile(invalid, registry)).toThrow("70");
+    expect(JSON.stringify(invalid)).toBe(original);
+  }
+});
 
 it("未启动草稿可导出并导入，保留当前配置且不需要仿真服务", async () => {
   const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),

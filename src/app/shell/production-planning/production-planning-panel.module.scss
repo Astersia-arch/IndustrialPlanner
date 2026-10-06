@@ -1616,3 +1616,9 @@ Original code:
     background: var(--surface-2);
   }
 }
+
+// EDA 等内嵌视图由父容器决定高度，不能继承独立编辑画布的 520px 下限。
+.production-flow-canvas.production-flow-fit { min-height: 0; }
+// 浏览模式将触控与滚轮交还外层滚动容器；工具栏按钮仍可缩放。
+.production-flow-browse { touch-action: pan-y; }
+.production-flow-browse .production-flow-node { cursor: default; }

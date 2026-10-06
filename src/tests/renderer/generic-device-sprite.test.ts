@@ -1259,7 +1259,10 @@ describe("GenericDeviceSprite", () => {
     expect(previewEffectRoot?.visible).toBe(true)
     expect(previewEffectRoot?.children).toHaveLength(4)
     expect(previewMask?.texture).toBe(blueprintMaskTexture)
-    expect(scanlineTiling?.mask).toBe(previewMask)
+    // AI-CORRECTION 2026-10-06: 强制蓝图预览与全局蓝图模式一致，扫描线直接覆盖一格布局。
+    expect(scanlineTiling?.mask).toBeNull()
+    expect(scanlineTiling?.width).toBe(createBeltLayout().width)
+    expect(scanlineTiling?.height).toBe(createBeltLayout().height)
 
     sprite.syncLayout(createBeltLayout(), createRenderContextStub({
       selectionIds: [],

@@ -171,8 +171,8 @@ for (const profile of profiles) {
       const screen = await page.evaluate(() => window.__industrialPlannerAppHost.state.screenProfile);
       assert(screen.deviceClass === ${JSON.stringify(profile.name)} && screen.hasTouch, 'Screen Profile 不匹配');
       const dialog = page.getByRole('dialog').filter({has:page.locator('#blueprint-planner-title')});
-      const proposals = dialog.getByRole('spinbutton',{name:'提案次数（万次）'});
-      assert(await proposals.inputValue() === '50', '默认必须为五十万次');
+      const proposals = dialog.getByRole('spinbutton',{name:'单轮最大尝试次数（万次）'});
+      assert(await proposals.inputValue() === '500', '默认必须为五百万次');
       // AI-REMOVED 2026-10-03:
       // Reason: 用户要求 CPU 并发自动调节，界面不再提供数字输入。
       // Trigger: 已授权的自动并发界面变更。
@@ -272,10 +272,10 @@ for (const profile of profiles) {
         && checkpoint.parallel.shards.reduce((total, shard) => total + shard.attempts, 0) === checkpoint.attempt,
       '固定虚拟分片必须记录实际搜索且总尝试数一致');
       assert(progress.areaHistory.length > 0, '已验证面积曲线必须记录下降点');
-      assert(await dialog.getByRole('img',{name:/提案次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
+      assert(await dialog.getByRole('img',{name:/尝试次数与已验证最优面积/}).isVisible(), '任务界面必须显示面积曲线');
       // 三种 Screen Profile 开发验证后补入正式回归：X 对数、Y 线性，面积范围不强制包含零。
       // AI-CORRECTION 2026-10-05: X 轴也从实际记录起步；末尾可见刻度保留完整数字，其余千级以上刻度使用 K/M。
-      const curve = dialog.getByRole('img',{name:/提案次数与已验证最优面积/});
+      const curve = dialog.getByRole('img',{name:/尝试次数与已验证最优面积/});
       const labels = await curve.locator('text').allTextContents();
       assert(labels.filter(label => label.includes('（对数坐标）')).length === 1, '只有 X 轴标注对数坐标');
       assert(labels.includes('已验证最优面积') && labels.includes('累计提案（对数坐标）'), '坐标轴标题缺失');

@@ -6,7 +6,23 @@ import { createDefaultDialogStateForKey } from "../state";
 import type { BlueprintDocument } from "@/domain/document/blueprint-document";
 
 const ENABLED_KEY = "industrial-planner.experimental.eda";
-const OPTIONS_KEY = "industrial-planner.eda.options";
+// AI-REMOVED 2026-10-06:
+// Reason: 新任务不再持久化或继承全局规划选项。
+// Trigger: 用户要求新任务恢复默认选项。
+// Evidence: 原控制器读取并继承上次保存值。
+// Replacement: createDefaultPlannerOptions
+// Risk: Low；旧任务仍通过 selectTask 恢复自己的参数。
+// Human Review: Required
+// Original code:
+// const OPTIONS_KEY = "industrial-planner.eda.options";
+
+function createDefaultPlannerOptions(): BlueprintPlannerOptions {
+  return {
+    solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
+    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", converterStartup: "reject", evaluationsPerRound: 5_000_000, concurrency: "auto",
+    itemPolicies: [],
+  };
+}
 
 export class BlueprintPlannerDialogController {
   readonly dialogState = createDefaultDialogStateForKey("blueprint-planner");
@@ -15,48 +31,53 @@ export class BlueprintPlannerDialogController {
   blueprintDraft: BlueprintDocument | null = null;
   blueprintRequest: BlueprintPlannerRequest | null = null;
   viewTaskId: string | null = null;
-  options: BlueprintPlannerOptions = {
-    solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
-    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", converterStartup: "reject", evaluationsPerRound: 500_000, concurrency: "auto",
-  };
+  options: BlueprintPlannerOptions = createDefaultPlannerOptions();
 
   constructor(private readonly getPlanner: () => BlueprintPlannerContract | null) {
-    const saved = readFromLocalStorage<Partial<BlueprintPlannerOptions>>(OPTIONS_KEY);
-    if (saved !== null) {
-      if (saved.converterStartup !== undefined && ["manual", "tank", "reject"].includes(saved.converterStartup)) {
-        this.options = { ...this.options, converterStartup: saved.converterStartup };
-      }
-      for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
-        const choices = {
-          solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "corner", "u-shaped"],
-          solidOutput: ["warehouse", "stash", "auto"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"],
-        };
-        const value = key === "warehouseBus" && (saved[key] as string) === "free" ? "corner" : saved[key];
-        if (value !== undefined && choices[key].includes(value)) this.options = { ...this.options, [key]: value };
-      }
-      // AI-REMOVED 2026-09-30:
-      // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
-      // Trigger: 用户批准本轮接口与交互调整。
-      // Evidence: 原实现使用时间截止或关闭任务面板。
-      // Replacement: src/app/shell/blueprint-planner-dialog-state.ts
-      // Risk: Low。Human Review: Required
-      // Original code:
-      //       if (typeof saved.budgetMs === "number" && Number.isFinite(saved.budgetMs) && saved.budgetMs > 0) this.options = { ...this.options, budgetMs: saved.budgetMs };
-
-      if (typeof saved.evaluationsPerRound === "number" && Number.isSafeInteger(saved.evaluationsPerRound)
-        && saved.evaluationsPerRound >= 10_000 && saved.evaluationsPerRound % 10_000 === 0) {
-        this.options = { ...this.options, evaluationsPerRound: saved.evaluationsPerRound };
-      }
-      // AI-REMOVED 2026-10-03:
-      // Reason: 浏览器并发统一自动调节，旧手填值不能限制恢复后的自动模式。
-      // Trigger: 用户授权取消手填并发。Evidence: 默认选项及继续规划改用 auto。
-      // Replacement: options.concurrency = "auto"。Risk: Low。Human Review: Required
-      // Original code:
-      // if (typeof saved.concurrency === "number" && Number.isSafeInteger(saved.concurrency)
-      //   && saved.concurrency >= 1 && saved.concurrency <= 32) this.options = { ...this.options, concurrency: saved.concurrency };
-      // AI-CORRECTION 2026-10-03：复选框关闭保存为 1；旧多 Worker 数字仍迁移为自动。
-      if (saved.concurrency === 1) this.options = { ...this.options, concurrency: 1 };
-    }
+// AI-REMOVED 2026-10-06:
+// Reason: 新任务必须使用统一默认值，取消全局选项恢复。
+// Trigger: 用户要求新任务恢复默认选项。
+// Evidence: 原控制器读取并继承上次保存值。
+// Replacement: createDefaultPlannerOptions
+// Risk: Low；旧任务仍通过 selectTask 恢复自己的参数。
+// Human Review: Required
+// Original code:
+//     const saved = readFromLocalStorage<Partial<BlueprintPlannerOptions>>(OPTIONS_KEY);
+//     if (saved !== null) {
+//       if (saved.converterStartup !== undefined && ["manual", "tank", "reject"].includes(saved.converterStartup)) {
+//         this.options = { ...this.options, converterStartup: saved.converterStartup };
+//       }
+//       for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
+//         const choices = {
+//           solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "corner", "u-shaped"],
+//           solidOutput: ["warehouse", "stash", "auto"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"],
+//         };
+//         const value = key === "warehouseBus" && (saved[key] as string) === "free" ? "corner" : saved[key];
+//         if (value !== undefined && choices[key].includes(value)) this.options = { ...this.options, [key]: value };
+//       }
+//       // AI-REMOVED 2026-09-30:
+//       // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
+//       // Trigger: 用户批准本轮接口与交互调整。
+//       // Evidence: 原实现使用时间截止或关闭任务面板。
+//       // Replacement: src/app/shell/blueprint-planner-dialog-state.ts
+//       // Risk: Low。Human Review: Required
+//       // Original code:
+//       //       if (typeof saved.budgetMs === "number" && Number.isFinite(saved.budgetMs) && saved.budgetMs > 0) this.options = { ...this.options, budgetMs: saved.budgetMs };
+//
+//       if (typeof saved.evaluationsPerRound === "number" && Number.isSafeInteger(saved.evaluationsPerRound)
+//         && saved.evaluationsPerRound >= 10_000 && saved.evaluationsPerRound % 10_000 === 0) {
+//         this.options = { ...this.options, evaluationsPerRound: saved.evaluationsPerRound };
+//       }
+//       // AI-REMOVED 2026-10-03:
+//       // Reason: 浏览器并发统一自动调节，旧手填值不能限制恢复后的自动模式。
+//       // Trigger: 用户授权取消手填并发。Evidence: 默认选项及继续规划改用 auto。
+//       // Replacement: options.concurrency = "auto"。Risk: Low。Human Review: Required
+//       // Original code:
+//       // if (typeof saved.concurrency === "number" && Number.isSafeInteger(saved.concurrency)
+//       //   && saved.concurrency >= 1 && saved.concurrency <= 32) this.options = { ...this.options, concurrency: saved.concurrency };
+//       // AI-CORRECTION 2026-10-03：复选框关闭保存为 1；旧多 Worker 数字仍迁移为自动。
+//       if (saved.concurrency === 1) this.options = { ...this.options, concurrency: 1 };
+//     }
     makeAutoObservable<BlueprintPlannerDialogController, "getPlanner">(this, {
       plan: observable.ref, blueprintDraft: observable.ref, blueprintRequest: observable.ref, getPlanner: false,
     }, { autoBind: true });
@@ -71,7 +92,7 @@ export class BlueprintPlannerDialogController {
     if (!enabled) this.close();
   }
 
-  open(plan?: BlueprintPlannerProductionPlan, options?: BlueprintPlannerOptions): void {
+  open(plan?: BlueprintPlannerProductionPlan): void {
     const activeTaskId = this.activeTaskId;
     if (activeTaskId !== null) {
       this.selectTask(activeTaskId, this.getPlanner()?.queries.getLastRequest(activeTaskId) ?? undefined);
@@ -80,14 +101,15 @@ export class BlueprintPlannerDialogController {
     }
     if (plan !== undefined) {
       this.blueprintDraft = null; this.blueprintRequest = null;
-      this.plan = structuredClone(plan); this.viewTaskId = null;
-      this.options = options ? { ...toJS(options), converterStartup: options.converterStartup ?? "reject" } : { ...this.options, itemPolicies: [] };
+      this.plan = { ...structuredClone(plan), supplyPolicies: [] }; this.viewTaskId = null;
+      this.options = createDefaultPlannerOptions();
     }
     this.dialogState.visible = true;
   }
 
   openBlueprint(blueprint: BlueprintDocument): void {
     if (this.taskLocked) { this.open(); return; }
+    this.options = createDefaultPlannerOptions();
     this.blueprintDraft = structuredClone(toJS(blueprint));
     this.blueprintRequest = null; this.plan = null; this.viewTaskId = null;
     this.dialogState.visible = true;
@@ -112,7 +134,15 @@ export class BlueprintPlannerDialogController {
   updateOptions(options: Partial<BlueprintPlannerOptions>): void {
     this.options = { ...this.options, ...options,
       concurrency: (options.concurrency ?? this.options.concurrency) === 1 ? 1 : "auto" };
-    runStorageEffect("planner-options", () => saveToLocalStorage(OPTIONS_KEY, toJS(this.options)));
+// AI-REMOVED 2026-10-06:
+// Reason: 选项归属当前任务，不再持久化为后续新任务的默认值。
+// Trigger: 用户要求新任务恢复默认选项。
+// Evidence: 原控制器读取并继承上次保存值。
+// Replacement: updateOptions 仅更新当前草稿；任务检查点保存已创建任务参数
+// Risk: Low；旧任务仍通过 selectTask 恢复自己的参数。
+// Human Review: Required
+// Original code:
+//     runStorageEffect("planner-options", () => saveToLocalStorage(OPTIONS_KEY, toJS(this.options)));
   }
 
   updateSupplyPolicy(policy: BlueprintPlannerSupplyPolicy): void {

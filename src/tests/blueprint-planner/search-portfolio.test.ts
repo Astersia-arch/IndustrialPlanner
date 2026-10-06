@@ -6,10 +6,37 @@ import { createRegistryContract } from "@/registry";
 import { createProductionNetwork } from "@/blueprint-planner/production-network";
 import { capturePlannerSeed } from "@/blueprint-planner/search-seed";
 import { PlannerSearchPortfolio } from "@/blueprint-planner/search-portfolio";
-import { breadthOutlineKey, breadthOutlines, continuationOutline, selectBreadthOutline } from "@/blueprint-planner/search-outline";
+import { assertPlannerOutline, initialPlannerOutline, breadthOutlineKey, breadthOutlines, continuationOutline, selectBreadthOutline } from "@/blueprint-planner/search-outline";
 import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
 import { PlannerCandidateError } from "@/blueprint-planner/model";
 import yazhen from "./fixtures/yazhen-syringe.json";
+
+it("初排以设备面积两倍为目标，整数取整及各次重启均不超过 70 格", () => {
+  expect(initialPlannerOutline(200, { width: 5, height: 5 }, 0)).toEqual({ width: 20, height: 20 });
+  for (const area of [9, 75, 200, 2500, 4900]) for (let variant = 0; variant < 18; variant++) {
+    const shape = initialPlannerOutline(area, { width: 1, height: 1 }, variant);
+    expect(() => assertPlannerOutline(shape)).not.toThrow();
+    expect(shape.width * shape.height).toBeGreaterThanOrEqual(area);
+    if (variant < 3) expect(shape.width * shape.height).toBeLessThanOrEqual(area * 2);
+  }
+  expect(() => initialPlannerOutline(4901, { width: 1, height: 1 }, 0)).toThrow("70×70");
+  expect(() => initialPlannerOutline(200, { width: 71, height: 1 }, 0)).toThrow("70×70");
+});
+
+it("广度、续搜和显式尺寸逐边遵守 70 格，不能仅检查 4900 格总面积", () => {
+  for (const shape of breadthOutlines(10000, { width: 1, height: 1 })) {
+    expect(shape.width).toBeLessThanOrEqual(70);
+    expect(shape.height).toBeLessThanOrEqual(70);
+  }
+  for (let step = 0; step < 12; step++) {
+    const shape = continuationOutline({ width: 100, height: 49 }, step, step);
+    expect(() => assertPlannerOutline(shape)).not.toThrow();
+  }
+  expect(() => assertPlannerOutline({ width: 70, height: 70 })).not.toThrow();
+  for (const shape of [{ width: 71, height: 60 }, { width: 60, height: 71 }, { width: 0, height: 70 }]) {
+    expect(() => assertPlannerOutline(shape)).toThrow("70");
+  }
+});
 
 it("停滞续搜可交换长宽空间，但总面积、固定设施和显式边界保持约束", () => {
   const seed = { width: 20, height: 20 };

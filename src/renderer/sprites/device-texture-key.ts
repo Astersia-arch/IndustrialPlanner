@@ -1,5 +1,7 @@
 import type { AppContract } from "@/domain/app/app-contract"
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition"
+import type { WorkspaceContract } from "@/domain/document/workspace-contract"
+import { EntityCollectionType } from "@/domain/editor/types/editor-types"
 
 const DEVICE_SPRITE_PREFIX = "device-sprite-"
 const DEVICE_MASK_PREFIX = "device-masks-"
@@ -30,6 +32,26 @@ const TOP_VIEW_AVATAR_PREFIX = "top-view-avatar-"
 
 export function readSimplifiedDeviceIconPreference(app: AppContract | null): boolean {
   return app?.state.settings.gameUseBlueprintStyleDeviceImages ?? false
+}
+
+export function isDeviceLogisticsEndpoint(entityId: string, workspace: Pick<WorkspaceContract, "editor">): boolean {
+  const draft = workspace.editor?.queries?.resolveLogisticsDraftState?.()
+  return (draft?.source?.type === "device-port" && draft.source.entityId === entityId)
+    || (draft?.target?.type === "device-port" && draft.target.entityId === entityId)
+}
+
+/** 物流设备的预览及连线端点统一使用蓝图素材，不包含传送带节和管道节。 */
+export function shouldForceBlueprintDeviceTexture(
+  entityId: string,
+  definitionId: string,
+  queries: WorkspaceContract["registry"]["queries"],
+  workspace: Pick<WorkspaceContract, "editor">,
+): boolean {
+  if (!queries.isBeltLogistics(definitionId) && !queries.isPipeLogistics(definitionId)) {
+    return false
+  }
+  return (workspace.editor?.state.collections[EntityCollectionType.preview]?.contains(entityId) ?? false)
+    || isDeviceLogisticsEndpoint(entityId, workspace)
 }
 
 export function resolveDeviceBodyTextureKey(
@@ -71,6 +93,7 @@ export function resolveDeviceLabelIconTextureKey(
 }
 
 /** 本体素材与动画资格由同一入口决定，蓝图图片始终优先。 */
+/** AI-CORRECTION 2026-10-06: 同时返回对应素材的绘图范围，避免强制蓝图预览套用俯视素材的扩展画布。 */
 export function resolveDeviceBodyPresentation(
   definition: EntityDefinition,
   app: AppContract | null,
@@ -78,6 +101,8 @@ export function resolveDeviceBodyPresentation(
 ) {
   const blueprint = options.forceBlueprint || readSimplifiedDeviceIconPreference(app)
   return {
+    blueprint,
+    spriteOffset: blueprint ? definition.spriteOffset?.blueprint : definition.spriteOffset?.topView,
     bodyTextureKey: blueprint
       ? `${BLUEPRINT_SPRITE_PREFIX}${definition.spriteId}`
       : `${DEVICE_SPRITE_PREFIX}${definition.spriteId}`,

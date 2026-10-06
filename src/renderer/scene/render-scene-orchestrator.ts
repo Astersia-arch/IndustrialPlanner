@@ -51,6 +51,7 @@ import {
 import { BeltSprite } from "../sprites/belt-sprite"
 import { GenericDeviceSprite } from "../sprites/generic-device-sprite"
 import { PipeSprite } from "../sprites/pipe-sprite"
+import { resolveDeviceBodyPresentation, shouldForceBlueprintDeviceTexture } from "../sprites"
 import {
   RenderLayerMap,
   RenderSprite,
@@ -1911,8 +1912,9 @@ function syncWorldEntitySprites(options: {
     )
 
     const effectiveOffset = resolveEffectiveSpriteOffset(
-      definition.spriteOffset,
-      options.renderHost.workspace.app,
+      definition,
+      entity.id,
+      options.workspace,
     )
     const isVisible = isWorldEntityVisibleWithOffset(
       entity,
@@ -2607,17 +2609,33 @@ export function resolveWorldEntitySpriteLayout(options: {
 /**
  * 根据当前渲染模式（蓝图 / 3D-top）解析有效的 spriteOffset。
  * gameUseBlueprintStyleDeviceImages=true 时使用 blueprint 偏移，否则使用 topView 偏移。
+ * AI-CORRECTION 2026-10-06: 物流预览及连线端点强制蓝图时也必须使用 blueprint 偏移，与本体、遮罩保持一致。
  */
 function resolveEffectiveSpriteOffset(
-  spriteOffset: EntityDefinition["spriteOffset"] | undefined,
-  app: RenderHost["workspace"]["app"],
+  definition: EntityDefinition,
+  entityId: string,
+  workspace: RenderSurfaceContext["workspace"],
 ): { x: number; y: number; width: number; height: number } | undefined {
-  if (!spriteOffset) {
+  if (!definition.spriteOffset) {
     return undefined
   }
-
-  const isBlueprint = app?.state.settings.gameUseBlueprintStyleDeviceImages ?? false
-  return isBlueprint ? spriteOffset.blueprint : spriteOffset.topView
+  // AI-REMOVED 2026-10-06:
+  // Reason: 仅按全局设置选范围会遗漏物流预览与连线端点的强制蓝图显示。
+  // Trigger: 管道准入口的 1×1 蓝图图片被绘制成 1×3。
+  // Evidence: GenericDeviceSprite 在相同状态下选择 blueprint 纹理。
+  // Replacement: 下方 resolveDeviceBodyPresentation，与纹理共用交互判断。
+  // Risk: Low；无 spriteOffset 的设备继续直接使用 footprint。
+  // Human Review: Required
+  // Original code:
+  // if (!spriteOffset) {
+  //   return undefined
+  // }
+  // const isBlueprint = app?.state.settings.gameUseBlueprintStyleDeviceImages ?? false
+  // return isBlueprint ? spriteOffset.blueprint : spriteOffset.topView
+  return resolveDeviceBodyPresentation(definition, workspace.app, {
+    forceBlueprint: shouldForceBlueprintDeviceTexture(entityId, definition.id, workspace.registry.queries, workspace),
+    allowAnimation: false,
+  }).spriteOffset
 }
 
 /**

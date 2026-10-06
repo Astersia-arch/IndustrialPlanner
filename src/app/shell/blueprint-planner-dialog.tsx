@@ -11,7 +11,7 @@ import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
 import { DialogShell } from "./shared/dialog-shell";
 import { PlannerTaskFlow } from "./production-planning";
-import { plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate } from "./blueprint-planner-statistics";
+import { formatPlannerElapsed, plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerProposalRate, samplePlannerProposalRate } from "./blueprint-planner-statistics";
 import styles from "./blueprint-planner-dialog.module.scss";
 import { BlueprintPlannerEnvironment } from "./blueprint-planner-environment";
 import { PlannerSupplyRules } from "@/shared/planner-supply";
@@ -237,7 +237,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     link.href = url; link.download = `${(plan?.name || "eda-task").replace(/[/\\:*?"<>|]/g, "-")}.eda-task.json`;
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  const elapsed = Math.floor((progress?.elapsedMs ?? 0) / 1000);
+  const elapsed = formatPlannerElapsed(progress?.elapsedMs ?? 0, [t("eda.elapsedDay"), t("eda.elapsedHour"), t("eda.elapsedMinute"), t("eda.elapsedSecond")]);
   const rate = progress?.status !== "running" ? 0 : recentRate?.taskId === progress.taskId
     && recentRate.roundStart === progress.evaluatedProposals - progress.roundEvaluatedProposals ? recentRate.rate : null;
   const statusLabel = (status: string) => t(status === "running" ? "eda.running" : status === "saving" ? "eda.saving"
@@ -362,7 +362,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
           {progress !== null ? <section className={styles.progress} aria-live="polite">
             <div className={styles.statistics}>
               <span>{statusLabel(progress.status)}</span>
-              <span>{t("eda.elapsed")} <strong>{`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`}</strong></span>
+              <span>{t("eda.elapsed")} <strong>{elapsed}</strong></span>
               <span>{t("eda.candidates")} <strong>{progress.candidateCount}</strong></span>
               {progress.bestArea !== null ? <span>{t("eda.bestArea")} <strong>{progress.bestArea}</strong></span> : null}
             </div>
@@ -384,7 +384,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
         </div>
         <footer className={styles.footer}>
           {progress !== null && plan !== null && !busy && !controller.blueprintRequest ? <button type="button" disabled={anyBusy}
-            onClick={() => { controller.open(plan, controller.options); setError(null); }}>{t("eda.replan")}</button> : null}
+            onClick={() => { controller.open(plan); setError(null); }}>{t("eda.replan")}</button> : null}
           {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
           {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
             onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,

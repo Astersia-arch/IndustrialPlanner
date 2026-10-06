@@ -10,7 +10,7 @@ import { plannerRequestKey } from "./search-seed";
 import { comparePlannerRanks } from "./quality";
 import { restorePlannerSeed } from "./search-seed";
 import { migratePlannerCandidate } from "./task-migration";
-import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
+import { assertPlannerCandidateBounds, meetsOperatingLimits, meetsProductionTargets } from "./verification";
 import { assertBlueprintPreserved } from "./blueprint-constraints";
 import { assertBlueprintRecognition, assertBlueprintSteadyState } from "./blueprint-analysis";
 import { blueprintRecognitionScene } from "./blueprint-scene";
@@ -146,6 +146,7 @@ export async function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, re
   if (candidate === null) return { ...restored, progress: { ...restored.progress,
     message: "历史计算进度和曲线已保留；旧最优蓝图不满足当前边界规则，将继续搜索有效布局。" } };
   if (!verify) throw new Error("旧最优蓝图需要仿真验收后才能恢复，请通过规划器导入任务。");
+  assertPlannerCandidateBounds(registry, candidate);
   const report = await verify(candidate.execution);
   // 超时、取消和服务异常不能判定布局无效，也不能自动覆盖原始任务。
   if (report.status !== "completed") throw new Error("旧最优蓝图验收未完成，原始计算记录已保留。");
@@ -186,7 +187,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
     const roundEvaluatedProposals = progress.roundEvaluatedProposals ?? 0;
     if (evaluatedProposals !== point.evaluations || !Number.isSafeInteger(roundEvaluatedProposals)
       || roundEvaluatedProposals < 0 || roundEvaluatedProposals > evaluatedProposals
-      || roundEvaluatedProposals > request.options.evaluationsPerRound) throw new Error("提案计数无效。");
+      || roundEvaluatedProposals > request.options.evaluationsPerRound) throw new Error("尝试计数无效。");
     if (!Number.isFinite(progress.elapsedMs) || progress.elapsedMs < 0 || !Number.isFinite(progress.startedAt)
       || point.attempt !== progress.candidateCount || progress.validatedCandidateCount > point.attempt
       || !["running", "waiting", "saving", "completed", "cancelled", "failed", "save-failed"].includes(progress.status)) throw new Error("任务进度无效。");
@@ -227,12 +228,15 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
         if (!entity || registry.queries.findEntityDefinition(entity.definitionId) === null
           || !Number.isFinite(entity.position.x) || !Number.isFinite(entity.position.y)) throw new Error("候选蓝图包含无效设备。");
       }
+      assertPlannerCandidateBounds(registry, candidate);
       if (candidate.seed) restorePlannerSeed(registry, restorePlannerOutputRequest(request, candidate.seed.network.request.options), candidate.seed);
       if (request.blueprintSource) assertBlueprintPreserved(registry, request, point.blueprintBaseline!.candidate.seed!, candidate.execution.blueprint);
     }
     if (point.best !== null && (!Array.isArray(point.best.report?.probes) || point.best.report.status !== "completed")) throw new Error("最优结果缺少验证报告。");
     if (point.result !== null && (point.result.taskId !== file.taskId || !point.best
       || point.result.blueprint.blueprintId !== point.best.candidate.execution.blueprint.blueprintId)) throw new Error("结果与检查点不匹配。");
+    if (point.result && point.best) assertPlannerCandidateBounds(registry, { ...point.best.candidate,
+      execution: { ...point.best.candidate.execution, blueprint: point.result.blueprint }, metrics: point.result.metrics });
     if (point.savedBlueprintId !== null && typeof point.savedBlueprintId !== "string") throw new Error("保存记录无效。");
     const history = progress.areaHistory ?? [];
     const legacyHistoryLength = point.legacyHistoryLength ?? 0;
@@ -276,6 +280,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
           + parallel.shards.reduce((sum, shard) => sum + shard.validatedCandidates, 0)
         || point.pendingCandidate !== null) throw new Error("分片汇总计数无效。");
       for (const shard of parallel.shards) {
+        if (shard.pendingCandidate) assertPlannerCandidateBounds(registry, shard.pendingCandidate);
         const pool = new PlannerSearchPortfolio(request);
         pool.restore(shard.portfolio);
         if (shard.pendingCandidate !== null && (!shard.pendingCandidate.execution?.blueprint

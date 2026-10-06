@@ -23,7 +23,8 @@ vi.mock("@/blueprint-planner/worker-client", () => ({
   },
 }));
 
-vi.mock("@/blueprint-planner/verification", () => ({
+vi.mock("@/blueprint-planner/verification", async importOriginal => ({
+  ...await importOriginal<typeof import("@/blueprint-planner/verification")>(),
   meetsOperatingLimits: () => true,
   meetsProductionTargets: () => true,
 }));
@@ -38,7 +39,7 @@ function candidate(area: number): PlannerCandidate {
   return {
     supplyAudit: { operatingLimits: [], splitterCount: 0, bufferedAdmissions: 0 },
     search: {
-      seed: 0, evaluationLimit: 1_000, outline: { width: area, height: 1 }, evaluations: 1,
+      seed: 0, evaluationLimit: 1_000, outline: { width: 10, height: area / 10 }, evaluations: 1,
       acceptedMoves: 0, routingAttempts: 0, initialWireLength: 0, finalWireLength: 0,
     },
     execution: {
@@ -50,7 +51,7 @@ function candidate(area: number): PlannerCandidate {
       probes: [], warmupSeconds: 0, observationSeconds: 60, inventorySampleCount: 1,
       maxWallTimeMs: 1_000, activeActivityIds: [],
     },
-    metrics: { width: area, height: 1, area, entityCount: 0, productionDeviceCount: 0,
+    metrics: { width: 10, height: area / 10, area, entityCount: 0, productionDeviceCount: 0,
       gasDiffuserCount: 0, additionalGasDiffuserCount: 0, score: area },
     connections: [],
   };

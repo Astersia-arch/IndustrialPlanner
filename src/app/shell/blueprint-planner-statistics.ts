@@ -8,6 +8,13 @@ interface ProposalRateSample {
   readonly rate: number | null;
 }
 
+/** 有效计算时长按天、小时、分、秒展示，最低保留分和秒。 */
+export function formatPlannerElapsed(elapsedMs: number, units: readonly [string, string, string, string]): string {
+  const total = Number.isFinite(elapsedMs) ? Math.max(0, Math.floor(elapsedMs / 1000)) : 0;
+  const days = Math.floor(total / 86400), hours = Math.floor(total / 3600) % 24;
+  return `${days ? `${days}${units[0]}` : ""}${days || hours ? `${hours}${units[1]}` : ""}${Math.floor(total / 60) % 60}${units[2]}${total % 60}${units[3]}`;
+}
+
 export function plannerProposalRate(proposals: number, elapsedMs: number): number {
   return elapsedMs > 0 ? Math.round(proposals * 1000 / elapsedMs) : 0;
 }

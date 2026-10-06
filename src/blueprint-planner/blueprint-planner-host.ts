@@ -14,7 +14,7 @@ import { PlannerWorkerClient } from "./worker-client";
 import type { PlannerCandidate } from "./candidate";
 import { PlannerCandidateError, PlanningBudgetExhausted } from "./model";
 import { comparePlannerRanks } from "./quality";
-import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
+import { assertPlannerCandidateBounds, meetsOperatingLimits, meetsProductionTargets } from "./verification";
 import { PlannerSearchPortfolio } from "./search-portfolio";
 import { breadthOutlineKey, breadthOutlines, fixedOutlineMinimum, selectBreadthOutline } from "./search-outline";
 import { createProductionNetwork } from "./production-network";
@@ -316,6 +316,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     const verify = async (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
       const candidate = shard.pendingCandidate;
       if (candidate === null) return;
+      assertPlannerCandidateBounds(workspace.registry, candidate);
       check(task);
       const simulation = workspace.simulation;
       if (simulation === null) throw new Error("仿真服务不可用。");
@@ -445,7 +446,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           task.activeShards.add(shard.index);
           live(undefined, `正在搜索第 ${point.attempt + task.activeShards.size} 个布局`);
           const commit = (used: number, candidate: PlannerCandidate | null) => {
-            if (!Number.isSafeInteger(used) || used < observed || used > remaining) throw new Error("Worker 提案计数无效。");
+            if (!Number.isSafeInteger(used) || used < observed || used > remaining) throw new Error("Worker 尝试计数无效。");
             shard.attempts++;
             shard.nextVariant += parallel.count;
             shard.evaluations += used;
@@ -464,7 +465,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           try {
             const candidate = await laneWorker.build(selection.request, selection.variant, null, remaining,
               task.abort.signal, (phase, message, count) => {
-                if (!Number.isSafeInteger(count) || count < observed || count > remaining) throw new Error("Worker 提案计数无效。");
+                if (!Number.isSafeInteger(count) || count < observed || count > remaining) throw new Error("Worker 尝试计数无效。");
                 observed = count;
                 task.liveEvaluations.set(shard.index, count);
                 live(phase, message);
@@ -737,14 +738,14 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     // Original code:
     //     if (!Number.isFinite(budgetMs) || budgetMs <= 0) throw new Error("计算时间必须大于零。");
 
-    if (!Number.isSafeInteger(evaluations) || evaluations < 10_000 || evaluations % 10_000 !== 0) throw new Error("提案次数必须为不少于一万的整万数。");
+    if (!Number.isSafeInteger(evaluations) || evaluations < 10_000 || evaluations % 10_000 !== 0) throw new Error("尝试次数必须为不少于一万的整万数。");
     if (workspace.simulation === null) throw new Error("仿真服务不可用。");
     prepareParallel(task, concurrency);
     task.file = { ...task.file, request: { ...task.file.request, options: { ...task.file.request.options, evaluationsPerRound: evaluations } } };
     task.abort = new AbortController();
     task.roundStartedEvaluations = task.file.checkpoint.evaluations;
     task.remaining = Math.min(evaluations, options.roundLimit?.() ?? evaluations);
-    if (!Number.isSafeInteger(task.remaining) || task.remaining <= 0) throw new Error("剩余提案次数无效。");
+    if (!Number.isSafeInteger(task.remaining) || task.remaining <= 0) throw new Error("剩余尝试次数无效。");
     task.resumedAt = performance.now();
     workspace.simulation.actions.stop();
     latestId = task.file.taskId;
@@ -831,6 +832,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           const report = await workspace.simulation.actions.runBlueprint(execution,
             AbortSignal.any([restorationAbort.signal, ...signal ? [signal] : []]));
           const identified = identifyBlueprintNetwork(workspace.registry, input, inputOptions, execution, report);
+          assertPlannerCandidateBounds(workspace.registry, identified.candidate);
           const file = createTaskFile(identified.request), id = file.taskId;
           const baseline = { candidate: identified.candidate, report };
           const best = structuredClone(baseline);

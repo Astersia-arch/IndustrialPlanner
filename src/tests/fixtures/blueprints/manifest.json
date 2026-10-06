@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "fixtureRevision": 13,
+  "fixtureRevision": 14,
   "updatedAt": "2026-10-06",
   "entries": [
     {
@@ -3411,6 +3411,34 @@
     },
     {
       "file": "src/tests/fixtures/blueprints/blueprint-planner/blueprint-optimization/mixed-powered.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/blueprint-planner/power-validation/covered.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/blueprint-planner/power-validation/no-pylon.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/blueprint-planner/power-validation/stash-outside.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/blueprint-planner/power-validation/stash-beyond-limit.schema6.json",
       "role": "test-scene",
       "schemaVersion": 6,
       "version": "fixture-v1",

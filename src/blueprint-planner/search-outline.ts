@@ -5,6 +5,32 @@ import { resolveEntityGridRect } from "@/shared/geometry/power-range";
 
 export interface PlannerOutline { readonly width: number; readonly height: number; }
 
+export const PLANNER_MAX_SIDE = 70;
+
+/** 所有生成与恢复入口共用边长限制；面积合法不能替代逐边校验。 */
+export function assertPlannerOutline(outline: PlannerOutline): void {
+  if (![outline.width, outline.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= PLANNER_MAX_SIDE)) {
+    throw new PlannerCandidateError(`蓝图宽、高必须为 1～${PLANNER_MAX_SIDE} 格，当前为 ${outline.width}×${outline.height}。`);
+  }
+}
+
+/** 初始目标为设备占地两倍；失败重启以有限尺度放大，整数盒子始终不超过 70×70。 */
+export function initialPlannerOutline(bodyArea: number, minimum: PlannerOutline, variant: number): PlannerOutline {
+  if (!Number.isSafeInteger(bodyArea) || bodyArea <= 0 || bodyArea > PLANNER_MAX_SIDE ** 2) {
+    throw new PlannerCandidateError("设备总占地无法容纳在 70×70 的蓝图内。");
+  }
+  const scale = 1 + Math.floor(variant / 3) * 0.25;
+  const area = Math.min(PLANNER_MAX_SIDE ** 2, Math.ceil(bodyArea * 2 * scale * scale));
+  const shapes = breadthOutlines(area, minimum).filter(shape => shape.width * shape.height >= bodyArea);
+  // 在相近长宽比中最大化目标面积利用率，不通过额外边距把两倍目标再次放大。
+  const ratio = [1, 1.2, 1 / 1.2][variant % 3]!;
+  shapes.sort((a, b) => Math.abs(Math.log(a.width / a.height / ratio)) - Math.abs(Math.log(b.width / b.height / ratio))
+    || b.width * b.height - a.width * a.height);
+  if (!shapes.length) throw new PlannerCandidateError("设备最小尺寸无法容纳在 70×70 的蓝图内。");
+  return shapes[0]!;
+}
+
+
 /** 搜索盒子必须容纳固定设施，也至少容纳任一单体设备。 */
 // AI-CORRECTION 2026-10-05：设施均可移动或换边；最小宽高仅取可旋转单体的必要下界，实际长边在布局验证。
 export function fixedOutlineMinimum(registry: RegistryContract,
@@ -33,10 +59,10 @@ export function fixedOutlineMinimum(registry: RegistryContract,
 /** 在面积边界上覆盖所有可行整数宽度；中点递归顺序让任意前缀分散于不同长宽比。 */
 export function breadthOutlines(maximumArea: number, minimum: PlannerOutline, cap?: PlannerOutline): PlannerOutline[] {
   if (!Number.isSafeInteger(maximumArea) || maximumArea < 1) return [];
-  const maxWidth = Math.min(cap?.width ?? Infinity, Math.floor(maximumArea / minimum.height));
+  const maxWidth = Math.min(PLANNER_MAX_SIDE, cap?.width ?? Infinity, Math.floor(maximumArea / minimum.height));
   const shapes: PlannerOutline[] = [];
   for (let width = minimum.width; width <= maxWidth; width++) {
-    const height = Math.min(cap?.height ?? Infinity, Math.floor(maximumArea / width));
+    const height = Math.min(PLANNER_MAX_SIDE, cap?.height ?? Infinity, Math.floor(maximumArea / width));
     if (height >= minimum.height) shapes.push({ width, height });
   }
   const spread: PlannerOutline[] = [];
@@ -71,10 +97,11 @@ export function selectBreadthOutline(shapes: readonly PlannerOutline[], mode: st
 export function continuationOutline(seed: { width: number; height: number }, variant: number, step = 0,
   minimum = { width: 1, height: 1 }, cap?: { readonly width: number; readonly height: number }, maximumArea?: number) {
   if (maximumArea !== undefined && (!Number.isSafeInteger(maximumArea) || maximumArea < 1)) throw new Error("面积上限必须是正整数。");
+  cap = { width: Math.min(PLANNER_MAX_SIDE, cap?.width ?? PLANNER_MAX_SIDE), height: Math.min(PLANNER_MAX_SIDE, cap?.height ?? PLANNER_MAX_SIDE) };
   const shrink = { width: Math.max(1, seed.width - (variant % 2 ? 1 : 0)),
     height: Math.max(1, seed.height - (variant % 2 ? 0 : 1)) };
   if (step >= 2 || (maximumArea !== undefined && (shrink.width * shrink.height > maximumArea
-    || shrink.width < minimum.width || shrink.height < minimum.height))) {
+    || shrink.width < minimum.width || shrink.height < minimum.height)) || shrink.width > cap.width || shrink.height > cap.height) {
     const area = Math.min(seed.width * seed.height, (maximumArea ?? Infinity) + 1);
     const shapes = [{ width: seed.width - 1, height: seed.height }, { width: seed.width, height: seed.height - 1 }];
     for (let width = Math.max(1, Math.ceil(seed.width * 0.75)); width <= Math.floor(seed.width * 1.25); width++) {
@@ -98,7 +125,7 @@ export function continuationOutline(seed: { width: number; height: number }, var
     if (unique.length) return unique[Math.max(0, step - 2) % unique.length]!;
   }
   const result = { width: Math.min(cap?.width ?? Infinity, shrink.width), height: Math.min(cap?.height ?? Infinity, shrink.height) };
-  if (maximumArea !== undefined && (result.width * result.height > maximumArea || result.width < minimum.width || result.height < minimum.height)) {
+  if ((maximumArea !== undefined && result.width * result.height > maximumArea) || result.width < minimum.width || result.height < minimum.height) {
     throw new PlannerCandidateError("本轮固定设施或显式边界无法容纳面积上限。");
   }
   return result;
