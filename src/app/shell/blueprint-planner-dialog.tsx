@@ -9,6 +9,7 @@ import { observer } from "mobx-react-lite";
 // 容量签名由存储层（Shared）从浏览器环境取得。
 import { loadPlannerCapacity, localPlannerCapacitySignature } from "@/shared/storage";
 import type { BlueprintPlannerAreaPoint, BlueprintPlannerTaskFile, PlannerStoredCapacity } from "@/domain/blueprint-planner";
+import { PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE, resolvePlannerTheoreticalArea } from "@/domain/blueprint-planner";
 import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
@@ -175,6 +176,16 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
     try { return { view: new PlannerSupplyRules(appHost.workspace.registry, controller.plan, controller.options.converterStartup).view(), error: null }; }
     catch (failure) { return { view: null, error: failure instanceof Error ? failure.message : String(failure) }; }
   }, [appHost.workspace.registry, controller.plan, controller.options.converterStartup]);
+  // 订正 2026-10-06：面积上界输入旁要标注「设备本体理论占用」作为下界，
+  // 让用户填数之前就知道再小也不可能小于这个值（只算产线设备本体，不含物流与环境设施）。
+  // 订正 2026-10-06（用户确认口径）：上面这条注释的口径已被替换——理论占用现由
+  // resolvePlannerTheoreticalArea 给出，为「设备本体 + 连接线数量」，仍是不含
+  // 环境设施的**下界估算**；该注释后半句「只算产线设备本体」不再成立。
+  // 订正 2026-10-06（用户指出界面缺陷）：此值只用于文案标注与默认上界的基数，
+  // 不得直接充当输入框的默认上界——两者相差 PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE 倍，见下方 placeholder。
+  const theoreticalArea = useMemo(() => controller.plan === null ? 0
+    : resolvePlannerTheoreticalArea(appHost.workspace.registry, controller.plan).totalCells,
+    [appHost.workspace.registry, controller.plan]);
   if (!controller.dialogState.visible) return null;
   const busy = controller.taskLocked || fileBusy;
   const anyBusy = controller.taskLocked;
@@ -346,6 +357,20 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               */}
               <label><span>{t("eda.evaluationsPerRound")}</span><input type="number" min="1" step="1" value={controller.options.evaluationsPerRound / 10_000}
                 onChange={event => controller.updateOptions({ evaluationsPerRound: Number(event.target.value) * 10_000 })} /></label>
+              {/* 订正 2026-10-06：新增面积上界输入。留空表示沿用算法自身的逐格收缩策略；
+                  填入数值后搜索开局就在该尺寸内进行，跳过「每轮只减 1 格」的渐进收缩。
+                  订正 2026-10-06：留空的含义已改为「默认建议上界」，即
+                  min(基地可放置面积, 理论面积 × PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE)，不再等同于
+                  「沿用算法自身的逐格收缩策略」；该默认值仍会与算法收缩上限取小，故原句后半段部分成立。 */}
+              <label><span>{t("eda.areaLimit")}</span><input type="number" min="1" step="1" disabled={progress !== null}
+                value={controller.options.areaLimit ?? ""}
+                placeholder={theoreticalArea > 0 ? String(theoreticalArea * PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE) : ""}
+                onChange={event => {
+                  const raw = event.target.value.trim();
+                  controller.updateOptions({ areaLimit: raw === "" ? undefined : Math.max(1, Math.floor(Number(raw))) });
+                }} />
+                {theoreticalArea > 0 ? <span className={styles.areaLimitHint}>
+                  {t("eda.theoreticalFootprint").replace("{count}", theoreticalArea.toLocaleString())}</span> : null}</label>
               {/* AI-REMOVED 2026-10-03:
                 Reason: 并发数不再由用户手填。Trigger: 用户确认自动并发。
                 Evidence: Planner 自动调度与 activeWorkerCount 契约。
@@ -409,6 +434,8 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               proposals={progress.evaluatedProposals} label={t("eda.areaCurve")}
               xLabel={`${t("eda.totalProposals")}${t("eda.logScale")}`} yLabel={t("eda.bestArea")} /> : null}
             {result !== null ? <p>{result.metrics.width} × {result.metrics.height} · {result.metrics.productionDeviceCount} {t("eda.devices")}
+              {result.metrics.occupiedCells !== undefined ? ` · ${t("eda.occupiedCells").replace("{count}", result.metrics.occupiedCells.toLocaleString())}` : ""}
+              {result.metrics.utilization !== undefined ? ` · ${t("eda.utilization").replace("{percent}", (result.metrics.utilization * 100).toFixed(1))}` : ""}
               {result.metrics.gasDiffuserCount > 0 ? ` · ${t("eda.environmentCount").replace("{count}", String(result.metrics.gasDiffuserCount))}` : ""}</p> : null}
           </section> : null}
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}

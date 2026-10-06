@@ -727,6 +727,9 @@ async function createPlannerAttempt(
       productionDeviceCount: network.nodes.filter((node) => node.purpose === "production" || node.purpose === "auxiliary").length,
       gasDiffuserCount: gasCount, additionalGasDiffuserCount: additionalGasCount,
       score: boundedPlannerScore(width * height, statistics.quality.secondary),
+      // 订正 2026-10-06：盒内占用与利用率一并交付，界面据此显示“盒子是否装得空”。
+      // 仅作展示与人工判断，不参与 comparePlannerRanks 的排序（理由见 Domain 契约注释）。
+      occupiedCells: statistics.quality.occupiedCells, utilization: statistics.quality.utilization,
     };
     const busSides = ["上", "右", "下", "左"].filter((_, side) => boundaryResult.busMask! & (1 << side));
     const blueprint = createBlueprintDocument({

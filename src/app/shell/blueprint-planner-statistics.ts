@@ -1,5 +1,26 @@
 import type { BlueprintPlannerAreaPoint, BlueprintPlannerProgress } from "@/domain/blueprint-planner";
 
+// AI-REMOVED 2026-10-06:
+// Reason: 理论占用口径改为「产线设备本体 + 连接线数量」并由用户确认，且需 App 与 Planner 共用同一口径。
+// Trigger: 用户指出原口径缺少连接线；同时要求未指定上界时以「理论面积 × 3」作为默认建议上界。
+// Evidence: 原函数只累加 footprint，未计任何物流；且只存在于 App 层，Planner 无法复用，会形成第二个口径。
+// Replacement: @/domain/blueprint-planner 的 resolvePlannerTheoreticalArea（含 linkCells 下界）。
+// Risk: Low；新口径数值更大（多出连接线），界面提示文案随之更新。
+// Human Review: Required
+//
+// Original code:
+// import type { RegistryContract } from "@/domain/registry/registry-contract";
+// export function plannerTheoreticalFootprint(registry: RegistryContract, plan: BlueprintPlannerProductionPlan): number {
+//   let total = 0;
+//   for (const entry of plan.recipes) {
+//     const recipe = registry.queries.findRecipeDefinition(entry.recipeId);
+//     const definition = recipe === null ? null : registry.queries.findEntityDefinition(recipe.machineId);
+//     if (!definition) continue;
+//     total += definition.footprint.width * definition.footprint.height * entry.deviceCount;
+//   }
+//   return total;
+// }
+
 interface ProposalRateSample {
   readonly taskId: string;
   readonly roundStart: number;

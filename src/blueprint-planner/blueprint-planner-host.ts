@@ -4,6 +4,7 @@ import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerTaskFile,
   PlannerResourceHints } from "@/domain/blueprint-planner";
 import { createUuid } from "@/domain/shared/uuid";
+import { PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE, resolvePlannerTheoreticalArea } from "@/domain/blueprint-planner";
     // AI-REMOVED 2026-09-30: 浏览器蓝图库只在保存时加载，避免无头入口依赖浏览器环境。
     // Trigger: Node 客户端启动。Evidence: 同步存储依赖 import.meta.env。
     // Replacement: save 内动态 import。Risk: Low。Human Review: Required
@@ -498,8 +499,24 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           const regionCapArea = outlineCap ? outlineCap.width * outlineCap.height : undefined;
           const sharedMaximum = sharedArea === undefined ? selection.maximumArea
             : Math.min(selection.maximumArea ?? sharedArea, sharedArea);
-          const maximumArea = sharedMaximum === undefined ? regionCapArea
+          const cappedMaximum = sharedMaximum === undefined ? regionCapArea
             : regionCapArea === undefined ? sharedMaximum : Math.min(sharedMaximum, regionCapArea);
+          // 订正 2026-10-06：界面现在可直接给定面积上界（BlueprintPlannerOptions.areaLimit）。
+          // 它并入同一道取最小值，因此搜索开局就在目标尺寸内进行，跳过「每轮只减 1 格」的渐进收缩；
+          // 用户给的上界若比算法自身的更松，也不会放宽任何既有约束。
+          // 订正 2026-10-06（用户确认口径与语义）：
+          //   · 未指定上界时，默认建议上界 = min(基地可放置面积, 理论面积 × 3)，
+          //     理论面积 = 产线设备本体 + 连接线数量（见 resolvePlannerTheoreticalArea）；
+          //   · 用户显式指定时**以用户值为准**，不再夹取——形状枚举本身仍受基地可放置范围约束
+          //     （breadthOutlines 的 cap），因此不会产生超出基地的盒子。
+          const requestedAreaLimit = task.file.request.options.areaLimit;
+          const userCapArea = Number.isSafeInteger(requestedAreaLimit) && requestedAreaLimit! > 0 ? requestedAreaLimit! : undefined;
+          const theoreticalArea = resolvePlannerTheoreticalArea(workspace.registry, task.file.request.plan).totalCells;
+          const suggestedCapArea = theoreticalArea * PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE;
+          const defaultCapArea = regionCapArea === undefined ? suggestedCapArea : Math.min(regionCapArea, suggestedCapArea);
+          const maximumArea = userCapArea !== undefined ? userCapArea
+            : cappedMaximum === undefined ? defaultCapArea
+              : defaultCapArea === undefined ? cappedMaximum : Math.min(cappedMaximum, defaultCapArea);
           let shapeKey: string | undefined;
           let targetOutline: { readonly width: number; readonly height: number } | undefined;
           const requestKey = plannerRequestKey(selection.request);
