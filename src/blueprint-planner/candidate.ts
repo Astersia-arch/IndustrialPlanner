@@ -33,7 +33,7 @@ import type { PlannerRoutingBackend } from "./routing-backend";
 import { constructCompactLayout } from "./constructive-layout";
 import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "./search-seed";
 import { resolvePlannerAttempt } from "./search-portfolio";
-import { PLANNER_MAX_SIDE, assertPlannerOutline, initialPlannerOutline, continuationOutline, fixedOutlineMinimum } from "./search-outline";
+import { PLANNER_MAX_SIDE, assertPlannerOutline, clampPlannerOutline, plannerOutlineCap, initialPlannerOutline, continuationOutline, fixedOutlineMinimum } from "./search-outline";
 import { assertPlannerCandidateBounds } from "./verification";
 import { PlannerBoundary } from "./boundary";
 import { createBlueprintCandidate } from "./blueprint-candidate";
@@ -261,6 +261,8 @@ async function createPlannerAttempt(
   //     return { width: Math.max(bounds.width, rect.x + rect.width), height: Math.max(bounds.height, rect.y + rect.height) };
   //   }, { width: 1, height: 1 });
   const fixedMinimum = fixedOutlineMinimum(registry, network.nodes);
+  // 2026-10-06 变基到上游 cb925b0 后保留：搜索盒子还受所在基地可放置范围约束（见 clampPlannerOutline）。
+  const outlineCap = plannerOutlineCap(registry, request);
   // 两倍约束用于初次紧凑搜索；失败后的工序重排保留更宽松的通道和辅助设施空间。
   const expandedScale = 1 + Math.floor(variant / 3) * 0.25;
   const expandedSide = Math.sqrt(bodyArea * 4) * expandedScale;
@@ -307,6 +309,8 @@ async function createPlannerAttempt(
   if (!options.seed && !options.targetOutline && options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea) {
     outline = continuationOutline(outline, variant, Math.floor(variant / 4) + 2, fixedMinimum, options.outline, options.maximumArea);
   }
+  // 2026-10-06 变基到上游 cb925b0 后保留：显式尺寸也夹到基地可放置范围；种子续搜的面积上限仍由 Host 统一夹取。
+  if (!options.seed && !options.targetOutline && options.outline) outline = clampPlannerOutline(outline, fixedMinimum, outlineCap);
   assertPlannerOutline(outline);
   const statistics: PlannerSearchStatistics = { seed: variant, evaluationLimit: options.maxEvaluations ?? 50_000,
     evaluations: 0, acceptedMoves: 0, routingAttempts: 0, initialWireLength: 0, finalWireLength: 0, outline, profile, strategy,
@@ -612,6 +616,8 @@ async function createPlannerAttempt(
             break;
           }
           enterPhase("power"); rejectionPhase = "power";
+          // 2026-10-06 变基到上游 cb925b0 后保留：全部线路确定后再做一次压缩，消掉被后续占用逼出的绕行冗余；压缩失败只回滚线路。
+          await candidateRouter.compactRoutes(checkBudget, message => { throw new PlannerCandidateError(message, statistics); });
           const coverage = await placePower(registry, network, wires, [...fixtures, ...candidateRouter.entities], outline, checkBudget);
           if (coverage === null) {
             failure = "候选布局没有足够的合法供电桩位置"; reject("power", failure);
