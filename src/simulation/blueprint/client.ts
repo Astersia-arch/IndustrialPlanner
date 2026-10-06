@@ -28,8 +28,12 @@ export class BlueprintExecutionClient {
     if (signal?.aborted) abort();
     this.active.add(controller);
     try {
+      const engineKind = snapshot.engine?.kind ?? this.engineKind;
+      const denseTickRate = snapshot.engine?.ticksPerSecond ?? this.denseTickRate;
+      const createEngine = engineKind !== this.engineKind && (this.workerMode === "runtime" || typeof Worker === "undefined")
+        ? (await import("../dense")).createDenseBlueprintEngine.bind(null, this.registry) : this.createEngine;
       return this.workerMode === "runtime" || typeof Worker === "undefined"
-        ? await executeBlueprint(this.registry, this.engineKind, snapshot, this.createEngine, controller.signal, this.denseTickRate)
+        ? await executeBlueprint(this.registry, engineKind, snapshot, createEngine, controller.signal, denseTickRate)
         : await this.runWorker(snapshot, controller.signal);
     } finally {
       signal?.removeEventListener("abort", abort);
@@ -50,7 +54,7 @@ export class BlueprintExecutionClient {
     let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     let abort = () => {};
     const stoppedReport = (status: SimulationBlueprintRunReport["status"], message: string): SimulationBlueprintRunReport => ({
-      status, engineKind: this.engineKind, simulationSeconds: 0, observationSeconds: 0,
+      status, engineKind: request.engine?.kind ?? this.engineKind, simulationSeconds: 0, observationSeconds: 0,
       elapsedMs: performance.now() - startedAt, probes: [], inventorySamples: [], deviceStatuses: [],
       diagnostics: [{ severity: status === "failed" ? "error" : "warning", code: "blueprint-worker-interrupted", message }],
     });
@@ -74,7 +78,8 @@ export class BlueprintExecutionClient {
         };
         signal.addEventListener("abort", abort, { once: true });
         timer = setTimeout(() => finish(stoppedReport("timeout", "Blueprint worker exceeded its wall-clock budget.")), request.maxWallTimeMs + 1000);
-        send({ type: "run-blueprint", request, engineKind: this.engineKind, denseTickRate: this.denseTickRate });
+        send({ type: "run-blueprint", request, engineKind: request.engine?.kind ?? this.engineKind,
+          denseTickRate: request.engine?.ticksPerSecond ?? this.denseTickRate });
         if (signal.aborted) abort();
       });
     } finally {

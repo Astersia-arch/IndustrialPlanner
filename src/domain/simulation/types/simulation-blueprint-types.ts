@@ -22,6 +22,10 @@ export interface SimulationBlueprintProbe {
 }
 
 export interface SimulationBlueprintRunRequest {
+  /** 独立执行可固定 Dense 时钟，不随工作台当前引擎或加速设置改变。 */
+  readonly engine?: { readonly kind: "dense-v2"; readonly ticksPerSecond: 2 | 4 };
+  /** 按真实通道累计识别信息；省略时不采集，不影响普通仿真成本。 */
+  readonly collectAnalysis?: boolean;
   readonly blueprint: BlueprintDocument;
   readonly scene: SimulationBlueprintScene;
   readonly probes: readonly SimulationBlueprintProbe[];
@@ -56,6 +60,7 @@ export interface SimulationBlueprintDeviceStatus {
 }
 
 export interface SimulationBlueprintRunReport {
+  readonly analysis?: SimulationBlueprintAnalysis;
   readonly status: "completed" | "cancelled" | "timeout" | "failed";
   readonly engineKind: SimulationEngineKind;
   readonly simulationSeconds: number;
@@ -65,4 +70,30 @@ export interface SimulationBlueprintRunReport {
   readonly inventorySamples: readonly SimulationBlueprintInventorySample[];
   readonly deviceStatuses: readonly SimulationBlueprintDeviceStatus[];
   readonly diagnostics: readonly SimulationBlueprintDiagnostic[];
+}
+
+/** 编译后的物理端口与库存绑定；不暴露仿真内部可变对象。 */
+export interface SimulationBlueprintAnalysisPort {
+  readonly id: string;
+  readonly entityId: string;
+  readonly groupId: string;
+  readonly portId: string;
+  readonly direction: "input" | "output";
+  readonly isPipe: boolean;
+  readonly nodeIds: readonly string[];
+  readonly acceptedItemIds: readonly string[];
+  readonly admissionItemId: string | null;
+}
+
+export interface SimulationBlueprintAnalysis {
+  readonly ports: readonly SimulationBlueprintAnalysisPort[];
+  readonly connections: readonly { sourcePortId: string; targetPortId: string }[];
+  readonly channels: readonly { entityId: string; channelId: string; consumption: boolean;
+    inputNodeIds: readonly string[]; outputNodeIds: readonly string[];
+    configuredRecipeId: string | null; manual: boolean; observedRecipeIds: readonly string[] }[];
+  readonly slots: readonly { entityId: string; nodeId: string; groupId: string | null; slotId: string | null;
+    itemId: string | null; count: number; infinite: boolean }[];
+  /** 全程物品集合包含预热；四段流量只累计观察期，不保存逐 tick 历史。 */
+  readonly transfers: readonly { sourcePortId: string; targetPortId: string; itemId: string;
+    totalAmount: number; windowAmounts: readonly number[] }[];
 }

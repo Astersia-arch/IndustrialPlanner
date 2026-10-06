@@ -5,6 +5,7 @@ export const MAX_PLANNER_OUTPUT_MODES = 64;
 
 /** 自动项独立搜索；六个维度以内穷举，更多维度保留两种极端和确定性混合样本，限制种子池内存。 */
 export function resolvePlannerOutputAttempt(request: BlueprintPlannerRequest, variant: number) {
+  if (request.blueprintSource) return { request, variant };
   const automatic = request.options.itemPolicies?.filter(policy => policy.output === "auto") ?? [];
   const dimensions = automatic.length + Number(request.options.solidOutput === "auto");
   if (!dimensions) return { request, variant };

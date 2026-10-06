@@ -20,6 +20,10 @@ import { breadthOutlineKey, breadthOutlines, fixedOutlineMinimum, selectBreadthO
 import { createProductionNetwork } from "./production-network";
 import { emptyPlannerCheckpoint, parsePlannerTaskFile, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint, type PlannerParallelCheckpoint, type PlannerShardCheckpoint } from "./task-checkpoint";
 import { plannerRequestKey } from "./search-seed";
+import { inspectBlueprintBoundaries, blueprintBoundaryKey, assertBlueprintRecognition, assertBlueprintSteadyState } from "./blueprint-analysis";
+import { blueprintRecognitionScene } from "./blueprint-scene";
+import { identifyBlueprintNetwork } from "./blueprint-network";
+import { assertBlueprintPreserved } from "./blueprint-constraints";
 import { browserPlannerResources, observePlannerPressure, plannerConcurrencyLimit, PlannerAutomaticConcurrency,
   type PlannerResourceHints, type PlannerConcurrencySample } from "./automatic-concurrency";
 
@@ -325,6 +329,13 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         persist(task);
         return;
       }
+      if (task.file.request.blueprintSource) {
+        try {
+          assertBlueprintPreserved(workspace.registry, task.file.request, point.blueprintBaseline!.candidate.seed!, candidate.execution.blueprint);
+          assertBlueprintRecognition(workspace.registry, { ...task.file.request.blueprintSource, blueprint: candidate.execution.blueprint }, report);
+          assertBlueprintSteadyState(workspace.registry, report, candidate.execution.probes);
+        } catch (error) { lastFailure = errorMessage(error); persist(task); return; }
+      }
       portfolio.remember(candidate.seed);
       shard.portfolio = portfolio.snapshot();
       shard.validatedCandidates++;
@@ -340,7 +351,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         point.result = { taskId: task.file.taskId, blueprint: candidate.execution.blueprint, folderId: null,
           metrics: candidate.metrics, connections: candidate.connections,
           measuredOutputs: report.probes.filter(probe => task.file.request.plan.targets.some(target => target.itemId === probe.id))
-            .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute })),
+            .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute
+              - (task.file.request.blueprintSource ? report.probes.find(entry => entry.id === `input:${probe.id}`)?.perMinute ?? 0 : 0) })),
           warmupSeconds: candidate.execution.warmupSeconds, observationSeconds: report.observationSeconds, elapsedMs: elapsed(task) };
         publish(task, { bestArea: candidate.metrics.area,
           areaHistory: oldArea === null || candidate.metrics.area < oldArea
@@ -456,7 +468,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
                 observed = count;
                 task.liveEvaluations.set(shard.index, count);
                 live(phase, message);
-              }, selection.seed, selection.continuationStep, maximumArea, targetOutline);
+              }, selection.seed, selection.continuationStep, maximumArea, targetOutline, point.blueprintBaseline?.candidate.seed);
             commit(candidate.search.evaluations, candidate);
           } catch (error) {
             if (error instanceof PlannerCandidateError) {
@@ -788,8 +800,56 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const host: BlueprintPlannerHost = {
     state,
     actions: {
+      async inspectBlueprint(blueprint, activeActivityIds, signal) {
+        await ready; assertReady();
+        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        signal?.throwIfAborted();
+        try {
+          if (!workspace.simulation) throw new Error("仿真服务不可用。");
+          const report = await workspace.simulation.actions.runBlueprint({ blueprint, activeActivityIds,
+            engine: { kind: "dense-v2", ticksPerSecond: 2 },
+            scene: { externalEntities: [], externalSlotLinks: [], initialSlots: [], powerMode: "infinite" }, probes: [],
+            warmupSeconds: 0, observationSeconds: 0.5, inventorySampleCount: 2, maxWallTimeMs: 30_000, collectAnalysis: true },
+          AbortSignal.any([restorationAbort.signal, ...signal ? [signal] : []]));
+          if (!report.analysis) throw new Error(report.diagnostics[0]?.message ?? "无法解析蓝图。");
+          return inspectBlueprintBoundaries(workspace.registry, blueprint, report.analysis, activeActivityIds);
+        } finally { signal?.throwIfAborted(); }
+      },
+      async identifyBlueprint(input, inputOptions, signal) {
+        input = structuredClone(input); inputOptions = structuredClone(inputOptions);
+        const boundaries = await host.actions.inspectBlueprint(input.blueprint, input.activeActivityIds, signal);
+        if (boundaries.length !== input.boundaries.length || boundaries.some(boundary => {
+          const configured = input.boundaries.find(entry => blueprintBoundaryKey(entry) === blueprintBoundaryKey(boundary));
+          return !configured?.itemId || boundary.itemId !== null && boundary.itemId !== configured.itemId || configured.kind !== boundary.kind;
+        })) throw new Error("请补全所有边界物品，并保留蓝图中已有的物品配置。");
+        assertReady();
+        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        importing = true;
+        try {
+          if (!workspace.simulation) throw new Error("仿真服务不可用。");
+          const execution = blueprintRecognitionScene(workspace.registry, structuredClone(input));
+          const report = await workspace.simulation.actions.runBlueprint(execution,
+            AbortSignal.any([restorationAbort.signal, ...signal ? [signal] : []]));
+          const identified = identifyBlueprintNetwork(workspace.registry, input, inputOptions, execution, report);
+          const file = createTaskFile(identified.request), id = file.taskId;
+          const baseline = { candidate: identified.candidate, report };
+          const best = structuredClone(baseline);
+          // 保底结果也作为独立交付副本；保存到自动规划不能改写原蓝图库记录。
+          best.candidate.execution.blueprint.blueprintId = createUuid();
+          const task = materialize({ ...file, checkpoint: { ...emptyPlannerCheckpoint(), blueprintBaseline: baseline, best,
+            portfolio: new PlannerSearchPortfolio(identified.request, identified.candidate.seed).snapshot(),
+            result: { taskId: id, blueprint: best.candidate.execution.blueprint, folderId: null, metrics: identified.candidate.metrics, connections: [],
+              measuredOutputs: identified.request.plan.targets, warmupSeconds: execution.warmupSeconds,
+              observationSeconds: report.observationSeconds, elapsedMs: report.elapsedMs } },
+            progress: { ...file.progress, message: "蓝图识别完成，可以开始优化。", bestArea: identified.candidate.metrics.area,
+              areaHistory: [{ evaluatedProposals: 0, bestArea: identified.candidate.metrics.area }] } });
+          tasks.set(id, task); latestId = id; persist(task); await writes; notify();
+          return id;
+        } finally { importing = false; }
+      },
       start(request) {
         assertReady();
+        if (request.blueprintSource) throw new Error("请先识别蓝图，再继续已建立基线的任务。");
         validateTaskRequest(workspace.registry, request);
         if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
         const id = createUuid();

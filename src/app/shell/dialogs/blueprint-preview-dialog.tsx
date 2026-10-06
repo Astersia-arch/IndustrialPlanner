@@ -1192,7 +1192,8 @@ export const BlueprintPreviewDialog = observer(function BlueprintPreviewDialog({
                       >
                         {t("workbench.button.copyBlueprintToClipboard")}
                       </button>
-                      {appHost.blueprintPlannerDialog.enabled ? <button type="button" disabled
+                      {appHost.blueprintPlannerDialog.enabled ? <button type="button" disabled={!record}
+                        onClick={() => { if (record) { appHost.blueprintPlannerDialog.openBlueprint(record); controller.close(); } }}
                         className={cm(styles, "save-blueprint-secondary-button")}
                         data-ui-button-id="blueprint-preview-optimize-button">{t("eda.optimize")}</button> : null}
                       {showMoveAction ? (

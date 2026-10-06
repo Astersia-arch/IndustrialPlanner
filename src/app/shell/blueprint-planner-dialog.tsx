@@ -15,6 +15,7 @@ import { plannerAreaCoordinate, plannerAreaTicks, plannerLogCoordinate, plannerP
 import styles from "./blueprint-planner-dialog.module.scss";
 import { BlueprintPlannerEnvironment } from "./blueprint-planner-environment";
 import { PlannerSupplyRules } from "@/shared/planner-supply";
+import { BlueprintIdentification } from "./blueprint-identification";
 
 const OPTION_FIELDS: readonly { key: "warehouseBus" | "plantStartup"; label: UiKey; choices: readonly [string, UiKey][] }[] = [
   // AI-REMOVED 2026-10-03:
@@ -208,6 +209,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   });
   const getConfiguredRequest = () => {
     const request = controller.getRequest();
+    if (request.blueprintSource) return request;
     // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
     const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? request.plan.supplyPolicies;
     const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
@@ -287,15 +289,18 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
                   } finally { setFileBusy(false); }
                 })}>{t("eda.deleteTask")}</button> : null}
               </div> : null}
-          {plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
+          {controller.blueprintDraft ? <BlueprintIdentification key={controller.blueprintDraft.blueprintId}
+            appHost={appHost} blueprint={controller.blueprintDraft} onBusy={setFileBusy} /> : plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
             <button type="button" disabled={busy} onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
-            <div className={styles.heading}><div><span>{t("eda.productionMode")}</span><p className={styles.target}>{plan.name}</p></div>
+            <div className={styles.heading}><div><span>{t(controller.blueprintRequest ? "eda.blueprintMode" : "eda.productionMode")}</span><p className={styles.target}>{plan.name}</p></div>
 
             </div>
-            <div className={styles.flow} aria-label={t("productionPlanning.modeDevice")}>
-              <PlannerTaskFlow key={selectedId ?? "draft"} plan={plan} registry={appHost.workspace.registry} t={t} />
+            <div className={styles.flow} aria-label={t(controller.blueprintRequest ? "eda.baselineOutputs" : "productionPlanning.modeDevice")}>
+              {controller.blueprintRequest ? <ul>{plan.targets.map(target => <li key={target.itemId}>
+                {t(appHost.workspace.registry.queries.findItemDefinition(target.itemId)!.nameKey)} · {target.perMinute.toFixed(2)}/min
+              </li>)}</ul> : <PlannerTaskFlow key={selectedId ?? "draft"} plan={plan} registry={appHost.workspace.registry} t={t} />}
             </div>
-            {supply.view ? <BlueprintPlannerEnvironment plan={plan} registry={appHost.workspace.registry} view={supply.view}
+            {supply.view && !controller.blueprintRequest ? <BlueprintPlannerEnvironment plan={plan} registry={appHost.workspace.registry} view={supply.view}
               disabled={busy || progress !== null} isTouch={appHost.state.screenProfile.hasTouch}
               onChange={controller.updateSupplyPolicy} onPickRecipe={(itemId, recipes) => act(async () => {
                 const item = appHost.workspace.registry.queries.findItemDefinition(itemId);
@@ -303,11 +308,11 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
                   title: `${t("productionPlanning.chooseRecipe")} · ${item ? t(item.nameKey) : itemId}`, recipes });
                 if (recipeId && controller.plan === plan && controller.viewTaskId === null) controller.updateSupplyPolicy({ itemId, source: "production", recipeId });
               })} t={t} /> : null}
-            {supply.view ? <BlueprintPlannerItemPolicies plan={plan} registry={appHost.workspace.registry} environment={supply.view}
+            {supply.view && !controller.blueprintRequest ? <BlueprintPlannerItemPolicies plan={plan} registry={appHost.workspace.registry} environment={supply.view}
               options={controller.options} disabled={busy || progress !== null} onChange={controller.updateItemPolicy} t={t} /> : null}
-            {supply.error ? <p role="alert" className={styles.error}>{supply.error}</p> : null}
+            {supply.error && !controller.blueprintRequest ? <p role="alert" className={styles.error}>{supply.error}</p> : null}
             <fieldset className={styles.options} disabled={busy}>
-              {OPTION_FIELDS.map(field => <label key={field.key}><span>{t(field.label)}</span>
+              {OPTION_FIELDS.filter(() => !controller.blueprintRequest).map(field => <label key={field.key}><span>{t(field.label)}</span>
                 <select disabled={progress !== null} value={controller.options[field.key]}
                   onChange={event => controller.updateOptions({ [field.key]: event.target.value })}>
                   {field.choices.map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
@@ -344,13 +349,13 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
               <label className={styles.parallel}><input type="checkbox" checked={controller.options.concurrency === "auto"}
                 onChange={event => controller.updateOptions({ concurrency: event.target.checked ? "auto" : 1 })} />
                 <span>{t("eda.concurrency")}</span></label>
-              <label><span>{t("eda.converterStartup")}</span>
+              {!controller.blueprintRequest ? <label><span>{t("eda.converterStartup")}</span>
                 <select disabled={progress !== null} value={controller.options.converterStartup ?? "reject"}
                   onChange={event => controller.updateOptions({ converterStartup: event.target.value as "manual" | "tank" | "reject" })}>
                   <option value="manual">{t("eda.converterStartupManual")}</option>
                   <option value="tank">{t("eda.converterStartupTank")}</option>
                   <option value="reject">{t("eda.converterStartupReject")}</option>
-                </select></label>
+                </select></label> : null}
             </fieldset>
             {plan.containsModules ? <p role="alert" className={styles.error}>{t("eda.modulesUnsupported")}</p> : null}
           </> : null}
@@ -378,7 +383,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
         </div>
         <footer className={styles.footer}>
-          {progress !== null && plan !== null && !busy ? <button type="button" disabled={anyBusy}
+          {progress !== null && plan !== null && !busy && !controller.blueprintRequest ? <button type="button" disabled={anyBusy}
             onClick={() => { controller.open(plan, controller.options); setError(null); }}>{t("eda.replan")}</button> : null}
           {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
           {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}

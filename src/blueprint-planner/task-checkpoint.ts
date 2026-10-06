@@ -11,6 +11,10 @@ import { comparePlannerRanks } from "./quality";
 import { restorePlannerSeed } from "./search-seed";
 import { migratePlannerCandidate } from "./task-migration";
 import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
+import { assertBlueprintPreserved } from "./blueprint-constraints";
+import { assertBlueprintRecognition, assertBlueprintSteadyState } from "./blueprint-analysis";
+import { blueprintRecognitionScene } from "./blueprint-scene";
+import { identifyBlueprintNetwork } from "./blueprint-network";
 
 // AI-REMOVED 2026-10-02:
 // Reason: 多尺寸批次增加持久化访问记录，旧检查点需要显式迁移。
@@ -46,6 +50,7 @@ export interface PlannerParallelCheckpoint {
 }
 
 export interface PlannerCheckpoint {
+  readonly blueprintBaseline?: { readonly candidate: PlannerCandidate; readonly report: SimulationBlueprintRunReport };
   attempt: number;
   evaluations: number;
   portfolio: PlannerPortfolioSnapshot;
@@ -68,6 +73,29 @@ export function emptyPlannerCheckpoint(): PlannerCheckpoint {
 export async function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, registry: RegistryContract,
   verify?: (execution: SimulationBlueprintRunRequest) => Promise<SimulationBlueprintRunReport>,
 ): Promise<BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint }> {
+  if (value?.request?.blueprintSource) {
+    const file = parsePlannerTaskFile(value, registry);
+    if (!verify) return file;
+    const source = file.request.blueprintSource!;
+    const execution = blueprintRecognitionScene(registry, source);
+    const report = await verify(execution);
+    const baseline = identifyBlueprintNetwork(registry, source, file.request.options, execution, report);
+    const seedContents = (candidate: PlannerCandidate) => JSON.stringify({ ...candidate.seed,
+      network: { ...candidate.seed!.network, request: null } });
+    if (JSON.stringify(baseline.request.plan) !== JSON.stringify(file.request.plan)
+      || seedContents(baseline.candidate) !== seedContents(file.checkpoint.blueprintBaseline!.candidate)) {
+      throw new Error("原图识别基线与任务不一致，请重新识别蓝图。");
+    }
+    const best = file.checkpoint.best;
+    if (best && JSON.stringify(best.candidate.execution.blueprint) !== JSON.stringify(execution.blueprint)) {
+      const request = blueprintRecognitionScene(registry, source, best.candidate.execution.blueprint);
+      const measured = await verify(request);
+      assertBlueprintRecognition(registry, { ...source, blueprint: request.blueprint }, measured);
+      assertBlueprintSteadyState(registry, measured, request.probes);
+      if (!meetsProductionTargets(file.request, measured)) throw new Error("恢复的最优蓝图未通过原产率验收。");
+    }
+    return file;
+  }
 // AI-REMOVED 2026-10-05:
 // Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
 // Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
@@ -180,7 +208,15 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
       validateTaskRequest(registry, entry.seed.network.request);
       restorePlannerSeed(registry, restorePlannerOutputRequest(request, entry.seed.network.request.options), entry.seed);
     }
-    for (const candidate of [point.best?.candidate ?? null, point.pendingCandidate]) {
+    if (request.blueprintSource) {
+      const baseline = point.blueprintBaseline;
+      if (!baseline?.candidate.seed || baseline.report.status !== "completed"
+        || JSON.stringify(baseline.candidate.execution.blueprint) !== JSON.stringify(request.blueprintSource.blueprint)) throw new Error("蓝图任务缺少原图识别基线。");
+      const identified = identifyBlueprintNetwork(registry, request.blueprintSource, request.options, baseline.candidate.execution, baseline.report);
+      if (JSON.stringify(identified.request.plan) !== JSON.stringify(request.plan)
+        || baseline.candidate.seed.requestKey !== plannerRequestKey(request)) throw new Error("蓝图任务产率基线或输入配置不一致。");
+    }
+    for (const candidate of [point.blueprintBaseline?.candidate ?? null, point.best?.candidate ?? null, point.pendingCandidate]) {
       if (candidate === null) continue;
       if (!candidate?.execution?.blueprint || candidate.execution.blueprint.schemaVersion !== BLUEPRINT_SCHEMA_VERSION
         || !Array.isArray(candidate.execution.blueprint.entityOrder) || !Array.isArray(candidate.connections)
@@ -192,6 +228,7 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
           || !Number.isFinite(entity.position.x) || !Number.isFinite(entity.position.y)) throw new Error("候选蓝图包含无效设备。");
       }
       if (candidate.seed) restorePlannerSeed(registry, restorePlannerOutputRequest(request, candidate.seed.network.request.options), candidate.seed);
+      if (request.blueprintSource) assertBlueprintPreserved(registry, request, point.blueprintBaseline!.candidate.seed!, candidate.execution.blueprint);
     }
     if (point.best !== null && (!Array.isArray(point.best.report?.probes) || point.best.report.status !== "completed")) throw new Error("最优结果缺少验证报告。");
     if (point.result !== null && (point.result.taskId !== file.taskId || !point.best
@@ -256,6 +293,14 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
 
 export function validateTaskRequest(registry: RegistryContract, request: BlueprintPlannerRequest): void {
   const { plan, options } = request;
+  if (request.blueprintSource) {
+    const { blueprint, boundaries, activeActivityIds } = request.blueprintSource;
+    if (blueprint.schemaVersion !== BLUEPRINT_SCHEMA_VERSION || !blueprint.entityOrder.length
+      || !Array.isArray(boundaries) || !Array.isArray(activeActivityIds)
+      || boundaries.some(boundary => !blueprint.entities[boundary.entityId] || !boundary.itemId
+        || !registry.queries.findItemDefinition(boundary.itemId) || !["input", "output"].includes(boundary.direction)
+        || !["port", "facility"].includes(boundary.kind))) throw new Error("原蓝图或边界配置无效。");
+  }
   if (options.concurrency !== undefined && options.concurrency !== "auto" && (!Number.isSafeInteger(options.concurrency)
     || options.concurrency < 1 || options.concurrency > 32)) throw new Error("并发计算数必须介于 1 到 32。");
   if (typeof plan.name !== "string" || typeof plan.sourceBaseId !== "string" || typeof plan.containsModules !== "boolean") throw new Error("产线信息无效。");

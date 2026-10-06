@@ -35,6 +35,7 @@ import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "
 import { resolvePlannerAttempt } from "./search-portfolio";
 import { continuationOutline, fixedOutlineMinimum } from "./search-outline";
 import { PlannerBoundary } from "./boundary";
+import { createBlueprintCandidate } from "./blueprint-candidate";
 
 export interface PlannerCandidate {
   readonly seed?: PlannerSearchSeed;
@@ -51,6 +52,7 @@ export async function createPlannerCandidate(
   options: PlannerSearchOptions = {}, reportEvaluations: (count: number) => void = () => undefined,
   routing?: PlannerRoutingBackend,
 ): Promise<PlannerCandidate> {
+  if (request.blueprintSource) return createBlueprintCandidate(registry, request, variant, checkBudget, update, options, reportEvaluations, routing);
   ({ request, variant } = resolvePlannerAttempt(request, variant));
   // 独立重启轮换箱数；紧凑失败后的预算内重排必须保持本轮拓扑选择。
   options = { ...options, stashPackingVariant: options.stashPackingVariant ?? Math.floor((variant + 1) / 4) };

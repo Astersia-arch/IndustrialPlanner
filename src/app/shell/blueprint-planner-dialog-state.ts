@@ -3,6 +3,7 @@ import type { BlueprintPlannerContract, BlueprintPlannerItemPolicy, BlueprintPla
 import { readFromLocalStorage, saveToLocalStorage } from "@/shared/storage";
 import { runStorageEffect } from "@/shared/storage/storage-failure";
 import { createDefaultDialogStateForKey } from "../state";
+import type { BlueprintDocument } from "@/domain/document/blueprint-document";
 
 const ENABLED_KEY = "industrial-planner.experimental.eda";
 const OPTIONS_KEY = "industrial-planner.eda.options";
@@ -11,6 +12,8 @@ export class BlueprintPlannerDialogController {
   readonly dialogState = createDefaultDialogStateForKey("blueprint-planner");
   enabled = readFromLocalStorage<boolean>(ENABLED_KEY) === true;
   plan: BlueprintPlannerProductionPlan | null = null;
+  blueprintDraft: BlueprintDocument | null = null;
+  blueprintRequest: BlueprintPlannerRequest | null = null;
   viewTaskId: string | null = null;
   options: BlueprintPlannerOptions = {
     solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
@@ -54,7 +57,9 @@ export class BlueprintPlannerDialogController {
       // AI-CORRECTION 2026-10-03：复选框关闭保存为 1；旧多 Worker 数字仍迁移为自动。
       if (saved.concurrency === 1) this.options = { ...this.options, concurrency: 1 };
     }
-    makeAutoObservable<BlueprintPlannerDialogController, "getPlanner">(this, { plan: observable.ref, getPlanner: false }, { autoBind: true });
+    makeAutoObservable<BlueprintPlannerDialogController, "getPlanner">(this, {
+      plan: observable.ref, blueprintDraft: observable.ref, blueprintRequest: observable.ref, getPlanner: false,
+    }, { autoBind: true });
   }
 
   get activeTaskId(): string | null { return this.getPlanner()?.state.activeTaskId ?? null; }
@@ -74,15 +79,25 @@ export class BlueprintPlannerDialogController {
       return;
     }
     if (plan !== undefined) {
+      this.blueprintDraft = null; this.blueprintRequest = null;
       this.plan = structuredClone(plan); this.viewTaskId = null;
       this.options = options ? { ...toJS(options), converterStartup: options.converterStartup ?? "reject" } : { ...this.options, itemPolicies: [] };
     }
     this.dialogState.visible = true;
   }
 
+  openBlueprint(blueprint: BlueprintDocument): void {
+    if (this.taskLocked) { this.open(); return; }
+    this.blueprintDraft = structuredClone(toJS(blueprint));
+    this.blueprintRequest = null; this.plan = null; this.viewTaskId = null;
+    this.dialogState.visible = true;
+  }
+
   selectTask(taskId: string | null, request?: BlueprintPlannerRequest): void {
     if (this.taskLocked && taskId !== this.activeTaskId) return;
     this.viewTaskId = taskId;
+    this.blueprintDraft = null;
+    this.blueprintRequest = request?.blueprintSource ? structuredClone(request) : null;
     if (taskId === null || !request) this.plan = null;
     if (request) { this.plan = structuredClone(request.plan); this.options = {
       ...structuredClone(request.options), converterStartup: request.options.converterStartup ?? "reject", concurrency: request.options.concurrency === 1 ? 1 : "auto",
@@ -112,6 +127,6 @@ export class BlueprintPlannerDialogController {
 
   getRequest(): BlueprintPlannerRequest {
     if (this.plan === null) throw new Error("请先计算产线规划。");
-    return { plan: structuredClone(this.plan), options: toJS(this.options) };
+    return { ...(this.blueprintRequest ?? {}), plan: structuredClone(this.plan), options: toJS(this.options) };
   }
 }

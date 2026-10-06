@@ -15,6 +15,8 @@ export interface PlannerSearchOptions {
   /** baseline 保留旧搜索组织用于同预算对照；规则修复和最终验收始终共用。 */
   readonly strategy?: "baseline" | "compact";
   readonly seed?: PlannerSearchSeed;
+  /** 导入蓝图的不可变基线；独立重启及减量组合始终从原图出发。 */
+  readonly originSeed?: PlannerSearchSeed;
   /** 当前有效种子的续搜次数；前两次快速缩边，随后轮换长宽比。 */
   readonly continuationStep?: number;
   /** 同物品输出箱数量的有限轮换；0 优先按端口总容量合箱。 */

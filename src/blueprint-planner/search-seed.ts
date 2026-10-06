@@ -30,9 +30,10 @@ export function capturePlannerSeed(request: BlueprintPlannerRequest, network: Pl
   return structuredClone({ requestKey: plannerRequestKey(request), width, height,
     routes: routes.map(route => ({ ...route, cells: route.cells.map(point) })),
     wires: wires.map(wire => ({ ...wire, source: port(wire.source), target: port(wire.target) })),
-    network: { ...network, nodes: network.nodes.filter(node => node.purpose !== "power").map(node => ({
+    network: { ...network, nodes: network.nodes.filter(node => request.blueprintSource || node.purpose !== "power").map(node => ({
       entity: { ...node.entity, position: point(node.entity.position) }, recipeId: node.recipe?.id ?? null,
       purpose: node.purpose, inputs: node.inputs, outputs: node.outputs, external: node.external,
+      boundaryPort: node.boundaryPort,
       supplyTarget: node.supplyTarget, supplyTargets: node.supplyTargets, outputSource: node.outputSource, outputSources: node.outputSources,
     })) } });
 }

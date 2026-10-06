@@ -310,7 +310,7 @@ for (const profile of profiles) {
       });
       assert(before !== null && before.folderId === null, '保存前必须能读取真实验证结果');
       await dialog.getByRole('button',{name:'预览蓝图',exact:true}).click();
-      assert(await page.getByRole('button',{name:'优化此蓝图',exact:true}).isDisabled(), '优化入口尚未开放');
+      assert(await page.getByRole('button',{name:'优化此蓝图',exact:true}).isEnabled(), '已完成产线蓝图可进入原图识别');
       await page.screenshot({path:${JSON.stringify(resolve(output, "preview.png"))}});
       assert(await page.evaluate(() => window.__industrialPlannerAppHost.blueprintPlannerDialog.dialogState.visible), '预览时保留规划面板');
       const preview = page.getByRole('dialog').filter({has:page.getByRole('button',{name:'优化此蓝图',exact:true})});

@@ -23,6 +23,7 @@ import { DENSE_STANDARD_TICK_RATE_PER_SECOND, STANDARD_TICK_RATE_PER_SECOND } fr
 // import { createLegacyBlueprintEngine } from "../legacy";
 import { resolveDeviceOperatingStatus } from "../projection";
 import { compileSimulationTopology } from "../topology";
+import { BlueprintAnalysisCollector } from "./analysis";
 
 /** 显式场景执行：不访问编辑器，不补入来源基地的设施或边界。 */
 export async function executeBlueprint(
@@ -50,6 +51,7 @@ export async function executeBlueprint(
     ? denseTickRate ?? DENSE_STANDARD_TICK_RATE_PER_SECOND : STANDARD_TICK_RATE_PER_SECOND;
   let engine: BlueprintExecutionEngine | null = null;
   let topology: CompiledSimulationTopology | null = null;
+  let analysis: BlueprintAnalysisCollector | undefined;
   let status: SimulationBlueprintRunReport["status"] = "completed";
   let observationStartTick: number | null = null;
   let observedSeconds = 0;
@@ -73,6 +75,7 @@ export async function executeBlueprint(
         poweredEntityIds: collectPoweredEntityIds(entities, registry.entityDefinitions),
       });
       topology.diagnostics.forEach(addDiagnostic);
+      if (request.collectAnalysis) analysis = new BlueprintAnalysisCollector(topology, registry);
       if (topology.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
         status = "failed";
       } else if (!interrupted()) {
@@ -130,6 +133,8 @@ export async function executeBlueprint(
           // Original code:
           // if (observedSeconds >= request.observationSeconds) break;
           engine.advance();
+          analysis?.sample(engine, observationStartTick === null ? null
+            : (engine.tickNumber - observationStartTick) / standardTickRate / request.observationSeconds);
           if (observationStartTick !== null) {
             observedSeconds = (engine.tickNumber - observationStartTick) / standardTickRate;
             engine.visitTransfers((transfer) => {
@@ -171,6 +176,7 @@ export async function executeBlueprint(
   }
   try {
     return {
+      ...(analysis ? { analysis: analysis.report() } : {}),
       status, engineKind,
       simulationSeconds: (engine?.tickNumber ?? 0) / standardTickRate,
       observationSeconds: observedSeconds,
@@ -201,6 +207,9 @@ export async function executeBlueprint(
 }
 
 export function validateBlueprintRequest(registry: RegistryContract, request: SimulationBlueprintRunRequest): void {
+  if (request.engine && (request.engine.kind !== "dense-v2" || ![2, 4].includes(request.engine.ticksPerSecond))) {
+    throw new Error("Invalid blueprint execution engine.");
+  }
   if (!Number.isFinite(request.warmupSeconds) || request.warmupSeconds < 0
     || !Number.isFinite(request.observationSeconds) || request.observationSeconds <= 0
     || !Number.isFinite(request.maxWallTimeMs) || request.maxWallTimeMs <= 0

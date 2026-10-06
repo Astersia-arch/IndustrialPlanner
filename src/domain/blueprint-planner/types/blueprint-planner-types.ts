@@ -67,8 +67,25 @@ export interface BlueprintPlannerOptions {
 }
 
 export interface BlueprintPlannerRequest {
+  /** 原图快照与已声明边界；plan 是识别得到的产率基线，不用于重建原图设备。 */
+  readonly blueprintSource?: BlueprintPlannerBlueprintInput;
   readonly plan: BlueprintPlannerProductionPlan;
   readonly options: BlueprintPlannerOptions;
+}
+
+export interface BlueprintPlannerBlueprintBoundary {
+  readonly entityId: string;
+  readonly portGroupId: string;
+  readonly portId: string;
+  readonly direction: "input" | "output";
+  readonly kind: "port" | "facility";
+  readonly itemId: string | null;
+}
+
+export interface BlueprintPlannerBlueprintInput {
+  readonly blueprint: BlueprintDocument;
+  readonly boundaries: readonly BlueprintPlannerBlueprintBoundary[];
+  readonly activeActivityIds: readonly string[];
 }
 
 export type BlueprintPlannerTaskStatus =

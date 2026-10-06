@@ -24,8 +24,8 @@ export function resolvePlannerBusMask(shape: BlueprintPlannerOptions["warehouseB
   return null;
 }
 
-export function isPlannerBoundaryNode(node: Pick<PlannerNode, "entity" | "external">): boolean {
-  return node.external === true || node.entity.definitionId === "unloader_1" || node.entity.definitionId === "loader_1";
+export function isPlannerBoundaryNode(node: Pick<PlannerNode, "entity" | "external" | "boundaryPort">): boolean {
+  return node.boundaryPort !== undefined || node.external === true || node.entity.definitionId === "unloader_1" || node.entity.definitionId === "loader_1";
 }
 
 /** 包围盒先确定，仓库口与外接入口沿其内边移动；预计算朝向几何供逐提案检查复用。 */
@@ -38,11 +38,13 @@ export class PlannerBoundary {
     readonly outline: { readonly width: number; readonly height: number }) {
     this.entries = network.nodes.flatMap((node, index) => {
       if (!isPlannerBoundaryNode(node)) return [];
-      const kind = node.external ? getPlannerPorts(registry, node.entity, node.definition, "input")[0]!.kind : "warehouse";
+      const direction = node.boundaryPort?.direction ?? (node.external || node.entity.definitionId === "loader_1" ? "input" : "output");
+      const kind = node.external || node.boundaryPort ? getPlannerPorts(registry, node.entity, node.definition, direction)[0]!.kind : "warehouse";
       const geometry = ROTATIONS.map(rotation => {
         const entity = { ...node.entity, position: { x: 0, y: 0 }, rotation };
-        const ports = getPlannerPorts(registry, entity, node.definition, node.external || node.entity.definitionId === "loader_1" ? "input" : "output");
-        const edge = kind === "warehouse" ? opposite(ports[0]!.edge) : ports[0]!.edge;
+        const ports = getPlannerPorts(registry, entity, node.definition, direction);
+        const port = node.boundaryPort ? ports.find(port => port.groupIndex === node.boundaryPort!.groupIndex && port.portIndex === node.boundaryPort!.portIndex)! : ports[0]!;
+        const edge = kind === "warehouse" ? opposite(port.edge) : port.edge;
         const rect = resolveEntityGridRect({ entity, definition: node.definition });
         return { width: rect.width, height: rect.height, edge };
       });

@@ -77,8 +77,8 @@ export async function runHeadlessPlanner(args: readonly string[]): Promise<void>
           //           return session.planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea })
           //             .finally(() => signal.removeEventListener("abort", abort));
           //         },
-          build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea, targetOutline) =>
-            planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea, targetOutline }, update, signal),
+          build: (request, variant, budgetMs, evaluations, signal, update, seed, continuationStep, maximumArea, targetOutline, originSeed) =>
+            planner.build(request, variant, budgetMs, { maxEvaluations: evaluations, seed, continuationStep, maximumArea, targetOutline, originSeed }, update, signal),
           dispose: () => { void planner.dispose(); },
         };
       };

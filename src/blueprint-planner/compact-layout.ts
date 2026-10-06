@@ -98,6 +98,8 @@ export class CompactLayoutSearch {
     this.originalTargetKeys = this.edges.map(edge => edge.targetKey);
     this.originalSourceKeys = this.edges.map(edge => edge.sourceKey);
     this.junctionPorts = network.nodes.flatMap((node, index) => {
+      // 导入原图保留控制配置和端口身份，不能沿用生成模式的端口过滤及优先级重写。
+      if (network.request.blueprintSource) return [];
       const role = registry.queries.resolveLogisticsRole(node.definition.id);
       if (role !== "splitter" && role !== "converger") {
         if (statistics.strategy !== "compact") return [];

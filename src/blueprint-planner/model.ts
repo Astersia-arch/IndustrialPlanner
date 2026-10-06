@@ -18,6 +18,8 @@ export interface PlannerNode {
   readonly inputs: MaterialDemand[];
   readonly outputs: MaterialDemand[];
   readonly external?: boolean;
+  /** 导入蓝图的断头边界，可为输入或输出；端口身份随设备移动保留。 */
+  readonly boundaryPort?: { readonly direction: "input" | "output"; readonly groupIndex: number; readonly portIndex: number };
   readonly supplyTarget?: { readonly entityId: string; readonly storageGroupIds?: readonly string[] };
   readonly supplyTargets?: readonly { readonly entityId: string; readonly storageGroupIds?: readonly string[] }[];
   readonly outputSource?: { readonly entityId: string; readonly storageGroupIds?: readonly string[] };

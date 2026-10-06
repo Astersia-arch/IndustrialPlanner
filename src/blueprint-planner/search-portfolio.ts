@@ -106,7 +106,7 @@ export class PlannerSearchPortfolio {
     const pool = this.seeds.get(plannerRequestKey(attempt.request));
     const bestArea = Math.min(...[...this.seeds.values()].map(value => value.entries[0]!.seed.width * value.entries[0]!.seed.height));
     const bestStashCount = Math.min(...[...this.seeds.values()].flatMap(value => value.entries
-      .filter(entry => entry.seed.width * entry.seed.height === bestArea).map(entry => countPlannerOutputStashes(entry.seed.network.nodes))));
+      .filter(entry => entry.seed.width * entry.seed.height === bestArea).map(entry => this.request.blueprintSource ? 0 : countPlannerOutputStashes(entry.seed.network.nodes))));
     // 2026-09-30：同面积少箱也是改进；冷启动可能合箱，固定拓扑续搜只有本来更少箱时才放宽一格。
     let maximumArea = continuation && Number.isFinite(bestArea)
       ? bestArea - Number(!plannerUsesOutputStash(attempt.request.options) || bestStashCount <= 1) : undefined;
@@ -150,7 +150,7 @@ export class PlannerSearchPortfolio {
     if (previous?.entries.some(item => item.seed.width === seed.width && item.seed.height === seed.height && seedDistance(item, entry) === 0)) return;
     const area = (item: SeedEntry) => item.seed.width * item.seed.height;
     const candidates = [...previous?.entries ?? [], entry].sort((a, b) => area(a) - area(b)
-      || countPlannerOutputStashes(a.seed.network.nodes) - countPlannerOutputStashes(b.seed.network.nodes));
+      || (this.request.blueprintSource ? 0 : countPlannerOutputStashes(a.seed.network.nodes) - countPlannerOutputStashes(b.seed.network.nodes)));
     const best = candidates[0]!;
     const selected = [best];
     const remaining = candidates.slice(1).filter(item => area(item) <= area(best) * 1.1);
@@ -160,7 +160,7 @@ export class PlannerSearchPortfolio {
       selected.push(remaining.shift()!);
     }
     const improved = !previous || area(best) < area(previous.entries[0]!)
-      || (area(best) === area(previous.entries[0]!) && countPlannerOutputStashes(best.seed.network.nodes) < countPlannerOutputStashes(previous.entries[0]!.seed.network.nodes));
+      || (!this.request.blueprintSource && area(best) === area(previous.entries[0]!) && countPlannerOutputStashes(best.seed.network.nodes) < countPlannerOutputStashes(previous.entries[0]!.seed.network.nodes));
     this.seeds.set(seed.requestKey, { entries: selected, attemptsWithoutImprovement: improved ? 0 : previous.attemptsWithoutImprovement });
   }
 }
