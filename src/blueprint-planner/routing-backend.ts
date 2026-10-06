@@ -19,6 +19,8 @@ export interface PlannerRoutingProblem {
 export interface PlannerRoutingMetrics {
   gpuAttempts: number;
   gpuAccepted: number;
+  /** GPU 在对照模式下空手而归的次数；用于观察"反复尝试 GPU 却总是回退"。 */
+  gpuMisses: number;
   cpuRoutes: number;
   pairedSamples: number;
   gpuMs: number;
@@ -86,13 +88,28 @@ export interface PlannerRoutingBackend {
     validate: (cells: readonly GridPoint[]) => boolean, accept: (cells: readonly GridPoint[]) => boolean): Promise<number>;
 }
 
+/** 同一规模连续失败到该次数后先改走 CPU，避免 compare 模式每次空跑 GPU。 */
+const GPU_FAILURE_LIMIT = 3;
+/** 失败后的冷却时长；到期再给一次对照机会，机器或驱动变化仍能被发现。 */
+const GPU_FAILURE_COOLDOWN_MS = 30_000;
+/** 成功对照后的下次探测间隔。 */
+const GPU_PROBE_INTERVAL_MS = 30_000;
+
+interface PlannerRoutingBucket {
+  samples: number; failures: number; cpu: number; gpu: number; nextProbe: number; uses: number;
+}
+
 /** 按图规模分别实测；短路由不会使大图永远失去探测机会。 */
 export class PlannerRoutingPerformance {
-  private readonly buckets = new Map<number, { samples: number; cpu: number; gpu: number; nextProbe: number; uses: number }>();
+  private readonly buckets = new Map<number, PlannerRoutingBucket>();
 
   choose(cells: number, now: number): "cpu" | "gpu" | "compare" {
     const bucket = this.buckets.get(routingBucketKey(cells));
-    if (!bucket || bucket.samples < 3) return "compare";
+    if (!bucket) return "compare";
+    // 订正 2026-10-06（评审 P2）：GPU 空手而归原本完全不留痕，样本数永远到不了 3，
+    // compare 模式因此每次都先空跑一遍 GPU 再回退 CPU（模拟连续失败时 6 次请求全部重复尝试 GPU）。
+    // 现在连续失败到上限即进入冷却、先走 CPU，冷却到期再给一次对照机会。
+    if (bucket.samples < 3) return bucket.failures >= GPU_FAILURE_LIMIT && now < bucket.nextProbe ? "cpu" : "compare";
     if (bucket.gpu < bucket.cpu * 0.9) return ++bucket.uses % 32 === 0 ? "compare" : "gpu";
     return now >= bucket.nextProbe ? "compare" : "cpu";
   }
@@ -100,8 +117,15 @@ export class PlannerRoutingPerformance {
   record(cells: number, cpuMs: number, gpuMs: number, now: number): void {
     const key = routingBucketKey(cells), previous = this.buckets.get(key);
     const samples = (previous?.samples ?? 0) + 1, weight = samples <= 3 ? 1 / samples : 0.5;
-    this.buckets.set(key, { samples, cpu: (previous?.cpu ?? 0) * (1 - weight) + cpuMs * weight,
-      gpu: (previous?.gpu ?? 0) * (1 - weight) + gpuMs * weight, nextProbe: now + 30_000, uses: previous?.uses ?? 0 });
+    this.buckets.set(key, { samples, failures: 0, cpu: (previous?.cpu ?? 0) * (1 - weight) + cpuMs * weight,
+      gpu: (previous?.gpu ?? 0) * (1 - weight) + gpuMs * weight, nextProbe: now + GPU_PROBE_INTERVAL_MS, uses: previous?.uses ?? 0 });
+  }
+
+  /** GPU 在该规模空手而归：记一次失败并把下次对照推后，避免 compare 模式反复空跑。 */
+  recordGpuFailure(cells: number, now: number): void {
+    const key = routingBucketKey(cells), previous = this.buckets.get(key);
+    this.buckets.set(key, { samples: previous?.samples ?? 0, failures: (previous?.failures ?? 0) + 1,
+      cpu: previous?.cpu ?? 0, gpu: previous?.gpu ?? 0, nextProbe: now + GPU_FAILURE_COOLDOWN_MS, uses: previous?.uses ?? 0 });
   }
 
   /** 实测中 GPU 仍快于 CPU 的最大格数；供标定派生 tuning.maxBoundsCells。 */

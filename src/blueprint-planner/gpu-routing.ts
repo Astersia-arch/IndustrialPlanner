@@ -16,7 +16,7 @@ const PATH_BOUND_GROWTH = 1.5;
 
 /** 一个混合通道持有一个设备；每个 Worker 各持自己的设备与流水线，允许并发在途。 */
 export class PlannerGpuRouting implements PlannerRoutingBackend {
-  readonly metrics: PlannerRoutingMetrics = { gpuAttempts: 0, gpuAccepted: 0, cpuRoutes: 0, pairedSamples: 0,
+  readonly metrics: PlannerRoutingMetrics = { gpuAttempts: 0, gpuAccepted: 0, gpuMisses: 0, cpuRoutes: 0, pairedSamples: 0,
     gpuMs: 0, cpuMs: 0, uploadedBytes: 0 };
   readonly performance = new PlannerRoutingPerformance();
   private device: GPUDevice | null = null;
@@ -161,11 +161,27 @@ export class PlannerGpuRouting implements PlannerRoutingBackend {
     finally {
       const cpuMs = measuredCpuMs ?? performance.now() - cpuStarted;
       this.metrics.cpuMs += cpuMs; this.metrics.cpuRoutes++;
+      // AI-REMOVED 2026-10-06:
+      // Reason: 用 max(gpuMs, cpuMs*2) 合成 CPU 基线，会在 GPU 没产出路径时系统性抬高 CPU 成本。
+      // Trigger: 评审 P2 —— GPU 被反复选中却总是超时回退，资源耗在没有收益的通道上。
+      // Evidence: 上游该行无条件写入样本，与"只比较两边真实取得路径的代价"的口径冲突。
+      // Replacement: 下方分支：成功记真实样本；gpu 模式被拒按已测时间记一次；compare 模式空手记一次 miss。
+      // Risk: Low。Human Review: Required
+      //
+      // Original code:
+      // this.performance.record(size, cpuMs, cells ? gpuMs : Math.max(gpuMs, cpuMs * 2), performance.now());
+      //
       // 2026-10-06 订正：原实现用 max(gpuMs, cpuMs*2) 合成 CPU 基线，会在 GPU 没产出路径时
       // 系统性抬高 CPU 成本，使 choose() 误判「GPU 更快」而持续选 GPU 再超时。
       // 现在只记真实样本：GPU 没产出路径就不计入对照；GPU 在 gpu 模式下被拒时按已测时间记一次。
+      //
+      // 订正 2026-10-06（评审 P2）：上面这条修正解决了"证据是错的"，却留下了"没有证据"——
+      // compare 模式下 GPU 空手而归时不留任何痕迹，choose() 永远认为样本不足，
+      // 于是每次请求都先空跑一遍 GPU 再回退 CPU（模拟连续失败时 6 次请求全部重复尝试 GPU）。
+      // 现在 compare 模式的失败也记一次 miss，由 choose() 在连续失败后进入冷却改走 CPU。
       if (cells) this.performance.record(size, cpuMs, gpuMs, performance.now());
       else if (mode === "gpu") this.performance.record(size, cpuMs, gpuMs * 2, performance.now());
+      else if (mode === "compare") { this.performance.recordGpuFailure(size, performance.now()); this.metrics.gpuMisses++; }
       this.metrics.pairedSamples++;
     }
   }

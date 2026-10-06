@@ -1,13 +1,7 @@
-export interface PlannerResourceHints {
-  readonly hardwareConcurrency?: number;
-  readonly deviceMemory?: number;
-  /**
-   * 用户可覆盖的安全阀，只用于防止无界试探；它不是容量结论，也不代表机器实际能力。
-   * 2026-10-06：此前这里用「核数×0.8-1」「核数-1」「内存/2GB」这类公式直接当上限，
-   * 等价于写死常量，不同配置的机器会被误伤或浪费；现在容量一律由标定测量得出。
-   */
-  readonly safetyCeiling?: number;
-}
+import type { PlannerResourceHints } from "@/domain/blueprint-planner";
+
+// 2026-10-06（评审：模块隔离）：PlannerResourceHints 已移动到 Domain
+// （@/domain/blueprint-planner/types/planner-capacity-types.ts），此处不再保留副本。
 
 export interface PlannerConcurrencySample {
   readonly at: number;
@@ -32,6 +26,21 @@ export function plannerProbeCeiling(hints: PlannerResourceHints): number {
   const ceiling = hints.safetyCeiling;
   return Math.max(1, Math.min(PLANNER_SAFETY_CEILING, Number.isSafeInteger(ceiling) && ceiling! > 0 ? ceiling! : PLANNER_SAFETY_CEILING));
 }
+
+// AI-REMOVED 2026-10-06:
+// Reason: 用「核数 × 0.8 - 1」与「内存 GB 数」直接当并发上限，是与机型无关的写死公式：
+//         不同配置的机器会被误伤或浪费，也正是"CPU 长期只占两成"的根因之一。
+// Trigger: 用户要求算力上限必须基于实测动态获取，不能每台机写死。
+// Evidence: 上游该函数被 blueprint-planner-host.ts 直接当 maximum 使用，与标定值无关。
+// Replacement: 容量结论改由 capacity-calibration.ts 实测；未标定时的上界只用 plannerProbeCeiling 的安全阀。
+// Risk: 未标定的机器在首次标定前只从保守起点上探，收敛更慢。Human Review: Required
+//
+// Original code:
+// export function plannerConcurrencyLimit(hints: PlannerResourceHints): number {
+//   const cores = Number.isSafeInteger(hints.hardwareConcurrency) && hints.hardwareConcurrency! > 0 ? hints.hardwareConcurrency! : 2;
+//   const memory = Number.isFinite(hints.deviceMemory) && hints.deviceMemory! > 0 ? hints.deviceMemory! : 4;
+//   return Math.max(1, Math.min(32, Math.floor(cores * 0.8) - 1, Math.floor(memory)));
+// }
 
 /** 并发控制参数；默认值即生产策略，测试与离线客户端可覆盖。 */
 export interface PlannerConcurrencyPolicy {
@@ -84,6 +93,13 @@ export class PlannerAutomaticConcurrency {
   private slowWindows = 0;
   private probing = false;
   private probeBaselineRate: number | null = null;
+  /**
+   * 探测发起前的并发数。
+   * 订正 2026-10-06（评审 P2）：爬升一次最多加 floor(剩余×rampFraction) 路（32 上限时一次 +7），
+   * 而"没有收益"原先只减一格，净效果是持续上涨（固定吞吐实测 1→8→7→…→25，直冲上限）。
+   * 退回必须回到探测前的并发，才谈得上"不留在无收益的容量上"。
+   */
+  private probeBaselineTarget: number | null = null;
   private nextChangeAt = 0;
   /** 容量上限：target 显式指定时为该数值，否则为容量提示。 */
   readonly maximum: number;
@@ -170,13 +186,17 @@ export class PlannerAutomaticConcurrency {
       this.slowWindows = 0;
       this.probing = false;
       this.probeBaselineRate = null;
+      this.probeBaselineTarget = null;
       this.nextChangeAt = sample.at + this.policy.cooldownMs;
       this.resetWindow(sample);
       return this.target;
     }
-    // 探测未兑现吞吐收益则退回一格并冷却，避免在无收益的容量上长期停留。
+    // 探测未兑现吞吐收益则退回探测前的并发并冷却，避免在无收益的容量上长期停留。
+    // 订正 2026-10-06（评审 P2）：原实现只减一格（this.target = Math.max(1, this.target - 1)），
+    // 抵消不了爬升一次加的多路，净效果是持续上涨；原式见上。
     if (this.probing && gain !== null && gain < this.policy.gainThreshold) {
-      this.target = Math.max(1, this.target - 1);
+      this.target = Math.max(1, this.probeBaselineTarget ?? this.target - 1);
+      this.probeBaselineTarget = null;
       this.probing = false;
       this.nextChangeAt = sample.at + this.policy.cooldownMs;
       this.resetWindow(sample);
@@ -185,6 +205,7 @@ export class PlannerAutomaticConcurrency {
     if (sample.at >= this.nextChangeAt && this.target < this.maximum && rate > 0) {
       // 基线必须固定在「加容前的实测速率」：若先 ramp 再写基线，下一窗增益恒为 1.0，会在同一档反复进退。
       this.probeBaselineRate = rate;
+      this.probeBaselineTarget = this.target;
       this.ramp();
       this.probing = true;
       this.slowWindows = 0;

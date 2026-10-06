@@ -64,14 +64,26 @@ export interface BlueprintPlannerOptions {
 
   readonly evaluationsPerRound: number;
   readonly concurrency?: number | "auto";
-  /**
-   * 2026-10-06：算力基准测试标定出的并发上限（见 capacity-calibration.ts）。
-   * 浏览器不暴露 CPU/GPU 占用百分比，无法直接闭环控制占用率，因此先把实测吞吐曲线的膝盖点固化下来，
-   * 调度策略在该上限内自适应；未标定时不写入此字段。
-   */
-  readonly calibratedWorkers?: number;
-  /** 基准测试标定出的并行验证容量；未标定时运行时会从保守起点自适应。 */
-  readonly calibratedVerifiers?: number;
+  // AI-REMOVED 2026-10-06:
+  // Reason: 机型容量被写进可移植的任务文件是错位的，而且这两个字段从未被写入过：
+  //         calibratedWorkers / calibratedVerifiers 全仓库只有读取点，没有写入点，
+  //         于是"任务内记录优先"实际恒为空，验证并行度恒等于保守起点 1。
+  // Trigger: 评审 P2（产品入口的并行验证没有接通）。
+  // Evidence: v3 全仓库 grep 只有 blueprint-planner-host.ts 两处读取与类型声明，无任何赋值。
+  // Replacement: 容量结论只来自本机标定（shared/storage/planner-capacity-storage.ts，按硬件签名隔离）；
+  //              验证并行度由 capacity-calibration.ts 的 deriveVerificationWorkers 从实测并发派生。
+  // Risk: 旧任务文件里若带有这两个键会成为无用的多余字段，解析不受影响（未做校验）。
+  // Human Review: Required
+  //
+  // Original code:
+  // /**
+  //  * 2026-10-06：算力基准测试标定出的并发上限（见 capacity-calibration.ts）。
+  //  * 浏览器不暴露 CPU/GPU 占用百分比，无法直接闭环控制占用率，因此先把实测吞吐曲线的膝盖点固化下来，
+  //  * 调度策略在该上限内自适应；未标定时不写入此字段。
+  //  */
+  // readonly calibratedWorkers?: number;
+  // /** 基准测试标定出的并行验证容量；未标定时运行时会从保守起点自适应。 */
+  // readonly calibratedVerifiers?: number;
 }
 
 export interface BlueprintPlannerRequest {

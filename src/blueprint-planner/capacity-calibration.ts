@@ -1,19 +1,13 @@
-import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerRequest, PlannerCapacityPoint, PlannerCapacityReport,
+  PlannerResourceHints } from "@/domain/blueprint-planner";
 import type { SimulationEngineKind } from "@/domain/simulation";
-import { plannerProbeCeiling, PLANNER_SAFETY_CEILING, type PlannerResourceHints } from "@/blueprint-planner/automatic-concurrency";
+import { plannerProbeCeiling, PLANNER_SAFETY_CEILING } from "@/blueprint-planner/automatic-concurrency";
 import { pickPlateau, stepUpThroughput } from "./capacity-growth";
 import type { PlannerGpuCrossoverReport } from "./gpu-crossover";
 
-/** 单个并发档位的实测吞吐；lagMs 是主线程事件循环延迟，用于识别"已到算力天花板"。 */
-export interface PlannerCapacityPoint {
-  readonly workers: number;
-  readonly evaluations: number;
-  readonly windowMs: number;
-  readonly evaluationsPerSecond: number;
-  /** 相对上一档的吞吐倍数；首档为 1。 */
-  readonly gain: number;
-  readonly lagMs: number;
-}
+// 2026-10-06（评审：模块隔离）：PlannerCapacityPoint / PlannerCapacityReport / PlannerResourceHints
+// 已移动到 @/domain/blueprint-planner/types/planner-capacity-types.ts（契约下沉到 Domain），
+// 原定义不在此处保留副本，避免出现两个真相来源。
 
 /** 一个请求在某个并发档位下的测量结果，由调用方注入具体执行方式（浏览器 Worker 或 Node Worker）。 */
 export interface PlannerCapacityProbe {
@@ -32,21 +26,8 @@ export interface PlannerCapacityProbeOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface PlannerCapacityReport {
-  readonly measuredAt: number;
-  readonly hardware: PlannerResourceHints;
-  /** 保守容量提示，作为标定结果的下界参照。 */
-  readonly conservativeLimit: number;
-  readonly points: readonly PlannerCapacityPoint[];
-  /** 标定得到的并发上限：吞吐膝盖点。 */
-  readonly concurrentWorkers: number;
-  /** 标定得到的 GPU 布线交叉点（路由边界格数）；未测得时为 undefined。 */
-  readonly gpuCrossoverCells?: number;
-  /** 实测到的 WebGPU 适配器，便于用户确认标定跑在哪块设备上。 */
-  readonly adapter?: { readonly vendor?: string; readonly architecture?: string; readonly fallback?: boolean };
-  readonly notes: readonly string[];
-}
-
+// PlannerCapacityReport 已移动到 Domain（见文件头说明），此处不再定义。
+// 标定选项仍留在 Planner：它引用 GPU 交叉点报告等实现细节。
 export interface PlannerCapacityCalibrationOptions {
   readonly request: BlueprintPlannerRequest;
   readonly engineKind: SimulationEngineKind;
@@ -72,6 +53,20 @@ const DEFAULT_EVALUATIONS_PER_WINDOW = 20_000;
 const DEFAULT_MAX_LEVELS = 6;
 /** 吞吐增益低于该值即认为已到膝盖点，再增加并发不划算。 */
 const KNEE_GAIN = 1.1;
+/**
+ * 验证并行度的资源上限（不是机型容量结论）：每个验证通道都要起一份 dense 仿真，
+ * 这里按"单通道内存量级"设政策上限，避免在内存紧张的机器上把仿真堆到换页。
+ */
+const VERIFICATION_PARALLELISM_CAP = 8;
+
+/**
+ * 由实测布局并发上限派生验证并行度：验证单通道更重，取一半作为起点，至少 1、至多
+ * VERIFICATION_PARALLELISM_CAP。显式覆盖（任务记录或 Host 选项）优先于本派生的值。
+ */
+export function deriveVerificationWorkers(concurrentWorkers: number): number {
+  const measured = Number.isSafeInteger(concurrentWorkers) && concurrentWorkers >= 1 ? concurrentWorkers : 1;
+  return Math.max(1, Math.min(VERIFICATION_PARALLELISM_CAP, Math.floor(measured / 2)));
+}
 
 /**
  * 2026-10-06：浏览器不暴露 CPU/GPU 占用百分比，无法直接闭环控制占用率。
@@ -101,7 +96,7 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
       gain: 1, lagMs: sample.lagMs });
     return { throughput: evaluationsPerSecond };
   }, { start: 1, ceiling: Math.max(1, conservativeLimit > 1 ? conservativeLimit : PLANNER_SAFETY_CEILING),
-    minGain: KNEE_GAIN, signal: options.signal, onProgress: options.onProgress });
+    minGain: KNEE_GAIN, maxLevels: options.maxLevels ?? DEFAULT_MAX_LEVELS, signal: options.signal, onProgress: options.onProgress });
   // 增益按最终序列回填，保持报告自洽。
   for (let index = 0; index < points.length; index++) {
     const previous = points[index - 1];
@@ -109,6 +104,16 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
       ? points[index]!.evaluationsPerSecond / previous.evaluationsPerSecond : 1;
   }
   notes.push(growth.reason);
+  // 订正 2026-10-06（评审 P1）：没有任何有效吞吐样本时必须拒绝本次标定。
+  // 原实现把"全 0 曲线"读成"2 档增益仅 1.00×"，照样落盘 concurrentWorkers = 1；
+  // 而并发起点改为标定值之后，这个 1 会成为运行时起点，等于把整轮规划钉在单通道。
+  const measured = points.filter(point => point.evaluationsPerSecond > 0);
+  if (!measured.length) throw new Error("算力基准测试没有取得任何有效吞吐样本（Worker 未回报已完成的评估），已丢弃本次标定结果。");
+  // 平台点必须落在实测到吞吐的档位上，否则取实测最高的一档，避免采信无效档位。
+  const plateau = points.find(point => point.workers === growth.best);
+  const concurrentWorkers = plateau !== undefined && plateau.evaluationsPerSecond > 0 ? growth.best
+    : measured.reduce((best, point) => point.evaluationsPerSecond > best.evaluationsPerSecond ? point : best, measured[0]!).workers;
+  if (concurrentWorkers !== growth.best) notes.push(`平台档位 ${growth.best} 没有有效吞吐样本，改用实测最高的 ${concurrentWorkers} 档。`);
   const over = points.find(point => point.lagMs >= 100);
   if (over) notes.push(`${over.workers} 通道时主线程延迟 ${Math.round(over.lagMs)}ms，需关注交互流畅度。`);
   // 2026-10-06：布局并发测完之后再测 GPU 布线交叉点。GPU 只在准入规模之内参与，
@@ -126,7 +131,8 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
       notes.push(`GPU 交叉点测量未完成：${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { measuredAt: Date.now(), hardware: hints, conservativeLimit, points, concurrentWorkers: growth.best,
+  return { measuredAt: Date.now(), hardware: hints, conservativeLimit, points, concurrentWorkers,
+    verificationWorkers: deriveVerificationWorkers(concurrentWorkers),
     ...(gpuCrossoverCells === undefined ? {} : { gpuCrossoverCells }),
     ...(reportAdapter === undefined ? {} : { adapter: reportAdapter }), notes };
 }

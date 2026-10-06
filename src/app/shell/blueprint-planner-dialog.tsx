@@ -5,9 +5,10 @@ import { collectPlannerItemBoundaries, PlannerItemRules } from "@/shared/planner
 import { BlueprintPlannerItemPolicies } from "./blueprint-planner-item-policies";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
-import { browserPlannerResources } from "@/blueprint-planner/automatic-concurrency";
-import { loadPlannerCapacity, plannerCapacitySignature, type PlannerStoredCapacity } from "@/shared/storage";
-import type { BlueprintPlannerAreaPoint, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+// 2026-10-06（评审：模块隔离）：App 不再直接引用 Planner 内部模块；
+// 容量签名由存储层（Shared）从浏览器环境取得。
+import { loadPlannerCapacity, localPlannerCapacitySignature } from "@/shared/storage";
+import type { BlueprintPlannerAreaPoint, BlueprintPlannerTaskFile, PlannerStoredCapacity } from "@/domain/blueprint-planner";
 import type { UiKey } from "@/shared/i18n";
 import type { AppHost } from "../host";
 import { enterBlueprintPlacement } from "../input";
@@ -138,10 +139,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
   const [fileBusy, setFileBusy] = useState(false);
   // 2026-10-06：算力标定结果只在本机有效，界面读的是按硬件签名匹配后的存档，不随任务流转。
   const [capacity, setCapacity] = useState<PlannerStoredCapacity | null>(() => loadPlannerCapacity());
-  const [capacitySignature] = useState(() => {
-    const hints = browserPlannerResources();
-    return plannerCapacitySignature(hints.hardwareConcurrency, hints.deviceMemory);
-  });
+  const [capacitySignature] = useState(() => localPlannerCapacitySignature());
   const [capacityMessage, setCapacityMessage] = useState<string | null>(null);
   const [capacityCalibrating, setCapacityCalibrating] = useState(false);
   const [recentRate, setRecentRate] = useState<ReturnType<typeof samplePlannerProposalRate>>(null);

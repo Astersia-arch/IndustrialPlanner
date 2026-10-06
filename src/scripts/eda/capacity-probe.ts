@@ -51,13 +51,17 @@ export async function probeNodePlannerCapacity(options: PlannerCapacityProbeOpti
   const clients = Array.from({ length: workers }, () => new NodePlannerClient());
   const samples = new PlannerBatchSession();
   const sampler = new LoopLagSampler();
+  // 订正 2026-10-06（评审 P1）：与浏览器探针同口径——按通道累计 Worker 上报的已完成评估数，
+  // 避免超时/失败的会话把已发生的工作整体丢掉（原实现只统计成功返回的会话）。
+  const reported = new Array<number>(workers).fill(0);
   const startedAt = performance.now();
   try {
     probeOptions.onProgress?.(`${workers} 通道并行测量中（${Math.round(windowMs / 1000)} 秒窗口）…`);
-    const outcomes = await Promise.allSettled(clients.map(client => client.build(request as BlueprintPlannerRequest,
-      0, windowMs, { maxEvaluations: budgetPerWorker })));
-    const evaluations = outcomes.reduce((sum, outcome) => sum
-      + (outcome.status === "fulfilled" ? outcome.value.search.evaluations : 0), 0);
+    const outcomes = await Promise.allSettled(clients.map((client, index) => client.build(request as BlueprintPlannerRequest,
+      0, windowMs, { maxEvaluations: budgetPerWorker },
+      (_phase, _message, count) => { if (Number.isSafeInteger(count) && count > reported[index]!) reported[index] = count; })));
+    const evaluations = outcomes.reduce((sum, outcome, index) => sum + Math.max(outcome.status === "fulfilled"
+      ? outcome.value.search.evaluations : 0, reported[index]!), 0);
     // 探针必须暴露失败原因：静默吞掉会让整条吞吐曲线变成 0 而看不出问题。
     const failures = outcomes.flatMap(outcome => outcome.status === "rejected"
       ? [outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)] : []);

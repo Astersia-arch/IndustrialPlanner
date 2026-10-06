@@ -17,6 +17,12 @@ export interface StepUpOptions {
   readonly ceiling: number;
   /** 单档最大步进。 */
   readonly maxStep?: number;
+  /**
+   * 最大探测档位数。
+   * 订正 2026-10-06（评审 P1）：该参数此前只被用来估算确认框里的耗时，从未限制档位数，
+   * CLI 的 `--levels` 与 Host 的 CAPACITY_MAX_LEVELS 因此形同虚设。
+   */
+  readonly maxLevels?: number;
   /** 吞吐增益低于该值即认为到达平台。 */
   readonly minGain?: number;
   readonly signal?: AbortSignal;
@@ -62,6 +68,7 @@ export async function stepUpThroughput(measure: (value: number) => Promise<{ thr
   const start = Math.max(1, Math.min(Math.floor(options.start), ceiling));
   const minGain = options.minGain ?? 1.1;
   const maxStep = options.maxStep === undefined ? undefined : Math.max(1, options.maxStep);
+  const maxLevels = options.maxLevels === undefined ? undefined : Math.max(1, Math.floor(options.maxLevels));
   const points: StepUpPoint[] = [];
   let previous = 0;
   let value = start;
@@ -73,6 +80,7 @@ export async function stepUpThroughput(measure: (value: number) => Promise<{ thr
     points.push({ value, throughput, gain });
     previous = throughput;
     if (points.length > 1 && gain < minGain) break;
+    if (maxLevels !== undefined && points.length >= maxLevels) break;
     const next = nextStep(value, ceiling, maxStep);
     if (next === null) break;
     value = next;

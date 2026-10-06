@@ -7,7 +7,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
-import { calibratePlannerCapacity, type PlannerCapacityReport } from "@/blueprint-planner/capacity-calibration";
+import { calibratePlannerCapacity } from "@/blueprint-planner/capacity-calibration";
+import type { PlannerCapacityReport } from "@/domain/blueprint-planner";
 import { browserPlannerResources } from "@/blueprint-planner/automatic-concurrency";
 import { edaOutputPath } from "./artifact-paths";
 import { probeNodePlannerCapacity } from "./capacity-probe";

@@ -1,5 +1,6 @@
-import type { PlannerCapacityReport } from "@/blueprint-planner/capacity-calibration";
+// 2026-10-06（评审：模块隔离）：容量契约已下沉到 Domain，动作契约不再反向引用 Planner 实现。
 import type { BlueprintPlannerRequest, BlueprintPlannerTaskFile, BlueprintPlannerBlueprintInput, BlueprintPlannerBlueprintBoundary, BlueprintPlannerOptions } from "./types/blueprint-planner-types";
+import type { PlannerCapacityReport } from "./types/planner-capacity-types";
 import type { BlueprintDocument } from "../document/blueprint-document";
 
 export interface BlueprintPlannerAction {

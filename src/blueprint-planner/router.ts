@@ -74,9 +74,27 @@ interface PlannerRouteCellSnapshot { readonly x: number; readonly y: number; rea
 // }
 //
 
+/** 一条已提交线路的记录；压缩回滚需要按原索引放回，因此显式命名。 */
+export interface PlannerRouteRecord { source: string; target: string; sourcePort: string; targetPort: string;
+  sourceEdge: PlannerPort["edge"]; targetEdge: PlannerPort["edge"]; minimumCells: number; cells: readonly GridPoint[]; turns: number }
+
+/**
+ * 清格留下的回滚凭据。
+ * 订正 2026-10-06（评审 P1）：原实现只快照网格数值，而清理同时摘除了线路记录与 paths 索引，
+ * 回滚只把数值写回，于是"压缩未变短"会永久丢掉该链路：网格仍显示占用、paths 已无该格、
+ * routes 少了这条线，后续审计与复用全部失真。现在凭据覆盖网格数值、paths 条目、
+ * 被摘除的线路记录（含原索引）与清格前的实体数。
+ */
+interface PlannerChainRollback {
+  readonly routesBefore: number;
+  readonly entitiesBefore: number;
+  readonly cells: readonly PlannerRouteCellSnapshot[];
+  readonly paths: readonly { readonly key: number; readonly kind: LogisticsKind; readonly value: RouteCell }[];
+  readonly removed: readonly { readonly index: number; readonly route: PlannerRouteRecord }[];
+}
+
 export class PlannerRouter {
-  readonly routes: Array<{ source: string; target: string; sourcePort: string; targetPort: string;
-    sourceEdge: PlannerPort["edge"]; targetEdge: PlannerPort["edge"]; minimumCells: number; cells: readonly GridPoint[]; turns: number }> = [];
+  readonly routes: PlannerRouteRecord[] = [];
   readonly conflicts = new Map<string, Set<string>>();
   private activeRoute = "";
 // AI-REMOVED 2026-10-03:
@@ -151,6 +169,8 @@ export class PlannerRouter {
   /**
    * 2026-10-06：布线完成后逐条尝试更短路径，消除先布线路被后续占用逼出的绕行与冗余皮带。
    * 清格前记录被改动的格子状态；重排未变短或失败时按快照逐格回滚，绝不让候选因压缩而丢线。
+   * 订正 2026-10-06（评审 P1）：回滚范围不止网格数值，必须同时还原 paths 索引与线路记录，
+   * 否则"未变短"这条常见路径会把线路记录丢掉；详见 removeChain / restoreChain。
    */
   async compactRoutes(checkBudget: () => void, fail: (message: string) => never): Promise<number> {
     const ports = this.portIndex();
@@ -185,29 +205,30 @@ export class PlannerRouter {
         if (!kind) fail(`压缩线路缺少端口定义：${this.routes[entry]!.sourcePort}`);
         return kind;
       });
-      const before = this.routes.length;
-      const snapshot = this.removeChain(chain, kinds);
+      const rollback = this.removeChain(chain, kinds);
       let replaced = false;
       try {
-        if (await this.connectCpu(source, target, checkBudget, minimumCells) < cells.length) { improved++; replaced = true; }
+        // 订正 2026-10-06（评审 P1）：重排成功即由 connectCpu 提交占用、实体与线路记录，
+        // 因此这里不再调用 reuse——reuse 会二次 commit 并再 push 一条记录，令同一线路在
+        // 实体与 routes 里各多一份。
+        if (await this.connectCpu(source, target, checkBudget, minimumCells) < cells.length) replaced = true;
       } catch (error) {
         // 压缩失败不是候选失败；预算取消与程序错误必须继续上抛。
         if (error instanceof DOMException || !(error instanceof PlannerCandidateError)) throw error;
       }
-      if (!replaced) { this.rollbackChain(snapshot, kinds, before); continue; }
-      // reuse 校验本身即提交，成功即保留；失败说明重排结果不满足同一端口与缓冲约束，整链路回滚。
-      if (this.reuse(source, target, this.routes[this.routes.length - 1]!.cells, minimumCells)) continue;
-      this.routes.length = before;
-      this.rollbackChain(snapshot, kinds, before);
+      if (replaced) { improved++; continue; }
+      this.restoreChain(rollback, kinds);
     }
     return improved;
   }
 
   /**
-   * 链路按物流种类清格并返回被改动的格子快照；一条线路只占用它所属 kind 的格子。
+   * 链路按物流种类清格并返回回滚凭据；一条线路只占用它所属 kind 的格子。
    * 只保留端点外侧格：设备侧端口格不在任何线路上。
+   * 订正 2026-10-06（评审 P1）：除网格数值外，还要记录被删除的 paths 条目与被摘除的线路记录，
+   * 否则回滚无法还原三者一致的状态。
    */
-  private removeChain(indices: readonly number[], kinds: readonly LogisticsKind[]): PlannerRouteCellSnapshot[] {
+  private removeChain(indices: readonly number[], kinds: readonly LogisticsKind[]): PlannerChainRollback {
     const ports = this.portIndex();
     const keep = new Set<string>();
     for (const entry of indices) {
@@ -217,31 +238,51 @@ export class PlannerRouter {
         if (port) keep.add(cellKey(port.outside));
       }
     }
-    const snapshot: PlannerRouteCellSnapshot[] = [];
-    const cells = indices.flatMap(entry => this.routes[entry]!.cells);
-    for (const point of cells) {
+    const entitiesBefore = this.generated.length;
+    const routesBefore = this.routes.length;
+    const cells: PlannerRouteCellSnapshot[] = [];
+    const paths: Array<{ key: number; kind: LogisticsKind; value: RouteCell }> = [];
+    for (const point of indices.flatMap(entry => this.routes[entry]!.cells)) {
       if (keep.has(cellKey(point))) continue;
       const key = this.grid.cell(point.x, point.y);
-      snapshot.push({ x: point.x, y: point.y, values: [this.grid.read(key, 0), this.grid.read(key, 1)] });
+      cells.push({ x: point.x, y: point.y, values: [this.grid.read(key, 0), this.grid.read(key, 1)] });
       for (const kind of kinds) {
-        const routes = this.paths.get(key);
-        if (!routes?.has(kind)) continue;
-        routes.delete(kind);
-        if (!routes.size) this.paths.delete(key);
+        const routed = this.paths.get(key);
+        const cell = routed?.get(kind);
+        if (!routed || cell === undefined) continue;
+        paths.push({ key, kind, value: cell });
+        routed.delete(kind);
+        if (!routed.size) this.paths.delete(key);
         this.grid.updateRoute(key, kindIndex(kind), ROUTE_EMPTY_ENTER, ROUTE_OPEN & 0xffff);
       }
     }
-    for (const entry of [...indices].sort((left, right) => right - left)) this.routes.splice(entry, 1);
-    return snapshot;
+    const removed: Array<{ index: number; route: PlannerRouteRecord }> = [];
+    for (const entry of [...indices].sort((left, right) => right - left)) {
+      removed.unshift({ index: entry, route: this.routes[entry]! });
+      this.routes.splice(entry, 1);
+    }
+    return { routesBefore, entitiesBefore, cells, paths, removed };
   }
 
-  /** 按快照逐格写回清格前的数值状态；回滚只发生在重排未产出更短线路时。 */
-  private rollbackChain(snapshot: readonly PlannerRouteCellSnapshot[], kinds: readonly LogisticsKind[], routesBefore: number): void {
-    this.routes.length = Math.min(this.routes.length, routesBefore);
-    for (const cell of snapshot) {
+  /**
+   * 按回滚凭据完整恢复：先丢弃重排新增的实体与线路记录，再写回网格数值与 paths 索引，
+   * 最后按原索引把被摘除的线路记录放回。压缩未变短或复核不通过都必须走这里，
+   * 不允许留下"网格占用与线路记录不一致"的中间态。
+   */
+  private restoreChain(rollback: PlannerChainRollback, kinds: readonly LogisticsKind[]): void {
+    while (this.generated.length > rollback.entitiesBefore) this.generated.pop();
+    const kept = rollback.routesBefore - rollback.removed.length;
+    while (this.routes.length > kept) this.routes.pop();
+    for (const cell of rollback.cells) {
       const key = this.grid.cell(cell.x, cell.y);
       for (const kind of kinds) this.grid.restoreValue(key, kindIndex(kind), cell.values[kindIndex(kind)]!);
     }
+    for (const entry of rollback.paths) {
+      const routed = this.paths.get(entry.key) ?? new Map<LogisticsKind, RouteCell>();
+      routed.set(entry.kind, entry.value);
+      this.paths.set(entry.key, routed);
+    }
+    for (const entry of rollback.removed) this.routes.splice(entry.index, 0, entry.route);
   }
 
   /** 线路端点端口按稳定端口号索引；压缩后重建端点几何时使用。 */

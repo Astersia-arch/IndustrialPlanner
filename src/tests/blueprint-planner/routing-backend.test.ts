@@ -55,3 +55,17 @@ it("没有 WebGPU 时执行完整 CPU 布线；取消不会因回退而被吞掉
   expect(backend.metrics.gpuAttempts).toBe(0);
   expect(backend.metrics.fallbackReason).toBeDefined();
 });
+
+it("GPU 在对照模式下连续空手而归后进入冷却，不再每次都空跑一遍", () => {
+  // 订正 2026-10-06（评审 P2）：失败原本完全不留样本，样本数永远到不了 3，
+  // choose() 因此永远返回 compare，每次请求都先跑 GPU 再回退 CPU。
+  const policy = new PlannerRoutingPerformance();
+  expect(policy.choose(1024, 0)).toBe("compare");
+  for (let attempt = 0; attempt < 3; attempt++) policy.recordGpuFailure(1024, 0);
+  expect(policy.choose(1024, 1_000)).toBe("cpu");
+  // 冷却到期后再给一次对照机会，机器或驱动变化仍能被发现。
+  expect(policy.choose(1024, 30_000)).toBe("compare");
+  // 一旦积累了足够的成功对照样本，失败计数清零并回到正常的成本比较分支（GPU 更快 => 用 GPU）。
+  for (let sample = 0; sample < 3; sample++) policy.record(1024, 20, 2, 30_000);
+  expect(policy.choose(1024, 30_001)).toBe("gpu");
+});

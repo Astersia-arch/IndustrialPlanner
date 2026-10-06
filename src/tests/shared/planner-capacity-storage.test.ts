@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type { PlannerCapacityReport } from "@/blueprint-planner/capacity-calibration";
+import type { PlannerCapacityReport } from "@/domain/blueprint-planner";
 import { loadPlannerCapacity, plannerCapacitySignature, resolveCalibratedWorkers, savePlannerCapacity } from "@/shared/storage";
 
 const REPORT: PlannerCapacityReport = {

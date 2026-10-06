@@ -35,15 +35,32 @@ it("压缩后重排线路更短，且线路数量与实体占用保持一致", a
   }
 });
 
-it("压缩无法变短时按快照回滚，线路与实体不丢失", async () => {
-  const router = new PlannerRouter(registry, [], [source, target], boundary);
-  await router.connect(source, target, () => {});
+it("压缩未变短时完整回滚：线路记录、占用索引与实体都不丢", async () => {
+  // 订正 2026-10-06（评审 P1）：原用例名声称覆盖回滚，但它依赖的几何被"没有可压缩空间"的
+  // 短路条件挡在压缩分支之外（原注释也承认这点），因此从未真正走到回滚。
+  // 现在用一排设备当实体墙：穿越线路被迫绕远（超过曼哈顿+4 才进入压缩分支），
+  // 而墙不在该线路的格子集合里、清格不会移除它，所以重排后长度相同 => 走"未变短"回滚分支。
+  const wall = Array.from({ length: 6 }, (_, index) => ({ id: `wall-${index}`, definitionId: "storager_1",
+    position: { x: 6, y: 1 + index }, rotation: 0, config: {}, tags: [] }));
+  const boundaryWithWall = { minimumX: 0, minimumY: 0, maximumX: 11, maximumY: 8, escapeLength: 0 };
+  const from: PlannerPort = { ...source, entityId: "cross-from", cell: { x: 0, y: 3 }, outside: { x: 1, y: 3 }, edge: "EAST" };
+  const to: PlannerPort = { ...target, entityId: "cross-to", cell: { x: 11, y: 3 }, outside: { x: 10, y: 3 }, edge: "WEST" };
+  const router = new PlannerRouter(registry, wall, [from, to], boundaryWithWall);
+  await router.connect(from, to, () => {});
   const before = router.routes.map(route => ({ cells: route.cells.map(cell => ({ ...cell })), entities: router.entities.length }));
+  const detour = before[0]!.cells;
+  const straight = Math.abs(from.outside.x - to.outside.x) + Math.abs(from.outside.y - to.outside.y);
+  // 前置条件：这条线路确实是绕行（否则压缩会短路，用例退化为无效）。
+  expect(detour.length).toBeGreaterThan(straight + 4);
   const improved = await router.compactRoutes(() => {}, message => { throw new PlannerCandidateError(message); });
   expect(improved).toBe(0);
-  expect(router.routes.map(route => route.cells)).toEqual(before.map(route => route.cells));
-  // 回滚不回收已提交的线路实体，但不得增加线路数量。
-  expect(router.routes).toHaveLength(before.length);
+  // 线路记录必须原样保留（修复前这里会因 removeChain 摘除后未还原而丢失）。
+  expect(router.routes.map(route => route.cells)).toEqual(before.map(entry => entry.cells));
+  // 压缩失败不得留下新增实体（修复前 connectCpu 写入的实体不会被回收）。
+  expect(router.entities).toHaveLength(before[0]!.entities);
+  // 回滚后占用索引与网格必须一致：同一线路在新 Router 里仍可被 reuse 复核通过。
+  expect(new PlannerRouter(registry, wall, [from, to], boundaryWithWall).reuse(from, to, router.routes[0]!.cells,
+    router.routes[0]!.minimumCells)).toBe(true);
 });
 
 // 预算取消在压缩内部的传播由 connectCpu 的 checkBudget 触发；本用例的短路不会进入压缩分支，

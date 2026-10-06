@@ -197,3 +197,20 @@ it("CPU 压力信号可独立触发收缩，fair 不触发", () => {
   expect(control.observe({ at: at + DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs, evaluations, activeWorkers: 6,
     pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(4);
 });
+
+it("没有吞吐收益时退回探测前的并发，不随冷却反复上探", () => {
+  // 订正 2026-10-06（评审 P2）：原实现探测失败只减一格，而爬升一次最多加 floor(剩余×25%) 路，
+  // 于是固定吞吐下会一路涨到上限（实测 1→8→7→…→25）。退回必须回到探测前的并发。
+  const control = new PlannerAutomaticConcurrency(32, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, target: "auto" });
+  const sequence: number[] = [];
+  let at = 0, evaluations = 0, target = control.target;
+  for (let window = 0; window < 24; window++) {
+    evaluations += 100;   // 固定吞吐：与并发无关，任何加容都不该被保留
+    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
+    target = control.observe({ at, evaluations, activeWorkers: target, pendingVerifications: 0, lagMs: 0 });
+    sequence.push(target);
+  }
+  // 峰值只来自一次爬升（1 → 8），每次探测失败都回到探测前的 1。
+  expect(Math.max(...sequence)).toBe(8);
+  expect(sequence.filter(value => value === 1).length).toBeGreaterThanOrEqual(8);
+});

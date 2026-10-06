@@ -289,13 +289,12 @@ export {
   savePlannerState,
 } from "@/shared/storage/planner-storage";
 
-export type {
-  PlannerStoredCapacity,
-} from "@/shared/storage/planner-capacity-storage";
-
+// 2026-10-06（评审：模块隔离）：PlannerStoredCapacity 的类型定义已下沉到 Domain，
+// 这里不再转出，避免 Shared 反向依赖 Planner（存储层只负责按签名持久化）。
 export {
   clearPlannerCapacity,
   loadPlannerCapacity,
+  localPlannerCapacitySignature,
   plannerCapacitySignature,
   resolveCalibratedWorkers,
   savePlannerCapacity,

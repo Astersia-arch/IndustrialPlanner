@@ -1,7 +1,8 @@
 import { plannerOutputModeKey } from "./output-policy";
 import { observable, runInAction } from "mobx";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
-import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
+import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerTaskFile,
+  PlannerResourceHints } from "@/domain/blueprint-planner";
 import { createUuid } from "@/domain/shared/uuid";
     // AI-REMOVED 2026-09-30: 浏览器蓝图库只在保存时加载，避免无头入口依赖浏览器环境。
     // Trigger: Node 客户端启动。Evidence: 同步存储依赖 import.meta.env。
@@ -25,8 +26,8 @@ import { blueprintRecognitionScene } from "./blueprint-scene";
 import { identifyBlueprintNetwork } from "./blueprint-network";
 import { assertBlueprintPreserved } from "./blueprint-constraints";
 import { browserPlannerResources, DEFAULT_PLANNER_CONCURRENCY_POLICY, observePlannerPressure, plannerProbeCeiling,
-  PlannerAutomaticConcurrency, PLANNER_CONSERVATIVE_START, type PlannerResourceHints, type PlannerConcurrencySample } from "./automatic-concurrency";
-import { calibratePlannerCapacity } from "./capacity-calibration";
+  PlannerAutomaticConcurrency, PLANNER_CONSERVATIVE_START, type PlannerConcurrencySample } from "./automatic-concurrency";
+import { calibratePlannerCapacity, deriveVerificationWorkers } from "./capacity-calibration";
 import { measureGpuCrossover, DEFAULT_GPU_CROSSOVER_SCALES } from "./gpu-crossover";
 import { probeBrowserPlannerCapacity } from "./browser-capacity-probe";
 import { loadPlannerCapacity, plannerCapacitySignature, savePlannerCapacity } from "@/shared/storage/planner-capacity-storage";
@@ -380,10 +381,37 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     };
     // 2026-10-06：验证改为有界并行池。原实现把每条验证串成单链，8 核机器上只有 2 个核在算，
     // 是大规模任务 CPU 占用上不去的直接原因；每通道各自起独立仿真 Worker，天然可并行。
-    // 2026-10-06：验证并行度不再写死。优先用基准测试标定出的验证容量；
-    // 未标定时退化为与搜索共用同一控制律，由运行时的增益/压力信号自适应（初值取保守起点）。
+    //
+    // AI-REMOVED 2026-10-06:
+    // Reason: 串行验证链把验证绑成单通道，搜索通道随后全部空等仿真，是大规模任务占用上不去的直接原因。
+    // Trigger: 评审 P2 —— 默认验证并发固定为 1，"并行验证"名存实亡；待验证数到 2 就暂停搜索。
+    // Evidence: 上游 queueVerification 以 verificationTail.then(...) 串成单链，末尾 await verificationTail。
+    // Replacement: 下方 verificationQueue / startVerifications 有界并行池；并行度见 verificationParallelism。
+    // Risk: 取消与暂停必须同时结算验证与搜索。Human Review: Required
+    //
+    // Original code:
+    // let verificationTail: Promise<void> = Promise.resolve();
+    // const pending = verificationTail.then(() => verify(shard, portfolio)).catch(error => {
+    //   if (interruption === null) interruption = error;
+    //   task.abort.abort();
+    // }).finally(() => { pendingVerifications--; verifying.delete(shard.index); wake?.(); });
+    // verificationTail = pending.catch(() => undefined);
+    // return pending;
+    //   ...
+    // await Promise.allSettled(active.values());
+    // await verificationTail;
+    //
+    // 订正 2026-10-06（评审 P2）：并行度此前既没有测量、也没有运行时自适应，而"任务内记录优先"
+    // 所依赖的 calibratedVerifiers 全仓库无人写入，实际恒为 1。容量结论只能来自本机标定，
+    // 任务文件是可移植产物、不应携带机型容量；这里由实测布局并发按 deriveVerificationWorkers 派生。
+    const capacityHints = options.resourceHints ?? browserPlannerResources();
+    const storedCapacity = loadPlannerCapacity();
+    const calibratedCapacity = storedCapacity !== null
+      && storedCapacity.signature === plannerCapacitySignature(capacityHints.hardwareConcurrency, capacityHints.deviceMemory)
+      ? storedCapacity.report : null;
     const verificationParallelism = Math.max(1, Math.min(options.verificationConcurrency
-      ?? task.file.request.options.calibratedVerifiers ?? PLANNER_CONSERVATIVE_START, 64));
+      ?? calibratedCapacity?.verificationWorkers
+      ?? (calibratedCapacity ? deriveVerificationWorkers(calibratedCapacity.concurrentWorkers) : PLANNER_CONSERVATIVE_START), 64));
     const verificationQueue: Array<() => Promise<void>> = [];
     let verificationRunning = 0;
     let verificationDrained: (() => void) | null = null;
@@ -563,16 +591,12 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     };
     try {
       const concurrency = task.file.request.options.concurrency ?? 1;
-      const hints = options.resourceHints ?? browserPlannerResources();
-      // 未标定时只给"允许试探到多高"的安全阀，容量结论来自标定值；显式并发数优先。
-      const probeCeiling = plannerProbeCeiling(hints);
+      // 未标定时只给"允许试探到多高"的安全阀，容量结论只来自本机标定；显式并发数优先。
+      const probeCeiling = plannerProbeCeiling(capacityHints);
       const maximum = Math.min(owned.length, concurrency === "auto" ? probeCeiling : concurrency);
-      // 2026-10-06：显式并发数即用户目标；否则采用基准测试标定出的上限（任务内记录优先，其次本机已保存的标定结果）。
+      // 2026-10-06：显式并发数即用户目标；否则采用本机基准测试标定出的上限。
       // 标定结果按硬件签名隔离：签名不符（换机器）时整份报告作废，容量与 GPU 交叉点一起回退到保守缺省。
-      const stored = loadPlannerCapacity();
-      const signature = plannerCapacitySignature(hints.hardwareConcurrency, hints.deviceMemory);
-      const calibrated = stored !== null && stored.signature === signature ? stored.report : null;
-      const calibratedWorkers = task.file.request.options.calibratedWorkers ?? calibrated?.concurrentWorkers;
+      const calibratedWorkers = calibratedCapacity?.concurrentWorkers;
       const controller = new PlannerAutomaticConcurrency(maximum, performance.now(), point.evaluations,
         { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, target: concurrency === "auto" ? "auto" : concurrency,
           calibratedWorkers });
@@ -601,7 +625,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         stopMonitoring = () => { clearInterval(timer); stopPressure(); };
       }
       const claim = () => {
-        // 队列有界，背压只暂停新批次；上限跟随验证并行度，避免并行验证时把搜索饿死。
+        // 队列有界，背压只暂停新批次；上限跟随验证并行度，避免并行验证时把搜索饿死，
+        // 也避免验证串行时把队列堆到搜索并发那么大（评审 P2：并行度为 1 时阈值退化成 2，搜索通道闲置）。
         if (pendingVerifications >= Math.max(2, Math.min(target, verificationParallelism * 2))) return null;
         for (let step = 0; step < parallel.count; step++) {
           const index = (parallel.nextShard + step) % parallel.count;

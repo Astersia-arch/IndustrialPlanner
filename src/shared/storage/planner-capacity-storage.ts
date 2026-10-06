@@ -1,4 +1,4 @@
-import type { PlannerCapacityReport } from "@/blueprint-planner/capacity-calibration";
+import type { PlannerStoredCapacity } from "@/domain/blueprint-planner";
 
 const STORAGE_KEY = "v3-planner-capacity";
 
@@ -7,9 +7,18 @@ export function plannerCapacitySignature(hardwareConcurrency: number | undefined
   return `${hardwareConcurrency ?? 0}c/${deviceMemory ?? 0}g`;
 }
 
-export interface PlannerStoredCapacity {
-  readonly signature: string;
-  readonly report: PlannerCapacityReport;
+// 2026-10-06（评审：模块隔离）：PlannerStoredCapacity 已移动到 Domain，此处不再定义。
+
+/**
+ * 本机容量签名。
+ * 2026-10-06（评审：模块隔离）：签名由存储层自己从浏览器环境取得，App 因此不必再直接引用
+ * Planner 内部的 browserPlannerResources。已知局限：deviceMemory 按规范上限为 8，
+ * 所以签名只能区分"低于 8GB 的具体档位"与"≥8GB"，同核数且都不小于 8GB 的两台机器仍会撞签名。
+ */
+export function localPlannerCapacitySignature(): string {
+  if (typeof navigator === "undefined") return plannerCapacitySignature(undefined, undefined);
+  return plannerCapacitySignature(navigator.hardwareConcurrency,
+    (navigator as Navigator & { deviceMemory?: number }).deviceMemory);
 }
 
 export function savePlannerCapacity(capacity: PlannerStoredCapacity): void {
