@@ -1,7 +1,7 @@
 import type { BlueprintPlannerRequest, PlannerCapacityPoint, PlannerCapacityReport,
   PlannerResourceHints } from "@/domain/blueprint-planner";
 import type { SimulationEngineKind } from "@/domain/simulation";
-import { plannerProbeCeiling, PLANNER_SAFETY_CEILING } from "@/blueprint-planner/automatic-concurrency";
+import { DEFAULT_PLANNER_CONCURRENCY_POLICY, plannerProbeCeiling, PLANNER_SAFETY_CEILING } from "@/blueprint-planner/automatic-concurrency";
 import { pickPlateau, stepUpThroughput } from "./capacity-growth";
 import type { PlannerGpuCrossoverReport } from "./gpu-crossover";
 
@@ -139,8 +139,11 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
   const concurrentWorkers = plateau !== undefined && plateau.evaluationsPerSecond > 0 ? growth.best
     : measured.reduce((best, point) => point.evaluationsPerSecond > best.evaluationsPerSecond ? point : best, measured[0]!).workers;
   if (concurrentWorkers !== growth.best) notes.push(`平台档位 ${growth.best} 没有有效吞吐样本，改用实测最高的 ${concurrentWorkers} 档。`);
-  const over = points.find(point => point.lagMs >= 100);
-  if (over) notes.push(`${over.workers} 通道时主线程延迟 ${Math.round(over.lagMs)}ms，需关注交互流畅度。`);
+  // 订正 2026-10-06：这条提示此前用写死的 100ms 判据。而"占满 CPU 必然让主线程延迟超过 100ms"
+  // 已在前一条订正中确认，于是标定几乎必然给出一句误导性的"需关注交互流畅度"。
+  // 新行为：与调度策略共用同一个交互保护门槛（标定不持有 policy，这里取其默认值）。
+  const over = points.find(point => point.lagMs >= DEFAULT_PLANNER_CONCURRENCY_POLICY.uiGuardMs);
+  if (over) notes.push(`${over.workers} 通道时主线程延迟 ${Math.round(over.lagMs)}ms，达到交互保护门槛。`);
   // 2026-10-06：布局并发测完之后再测 GPU 布线交叉点。GPU 只在准入规模之内参与，
   // 因此它的交叉规模必须独立测量，不能由"GPU 已经跑过的那些大图"反推。
   let gpuCrossoverCells: number | undefined;

@@ -21,10 +21,24 @@ export const PLANNER_CONSERVATIVE_START = 1;
 /**
  * 2026-10-06：机器容量结论只来自基准测试（capacity-calibration / capacity-growth）。
  * 这个函数只回答「在拿到标定结果之前，允许试探到多高」，不再假装知道机器能力。
+ *
+ * 订正 2026-10-06（代码检查：算力封顶未闭环）：上面那轮改动只搬走了控制律里的
+ * Math.min(..., 32)，封顶本身没有解除。safetyCeiling 在全仓库没有任何生产者
+ * （browserPlannerResources 只返回 hardwareConcurrency / deviceMemory），于是本函数
+ * 恒返回 PLANNER_SAFETY_CEILING = 32，capacity-calibration 的上探 ceiling 也被钉在 32 ——
+ * 64/128 核机器永远测不出真实平台，与「完全释放 CPU 性能极限」的目标直接冲突。
+ * 开发机是 28 核、标定平台 27 通道（27 < 32），且测试恰好用 hardwareConcurrency: 32
+ * 断言 PLANNER_SAFETY_CEILING，边界因此被一起掩盖。
+ * 现在的优先级：显式 safetyCeiling > 逻辑核数 > PLANNER_SAFETY_CEILING 兜底。
  */
 export function plannerProbeCeiling(hints: PlannerResourceHints): number {
-  const ceiling = hints.safetyCeiling;
-  return Math.max(1, Math.min(PLANNER_SAFETY_CEILING, Number.isSafeInteger(ceiling) && ceiling! > 0 ? ceiling! : PLANNER_SAFETY_CEILING));
+  const explicit = hints.safetyCeiling;
+  if (Number.isSafeInteger(explicit) && explicit! > 0) return explicit!;
+  // 逻辑核数是「同时能跑多少线程」的物理上界，用它做防无界试探的安全阀是合适的；
+  // 它仍然**不是**容量结论 —— 真实平台一律由 capacity-calibration 实测得出。
+  const cores = hints.hardwareConcurrency;
+  if (Number.isSafeInteger(cores) && cores! > 0) return cores!;
+  return PLANNER_SAFETY_CEILING;
 }
 
 // AI-REMOVED 2026-10-06:
@@ -240,9 +254,16 @@ export class PlannerAutomaticConcurrency {
 
 /** 浏览器侧容量提示；无法采到核心数时交给上限函数回退。 */
 export function browserPlannerResources(): PlannerResourceHints {
-  return typeof navigator === "undefined" ? {} : {
-    hardwareConcurrency: navigator.hardwareConcurrency,
+  if (typeof navigator === "undefined") return {};
+  const hardwareConcurrency = navigator.hardwareConcurrency;
+  return {
+    hardwareConcurrency,
     deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+    // 订正 2026-10-06：安全阀此前没有任何生产者，导致 plannerProbeCeiling 恒为 32、
+    // 标定上探 ceiling 被钉死，大核数机器无法释放算力。逻辑核数是防无界试探的合适上界，
+    // 但它不是容量结论：真实平台仍由 capacity-calibration 逐档实测得出。
+    safetyCeiling: Number.isSafeInteger(hardwareConcurrency) && hardwareConcurrency > 0
+      ? hardwareConcurrency : undefined,
   };
 }
 

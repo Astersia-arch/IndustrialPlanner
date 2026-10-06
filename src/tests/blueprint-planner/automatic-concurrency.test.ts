@@ -7,10 +7,29 @@ import { nextStep, pickPlateau, stepUpThroughput } from "@/blueprint-planner/cap
 it("未标定时只给安全阀，容量结论不再由核数公式给出", () => {
   // 缺少提示或提示不影响容量：公式已删除，这里只回答"允许试探到多高"。
   expect(plannerProbeCeiling({})).toBe(PLANNER_SAFETY_CEILING);
-  expect(plannerProbeCeiling({ hardwareConcurrency: 32 })).toBe(PLANNER_SAFETY_CEILING);
+  // 订正 2026-10-06：核数从此参与安全阀推导（见下方新增用例），这条断言的期望值改为显式常量，
+  // 避免"核数 32 恰好等于兜底常量 32"造成误读。原式为 toBe(PLANNER_SAFETY_CEILING)。
+  expect(plannerProbeCeiling({ hardwareConcurrency: 32 })).toBe(32);
   expect(plannerProbeCeiling({ safetyCeiling: 6 })).toBe(6);
   expect(plannerProbeCeiling({ safetyCeiling: 0 })).toBe(PLANNER_SAFETY_CEILING);
-  expect(plannerProbeCeiling({ safetyCeiling: 999 })).toBe(PLANNER_SAFETY_CEILING);
+  // 订正 2026-10-06：原断言是 toBe(PLANNER_SAFETY_CEILING)，即把 999 也削到 32。
+  // 该断言固化的正是"算力封顶未闭环"这一缺陷：safetyCeiling 在全仓库没有生产者时函数恒为 32，
+  // capacity-calibration 的上探 ceiling 随之钉死在 32，64/128 核机器永远测不出真实平台。
+  // 新行为：显式安全阀优先于兜底常量，不再被 32 削顶。
+  expect(plannerProbeCeiling({ safetyCeiling: 999 })).toBe(999);
+});
+
+it("安全阀按逻辑核数推导，大核数机器不被写死常量削顶", () => {
+  // 2026-10-06 代码检查回归：safetyCeiling 此前没有任何生产者（browserPlannerResources 只返回
+  // hardwareConcurrency / deviceMemory），plannerProbeCeiling 恒返回 32，标定上探 ceiling 也被钉在 32。
+  // 开发机是 28 核、标定平台 27 通道（27 < 32），缺口在开发机上不可见，因此这里固化新口径。
+  expect(plannerProbeCeiling({ hardwareConcurrency: 64 })).toBe(64);
+  expect(plannerProbeCeiling({ hardwareConcurrency: 128 })).toBe(128);
+  // 显式安全阀优先于核数推导。
+  expect(plannerProbeCeiling({ hardwareConcurrency: 64, safetyCeiling: 8 })).toBe(8);
+  // 核数缺失或非法时回落到兜底常量，保证仍有防无界试探的上界。
+  expect(plannerProbeCeiling({ hardwareConcurrency: 0 })).toBe(PLANNER_SAFETY_CEILING);
+  expect(plannerProbeCeiling({ hardwareConcurrency: -4 })).toBe(PLANNER_SAFETY_CEILING);
 });
 
 it("上探档位按 1.5 倍增长并在安全阀处停下", () => {

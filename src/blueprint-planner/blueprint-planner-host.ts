@@ -416,8 +416,22 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     // 无人使用；实测 28 核机器占用掉到 4%~8% 并停摆 20 秒以上。
     // 上限取实测布局容量：验证 Worker 与搜索 Worker 一样是独立线程、各载入同一份 Registry，
     // 同一份容量结论可以复用；运行期再按 planVerificationParallelism 与搜索分成。
-    const verificationCeiling = Math.max(1, Math.min(options.verificationConcurrency
-      ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints), 64));
+    // AI-REMOVED 2026-10-06:
+    // Reason: 验证并发上限再取 Math.min(..., 64)，是与机型无关的写死常量。
+    //         上一轮订正声称"边界只来自显式并发数与标定测量值"，但此处仍留了 64：
+    //         >64 核机器标定出的平台会被削到 64，标定结果再次形同作废。
+    // Trigger: 代码检查发现"算力封顶未闭环"（同类问题已先在 plannerProbeCeiling 的 32 上修掉）。
+    // Evidence: 旧式已受 options.verificationConcurrency 与 calibratedCapacity.concurrentWorkers 约束，
+    //         追加的常量既没有测量依据，也与订正后的口径冲突。
+    // Replacement: 直接取 options.verificationConcurrency ?? 标定值 ?? 安全阀，不再设常量。
+    // Risk: Low - 上限仍受实测容量与 planVerificationParallelism 的动态分配约束。
+    // Human Review: Required
+    //
+    // Original code:
+    // const verificationCeiling = Math.max(1, Math.min(options.verificationConcurrency
+    //   ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints), 64));
+    const verificationCeiling = Math.max(1, options.verificationConcurrency
+      ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints));
     const verificationQueue: Array<() => Promise<void>> = [];
     let verificationRunning = 0;
     let verificationDrained: (() => void) | null = null;
