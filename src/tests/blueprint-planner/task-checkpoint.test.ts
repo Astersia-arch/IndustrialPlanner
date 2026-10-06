@@ -199,29 +199,29 @@ it("真实 Worker 暂停结算已用提案，续算只重置本轮计数且不�
   } finally { host.dispose(); await session.dispose(); }
 }, 90_000);
 
-it("已知旧算法重置所有搜索状态且保留输入，未知版本与无效输入不猜测迁移", async () => {
+it("已知旧算法保留累计进度并重建搜索状态，未知版本与无效输入不猜测迁移", async () => {
   const { restorePlannerTaskFile } = await import("@/blueprint-planner/task-checkpoint");
   const registry = createRegistryContract();
   const file = { ...taskFile(), algorithmVersion: "compact-portfolio-1", checkpoint: { obsolete: true },
     progress: { ...taskFile().progress, elapsedMs: 1234, candidateCount: 12, evaluatedProposals: 100, bestArea: 20 } };
   const original = structuredClone(file);
-  const restored = restorePlannerTaskFile(file, registry);
+  const restored = await restorePlannerTaskFile(file, registry);
   expect(restored.request).toEqual(file.request);
   expect(restored.taskId).toBe(file.taskId);
   expect(restored.algorithmVersion).toBe(PLANNER_ALGORITHM_VERSION);
-  expect(restored.checkpoint).toEqual(emptyPlannerCheckpoint());
-  expect(restored.progress).toMatchObject({ status: "waiting", elapsedMs: 0, candidateCount: 0,
-    evaluatedProposals: 0, roundEvaluatedProposals: 0, bestArea: null, startedAt: 1 });
-  expect(restored.progress.message).toContain("重置");
+  expect(restored.checkpoint).toEqual({ ...emptyPlannerCheckpoint(), attempt: 12, evaluations: 100, legacyHistoryLength: 0 });
+  expect(restored.progress).toMatchObject({ status: "waiting", elapsedMs: 1234, candidateCount: 12,
+    evaluatedProposals: 100, roundEvaluatedProposals: 0, bestArea: null, startedAt: 1 });
+  expect(restored.progress.message).toContain("保留");
   expect(file).toEqual(original);
-  expect(restorePlannerTaskFile(restored, registry)).toEqual(restored);
+  expect(await restorePlannerTaskFile(restored, registry)).toEqual(restored);
   for (const algorithmVersion of ["future", "compact-portfolio-3", "compact-portfolio-0"])
-    expect(() => restorePlannerTaskFile({ ...file, algorithmVersion }, registry)).toThrow();
-  expect(() => restorePlannerTaskFile({ ...file, request: { ...file.request,
-    options: { ...file.request.options, evaluationsPerRound: -1 } } }, registry)).toThrow();
+    await expect(restorePlannerTaskFile({ ...file, algorithmVersion }, registry)).rejects.toThrow();
+  await expect(restorePlannerTaskFile({ ...file, request: { ...file.request,
+    options: { ...file.request.options, evaluationsPerRound: -1 } } }, registry)).rejects.toThrow();
 });
 
-it("恢复隔离不兼容记录、保留原文且允许删除；旧算法重置持久化后可重新加载", async () => {
+it("恢复隔离不兼容记录、保留原文且允许删除；旧算法迁移持久化后可重新加载", async () => {
   const session = new PlannerBatchSession();
   const original = { ...taskFile(), taskId: "blocked", algorithmVersion: "future", request: null } as unknown as BlueprintPlannerTaskFile;
   const old = { ...taskFile(), algorithmVersion: "compact-portfolio-1" };
@@ -244,10 +244,10 @@ it("恢复隔离不兼容记录、保留原文且允许删除；旧算法重置�
     expect(() => host.actions.continuePlanning("blocked", 10_000)).toThrow("无法继续");
     expect(hasStorageFailure()).toBe(before);
     expect(records.get(old.taskId)?.algorithmVersion).toBe(PLANNER_ALGORITHM_VERSION);
-    expect(host.queries.getTask(old.taskId)?.message).toContain("重置");
+    expect(host.queries.getTask(old.taskId)?.message).toContain("保留");
     const imported = await host.actions.importTask(original);
     expect(host.queries.getTask(imported)?.status).toBe("failed");
-    expect(host.queries.exportTask(imported)).toEqual({ ...original, taskId: imported });
+    expect(host.queries.exportTask(imported)).toEqual({ ...original, taskId: imported, progress: { ...original.progress, taskId: imported } });
     await host.actions.deleteTask(imported);
     expect(records.has(imported)).toBe(false);
     host.dispose();
@@ -285,6 +285,21 @@ it("异步导入提交前禁止启动、续算、保存及再次导入，提交�
     await pending.catch(() => {});
     host.dispose();
   }
+});
+
+it("隔离损坏的历史时只展示可读取的曲线和计数，导出保留原文", async () => {
+  const workspace: WorkspaceContract = { state: createWorkspaceState(), registry: createRegistryContract(),
+    app: null, audio: null, editor: null, render: null, simulation: null, sync: null, blueprintPlanner: null };
+  const host = createBlueprintPlannerHost(workspace, { storage: null });
+  try {
+    for (const areaHistory of ["invalid", [null], [{ evaluatedProposals: -1, bestArea: 1 }]]) {
+      const file = { ...taskFile(), algorithmVersion: "future", progress: { ...taskFile().progress,
+        evaluatedProposals: -1, elapsedMs: -1, areaHistory } } as unknown as BlueprintPlannerTaskFile;
+      const id = await host.actions.importTask(file);
+      expect(host.queries.getTask(id)).toMatchObject({ status: "failed", evaluatedProposals: 0, elapsedMs: 0, areaHistory: [] });
+      expect(host.queries.exportTask(id)).toEqual({ ...file, taskId: id, progress: { ...file.progress, taskId: id } });
+    }
+  } finally { host.dispose(); }
 });
 
 it("导入校验或持久化失败后释放入口，不创建半完成任务", async () => {

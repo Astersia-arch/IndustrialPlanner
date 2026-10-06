@@ -18,7 +18,7 @@ import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
 import { PlannerSearchPortfolio } from "./search-portfolio";
 import { breadthOutlineKey, breadthOutlines, fixedOutlineMinimum, selectBreadthOutline } from "./search-outline";
 import { createProductionNetwork } from "./production-network";
-import { emptyPlannerCheckpoint, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint, type PlannerParallelCheckpoint, type PlannerShardCheckpoint } from "./task-checkpoint";
+import { emptyPlannerCheckpoint, parsePlannerTaskFile, restorePlannerTaskFile, PLANNER_ALGORITHM_VERSION, validateTaskRequest, type PlannerCheckpoint, type PlannerParallelCheckpoint, type PlannerShardCheckpoint } from "./task-checkpoint";
 import { plannerRequestKey } from "./search-seed";
 import { browserPlannerResources, observePlannerPressure, plannerConcurrencyLimit, PlannerAutomaticConcurrency,
   type PlannerResourceHints, type PlannerConcurrencySample } from "./automatic-concurrency";
@@ -57,10 +57,19 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const blockedTasks = new Map<string, { file: BlueprintPlannerTaskFile; progress: BlueprintPlannerProgress }>();
   const retainBlocked = (file: BlueprintPlannerTaskFile, error: unknown) => {
     const id = file.taskId;
-    blockedTasks.set(id, { file: structuredClone(file), progress: { taskId: id, status: "failed", phase: "preparing",
+    const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+    const evaluatedProposals = count(file.progress?.evaluatedProposals);
+    const history = file.progress?.areaHistory;
+    blockedTasks.set(id, { file: structuredClone(file), progress: { ...file.progress, taskId: id, status: "failed", phase: "preparing",
       startedAt: Number.isFinite(file.progress?.startedAt) ? file.progress.startedAt : 0,
-      elapsedMs: 0, estimatedProgress: null, candidateCount: 0, evaluatedProposals: 0,
-      roundEvaluatedProposals: 0, validatedCandidateCount: 0, bestArea: null,
+      elapsedMs: Number.isFinite(file.progress?.elapsedMs) && file.progress.elapsedMs >= 0 ? file.progress.elapsedMs : 0,
+      estimatedProgress: null, candidateCount: count(file.progress?.candidateCount), evaluatedProposals,
+      roundEvaluatedProposals: count(file.progress?.roundEvaluatedProposals),
+      validatedCandidateCount: count(file.progress?.validatedCandidateCount), activeWorkerCount: 0, bestArea: null,
+      // 原文可包含损坏字段；展示历史必须能被图表安全读取，导出仍保留完整原文。
+      areaHistory: Array.isArray(history) && history.every(point => point && Number.isSafeInteger(point.evaluatedProposals)
+        && point.evaluatedProposals >= 0 && point.evaluatedProposals <= evaluatedProposals
+        && Number.isSafeInteger(point.bestArea) && point.bestArea > 0) ? structuredClone(history) : [],
       message: `任务无法继续，原始记录已保留，可导出或删除。${errorMessage(error)}` } });
   };
   const worker = options.worker ?? new PlannerWorkerClient();
@@ -74,6 +83,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   };
   const storage = options.storage === undefined ? edaTaskStorage : options.storage;
   let disposed = false, loaded = storage === null;
+  const restorationAbort = new AbortController();
   let latestId: string | undefined;
   let writes: Promise<void> = Promise.resolve();
   const pendingWrites = new Set<PlannerTask>();
@@ -140,8 +150,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     if (!task) throw new Error("计算任务不存在。");
     return task;
   };
-  const materialize = (file: BlueprintPlannerTaskFile): PlannerTask => {
-    const parsed = restorePlannerTaskFile(file, workspace.registry);
+  const materialize = (file: ReturnType<typeof parsePlannerTaskFile>): PlannerTask => {
+    const parsed = file;
     const portfolio = new PlannerSearchPortfolio(parsed.request);
     portfolio.restore(parsed.checkpoint.portfolio);
     const portfolios = new Map<number, PlannerSearchPortfolio>();
@@ -153,6 +163,17 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     return { file: parsed, originTaskId: parsed.checkpoint.parallel?.originTaskId ?? parsed.taskId,
       portfolio, portfolios, liveEvaluations: new Map(), activeShards: new Set(), activeShapes: new Set(), abort: new AbortController(),
       resumedAt: null, roundStartedEvaluations: parsed.checkpoint.evaluations - parsed.progress.roundEvaluatedProposals, remaining: 0, running: null };
+  };
+  const restore = async (file: BlueprintPlannerTaskFile): Promise<PlannerTask> => {
+    const parsed = await restorePlannerTaskFile(file, workspace.registry, async execution => {
+      restorationAbort.signal.throwIfAborted();
+      if (workspace.simulation === null) throw new Error("仿真服务不可用，无法验收旧最优蓝图。");
+      const report = await workspace.simulation.actions.runBlueprint(execution, restorationAbort.signal);
+      restorationAbort.signal.throwIfAborted();
+      return report;
+    });
+    restorationAbort.signal.throwIfAborted();
+    return materialize(parsed);
   };
   const settle = async (task: PlannerTask) => {
     publish(task, { estimatedProgress: null, activeWorkerCount: 0 });
@@ -744,11 +765,11 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     } finally { await settle(task); }
   }
 
-  const ready = storage === null ? Promise.resolve() : storage.load().then(files => {
+  const ready = storage === null ? Promise.resolve() : storage.load().then(async files => {
     if (disposed) return;
     for (const file of files) {
       try {
-        const task = materialize(file);
+        const task = await restore(file);
         if (["running", "saving"].includes(task.file.progress.status)) task.file = { ...task.file,
           progress: { ...task.file.progress, status: "waiting", message: "计算已恢复，可以继续。", estimatedProgress: null } };
         tasks.set(file.taskId, task);
@@ -760,7 +781,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       // Risk: Low。Human Review: Required
       // Original code:
       // } catch (error) { reportStorageFailure("eda-task-restore", error); }
-      } catch (error) { retainBlocked(file, error); latestId = file.taskId; }
+      } catch (error) { if (disposed) return; retainBlocked(file, error); latestId = file.taskId; }
     }
   }).catch(error => reportStorageFailure("eda-task-load", error)).finally(() => { loaded = true; notify(); });
 
@@ -784,7 +805,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         //     phase: "preparing", startedAt: Date.now(), elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
         //     evaluatedProposals: 0, roundEvaluatedProposals: 0,
         //     validatedCandidateCount: 0, bestArea: null, areaHistory: [], message: null } });
-        const task = materialize(createTaskFile(request, id));
+        const task = materialize(parsePlannerTaskFile(createTaskFile(request, id), workspace.registry));
         tasks.set(id, task);
         launch(task, request.options.evaluationsPerRound);
         return id;
@@ -816,10 +837,18 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           await ready;
           assertReady();
           let task: PlannerTask;
-          try { task = materialize(file); } catch (error) {
+          try { task = await restore(file); } catch (error) {
+            if (disposed) throw error;
             if (!file || typeof file !== "object" || typeof file.taskId !== "string" || !file.taskId) throw error;
             const id = createUuid();
             const retained = { ...structuredClone(file), taskId: id };
+            // 独立导入的编号须同步内部引用，否则原文导出后仍会因编号不匹配而无法重试恢复。
+            if (retained.progress && typeof retained.progress === "object" && !Array.isArray(retained.progress)) {
+              retained.progress = { ...retained.progress, taskId: id };
+            }
+            const point = retained.checkpoint;
+            if (point && typeof point === "object" && "result" in point && point.result
+              && typeof point.result === "object" && !Array.isArray(point.result)) Object.assign(point.result, { taskId: id });
             await storage?.save(retained);
             retainBlocked(retained, error);
             latestId = id;
@@ -871,6 +900,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     },
     dispose() {
       disposed = true;
+      restorationAbort.abort();
       for (const task of tasks.values()) { task.abort.abort(); persist(task); }
       for (const current of new Set([worker, ...workers.values()])) current.dispose();
       if (workspace.blueprintPlanner === host) workspace.blueprintPlanner = null;

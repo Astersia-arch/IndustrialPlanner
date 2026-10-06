@@ -1,7 +1,7 @@
 import { restorePlannerOutputRequest, MAX_PLANNER_OUTPUT_MODES, plannerOutputModeKey, resolvePlannerOutputAttempt } from "./output-policy";
 import type { BlueprintPlannerRequest, BlueprintPlannerResult, BlueprintPlannerTaskFile } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
-import type { SimulationBlueprintRunReport } from "@/domain/simulation";
+import type { SimulationBlueprintRunReport, SimulationBlueprintRunRequest } from "@/domain/simulation";
 import { BLUEPRINT_SCHEMA_VERSION } from "@/domain/document/blueprint-document";
 import type { PlannerCandidate } from "./candidate";
 import { validatePlannerRequest } from "./production-network";
@@ -9,6 +9,8 @@ import { PlannerSearchPortfolio, type PlannerPortfolioSnapshot } from "./search-
 import { plannerRequestKey } from "./search-seed";
 import { comparePlannerRanks } from "./quality";
 import { restorePlannerSeed } from "./search-seed";
+import { migratePlannerCandidate } from "./task-migration";
+import { meetsOperatingLimits, meetsProductionTargets } from "./verification";
 
 // AI-REMOVED 2026-10-02:
 // Reason: 多尺寸批次增加持久化访问记录，旧检查点需要显式迁移。
@@ -51,6 +53,8 @@ export interface PlannerCheckpoint {
   pendingCandidate: PlannerCandidate | null;
   result: BlueprintPlannerResult | null;
   savedBlueprintId: string | null;
+  /** 新规则生效前的历史点数量；此后的曲线才与当前最优结果比较。 */
+  legacyHistoryLength?: number;
   parallel?: PlannerParallelCheckpoint;
 }
 
@@ -60,7 +64,10 @@ export function emptyPlannerCheckpoint(): PlannerCheckpoint {
 }
 
 /** 2026-09-30：仅明确支持的旧算法允许保留输入、重置搜索；不猜测未知版本顺序。 */
-export function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, registry: RegistryContract): BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint } {
+// AI-CORRECTION 2026-10-06：保留历史计数和曲线，最优蓝图按盒外存取线规则重算并重新验收，只重建搜索内部状态。
+export async function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, registry: RegistryContract,
+  verify?: (execution: SimulationBlueprintRunRequest) => Promise<SimulationBlueprintRunReport>,
+): Promise<BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint }> {
 // AI-REMOVED 2026-10-05:
 // Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
 // Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
@@ -85,14 +92,50 @@ export function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, registry
   if (value?.formatVersion !== 1 || !["compact-portfolio-1", "compact-portfolio-2", "compact-breadth-1"].includes(value.algorithmVersion)) {
     return parsePlannerTaskFile(value, registry);
   }
-  const file = structuredClone(value);
+  const file = structuredClone(value) as BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
   if ((file.request.options.warehouseBus as string) === "free") Object.assign(file.request.options, { warehouseBus: "corner" });
   validateTaskRequest(registry, file.request);
-  return parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION,
-    checkpoint: emptyPlannerCheckpoint(), progress: { taskId: file.taskId, status: "waiting", phase: "preparing",
-      startedAt: file.progress?.startedAt, elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
-      evaluatedProposals: 0, roundEvaluatedProposals: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [],
-      message: "存取线已改为包围盒外接入，面积规则已更新；旧计算进度已重置，请重新开始计算。" } }, registry);
+  // AI-REMOVED 2026-10-06:
+  // Reason: 全量重置会丢失仍可用的最优蓝图、累计计算量和历史曲线。
+  // Trigger: 用户要求保留历史计算进度，只重算最后一个面积点。
+  // Evidence: 原恢复分支始终使用 emptyPlannerCheckpoint 并清空 areaHistory。
+  // Replacement: 下方保留历史并重验最优候选的迁移。
+  // Risk: 旧图重新验收增加一次仿真耗时；Human Review: Required
+  // Original code:
+  // return parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION,
+  //   checkpoint: emptyPlannerCheckpoint(), progress: { taskId: file.taskId, status: "waiting", phase: "preparing",
+  //     startedAt: file.progress?.startedAt, elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
+  //     evaluatedProposals: 0, roundEvaluatedProposals: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [],
+  //     message: "存取线已改为包围盒外接入，面积规则已更新；旧计算进度已重置，请重新开始计算。" } }, registry);
+  const history = file.progress.areaHistory ?? [];
+  const restored = parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION,
+    checkpoint: { ...emptyPlannerCheckpoint(), attempt: file.checkpoint?.attempt ?? file.progress.candidateCount,
+      evaluations: file.checkpoint?.evaluations ?? file.progress.evaluatedProposals, legacyHistoryLength: history.length },
+    progress: { ...file.progress, status: "waiting", phase: "preparing", estimatedProgress: null, activeWorkerCount: 0,
+      bestArea: null, areaHistory: history, message: "历史计算进度已保留，可以继续计算。" } }, registry);
+  if (!file.checkpoint?.best) return restored;
+  const candidate = migratePlannerCandidate(registry, file.request, file.checkpoint.best.candidate);
+  if (candidate === null) return { ...restored, progress: { ...restored.progress,
+    message: "历史计算进度和曲线已保留；旧最优蓝图不满足当前边界规则，将继续搜索有效布局。" } };
+  if (!verify) throw new Error("旧最优蓝图需要仿真验收后才能恢复，请通过规划器导入任务。");
+  const report = await verify(candidate.execution);
+  // 超时、取消和服务异常不能判定布局无效，也不能自动覆盖原始任务。
+  if (report.status !== "completed") throw new Error("旧最优蓝图验收未完成，原始计算记录已保留。");
+  if (!meetsProductionTargets(file.request, report) || !meetsOperatingLimits(candidate.supplyAudit, report)) {
+    return { ...restored, progress: { ...restored.progress,
+      message: "历史计算进度和曲线已保留；旧最优蓝图未通过当前产量验收，将继续搜索有效布局。" } };
+  }
+  const portfolio = new PlannerSearchPortfolio(file.request, candidate.seed);
+  const checkpoint: PlannerCheckpoint = { ...restored.checkpoint, best: { candidate, report }, portfolio: portfolio.snapshot(),
+    legacyHistoryLength: Math.max(0, history.length - 1), result: {
+      taskId: file.taskId, blueprint: candidate.execution.blueprint, folderId: null, metrics: candidate.metrics,
+      connections: candidate.connections, measuredOutputs: report.probes.filter(probe => file.request.plan.targets.some(target => target.itemId === probe.id))
+        .map(probe => ({ itemId: probe.id, perMinute: probe.perMinute })), warmupSeconds: candidate.execution.warmupSeconds,
+      observationSeconds: report.observationSeconds, elapsedMs: restored.progress.elapsedMs } };
+  return parsePlannerTaskFile({ ...restored, checkpoint, progress: { ...restored.progress, bestArea: candidate.metrics.area,
+    areaHistory: history.length ? history.map((point, index) => index === history.length - 1 ? { ...point, bestArea: candidate.metrics.area } : point)
+      : [{ evaluatedProposals: checkpoint.evaluations, bestArea: candidate.metrics.area }],
+    message: "历史计算进度和曲线已保留；最后一个面积点已按当前规则重算，最优蓝图可继续优化。" } }, registry);
 }
 
 /** JSON 边界验证失败时拒绝导入，不能悄悄丢弃检查点后从头计算。 */
@@ -155,12 +198,14 @@ export function parsePlannerTaskFile(value: unknown, registry: RegistryContract)
       || point.result.blueprint.blueprintId !== point.best.candidate.execution.blueprint.blueprintId)) throw new Error("结果与检查点不匹配。");
     if (point.savedBlueprintId !== null && typeof point.savedBlueprintId !== "string") throw new Error("保存记录无效。");
     const history = progress.areaHistory ?? [];
+    const legacyHistoryLength = point.legacyHistoryLength ?? 0;
+    if (!Number.isSafeInteger(legacyHistoryLength) || legacyHistoryLength < 0 || legacyHistoryLength > history.length) throw new Error("历史曲线边界无效。");
     if (!Array.isArray(history) || history.some((entry, index) => !Number.isSafeInteger(entry.evaluatedProposals)
       || entry.evaluatedProposals < 0 || entry.evaluatedProposals > point.evaluations
       || !Number.isSafeInteger(entry.bestArea) || entry.bestArea <= 0
       || (index > 0 && (entry.evaluatedProposals < history[index - 1]!.evaluatedProposals
-        || entry.bestArea >= history[index - 1]!.bestArea)))) throw new Error("面积曲线无效。");
-    if (history.length && (point.best === null || history.at(-1)!.bestArea < point.best.candidate.metrics.area)) throw new Error("面积曲线与最优结果不匹配。");
+        || (index !== legacyHistoryLength && entry.bestArea >= history[index - 1]!.bestArea))))) throw new Error("面积曲线无效。");
+    if (history.length > legacyHistoryLength && (point.best === null || history.at(-1)!.bestArea < point.best.candidate.metrics.area)) throw new Error("面积曲线与最优结果不匹配。");
     if (point.parallel) {
       const parallel = point.parallel;
       if (!Number.isSafeInteger(parallel.count) || parallel.count < 1 || parallel.count > 32
@@ -229,9 +274,10 @@ export function validateTaskRequest(registry: RegistryContract, request: Bluepri
 }
 
 /** 独立分片的已提交检查点合并；跨机器没有可信的全局事件时钟，只记录合并时的准确总计数。 */
-export function mergePlannerTaskFiles(values: readonly BlueprintPlannerTaskFile[], registry: RegistryContract): BlueprintPlannerTaskFile {
+export async function mergePlannerTaskFiles(values: readonly BlueprintPlannerTaskFile[], registry: RegistryContract): Promise<BlueprintPlannerTaskFile> {
   if (values.length < 1) throw new Error("至少提供一个分片任务。");
-  const files = values.map(value => restorePlannerTaskFile(value, registry));
+  const files = [];
+  for (const value of values) files.push(await restorePlannerTaskFile(value, registry));
   const first = files[0]!;
   const base = first.checkpoint.parallel;
   if (!base) throw new Error("任务没有分片检查点。");
@@ -268,7 +314,7 @@ export function mergePlannerTaskFiles(values: readonly BlueprintPlannerTaskFile[
     ...first, taskId,
     checkpoint: { ...first.checkpoint, attempt, evaluations, best,
       result: result ? { ...result, taskId, folderId: null } : null,
-      savedBlueprintId: null, pendingCandidate: null,
+      savedBlueprintId: null, pendingCandidate: null, legacyHistoryLength: 0,
       parallel: { ...base, ownedShards: shards.map(shard => shard.index), shards } } satisfies PlannerCheckpoint,
     progress: { ...first.progress, taskId, status: "waiting", estimatedProgress: null,
       elapsedMs: Math.max(...files.map(file => file.progress.elapsedMs)),

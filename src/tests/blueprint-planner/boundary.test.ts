@@ -92,18 +92,19 @@ it("所有朝向与非整段边长的盒外存取线可施工、连续接源桩�
   }
 });
 
-it.each(["compact-portfolio-1", "compact-portfolio-2", "compact-breadth-1"])("%s 的旧自由布局只迁移输入，不能复用含存取线的面积与种子", algorithmVersion => {
+it.each(["compact-portfolio-1", "compact-portfolio-2", "compact-breadth-1"])("%s 的旧自由布局迁移配置和历史，不把未验收面积作为当前最优", async algorithmVersion => {
   const request = structuredClone(separator.request) as BlueprintPlannerRequest;
   Object.assign(request.options, { warehouseBus: "free" });
   const file = { formatVersion: 1 as const, algorithmVersion, taskId: "boundary-migration", request,
     checkpoint: { obsolete: true }, progress: { taskId: "boundary-migration", status: "waiting" as const, phase: "preparing" as const,
       startedAt: 1, elapsedMs: 10, estimatedProgress: null, candidateCount: 2, validatedCandidateCount: 1,
       bestArea: 120, message: null, evaluatedProposals: 50, roundEvaluatedProposals: 50, areaHistory: [{ evaluatedProposals: 50, bestArea: 120 }] } };
-  const restored = restorePlannerTaskFile(file, createRegistryContract());
+  const restored = await restorePlannerTaskFile(file, createRegistryContract());
   expect(restored.algorithmVersion).toBe(PLANNER_ALGORITHM_VERSION);
   expect(restored.request.options.warehouseBus).toBe("corner");
-  expect(restored.checkpoint).toEqual(emptyPlannerCheckpoint());
-  expect(restored.progress.areaHistory).toEqual([]);
+  expect(restored.checkpoint).toEqual({ ...emptyPlannerCheckpoint(), attempt: 2, evaluations: 50, legacyHistoryLength: 1 });
+  expect(restored.progress.areaHistory).toEqual(file.progress.areaHistory);
+  expect(restored.progress).toMatchObject({ bestArea: null, evaluatedProposals: 50, elapsedMs: 10 });
   expect(request.options.warehouseBus).toBe("free");
 });
 

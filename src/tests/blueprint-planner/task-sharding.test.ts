@@ -72,20 +72,20 @@ it("独立分片能从同一旧任务出发并合并，重叠和缺失均拒绝"
   const input = originalTask();
   const first = await runRange(0, 1, 2, input);
   const second = await runRange(1, 2, 2, input);
-  const merged = parsePlannerTaskFile(mergePlannerTaskFiles([first.file, second.file], first.registry), first.registry);
+  const merged = parsePlannerTaskFile(await mergePlannerTaskFiles([first.file, second.file], first.registry), first.registry);
   expect(merged.checkpoint.parallel?.originTaskId).toBe(input.taskId);
   expect(merged.checkpoint.parallel?.ownedShards).toEqual([0, 1]);
   expect(merged.checkpoint.attempt).toBe(first.file.checkpoint.attempt + second.file.checkpoint.attempt);
   expect(merged.checkpoint.evaluations).toBe(first.file.checkpoint.evaluations + second.file.checkpoint.evaluations);
-  expect(() => mergePlannerTaskFiles([first.file, first.file], first.registry)).toThrow("重复");
-  expect(() => mergePlannerTaskFiles([first.file], first.registry)).toThrow("不完整");
+  await expect(mergePlannerTaskFiles([first.file, first.file], first.registry)).rejects.toThrow("重复");
+  await expect(mergePlannerTaskFiles([first.file], first.registry)).rejects.toThrow("不完整");
 }, 90_000);
 
 it("已运行的并行任务继续分给多人后合并，不重复累计原有验证数", async () => {
   const initial = await runRange(0, 2, 2, originalTask(2));
   const first = await runRange(0, 1, 2, initial.file);
   const second = await runRange(1, 2, 2, initial.file);
-  const merged = parsePlannerTaskFile(mergePlannerTaskFiles([first.file, second.file], first.registry), first.registry);
+  const merged = parsePlannerTaskFile(await mergePlannerTaskFiles([first.file, second.file], first.registry), first.registry);
   const oldValidated = initial.file.progress.validatedCandidateCount;
   expect(merged.progress.validatedCandidateCount).toBe(oldValidated
     + (first.file.progress.validatedCandidateCount - oldValidated)
@@ -151,7 +151,8 @@ it("暂停后调整提案预算与并发数，保留检查点且不重复搜索�
     const legacy = structuredClone({ ...first, algorithmVersion: "compact-portfolio-2" });
     Reflect.deleteProperty(legacy.checkpoint.parallel!, "nextShard");
     for (const shard of legacy.checkpoint.parallel!.shards) Reflect.deleteProperty(shard, "shapeVisits");
-    const migrated = restorePlannerTaskFile(legacy, session.workspace.registry);
+    const migrated = await restorePlannerTaskFile(legacy, session.workspace.registry,
+      execution => session.workspace.simulation!.actions.runBlueprint(execution));
 // AI-REMOVED 2026-10-05:
 // Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
 // Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
@@ -162,7 +163,8 @@ it("暂停后调整提案预算与并发数，保留检查点且不重复搜索�
 // Original code:
 //     expect(migrated.checkpoint.evaluations).toBe(first.checkpoint.evaluations);
 //     expect(migrated.checkpoint.parallel?.shards.every(shard => Object.keys(shard.shapeVisits).length === 0)).toBe(true);
-    expect(migrated.checkpoint.evaluations).toBe(0);
+    // AI-CORRECTION 2026-10-06：只重建分片内部状态，累计搜索次数和历史仍保留。
+    expect(migrated.checkpoint.evaluations).toBe(first.checkpoint.evaluations);
     expect(migrated.checkpoint.parallel).toBeUndefined();
     expect(migrated.progress.bestArea).toBeNull();
 
