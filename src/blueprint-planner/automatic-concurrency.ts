@@ -1,7 +1,13 @@
+// 订正 2026-10-07（合并上游 0cca0f89）：PlannerResourceHints 的契约定义下沉在 Domain
+// （见 domain/blueprint-planner/types/planner-capacity-types.ts 的文件头说明：App 与 Shared 都要引用它，
+// 留在 Planner 会造成 Domain/Shared → Planner 的倒置依赖）。上游在本模块内又定义了一份同名类型，
+// 与本项目的模块隔离规范冲突，故此处只引用 Domain 契约，不再本地重复定义。
+// 原本地定义（合并冲突时来自上游侧）如下：
+//   export interface PlannerResourceHints {
+//     readonly hardwareConcurrency?: number;
+//     readonly deviceMemory?: number;
+//   }
 import type { PlannerResourceHints } from "@/domain/blueprint-planner";
-
-// 2026-10-06（评审：模块隔离）：PlannerResourceHints 已移动到 Domain
-// （@/domain/blueprint-planner/types/planner-capacity-types.ts），此处不再保留副本。
 
 export interface PlannerConcurrencySample {
   readonly at: number;
@@ -9,267 +15,317 @@ export interface PlannerConcurrencySample {
   readonly activeWorkers: number;
   readonly pendingVerifications: number;
   readonly lagMs: number;
+  /** 当前阶段累计占用的 Worker 毫秒，包含在途任务；避免短批次交接被误认为空闲。 */
+  readonly busyMs?: number;
   readonly pressure?: "nominal" | "fair" | "serious" | "critical";
 }
 
-/** 安全阀缺省值；只在没有标定结果、且用户没有指定上限时使用。 */
-export const PLANNER_SAFETY_CEILING = 32;
-
-/** 保守起点：未标定时从这里开始上探，由控制律逐窗加容直到收益不足或遇到压力。 */
-export const PLANNER_CONSERVATIVE_START = 1;
-
-/**
- * 2026-10-06：机器容量结论只来自基准测试（capacity-calibration / capacity-growth）。
- * 这个函数只回答「在拿到标定结果之前，允许试探到多高」，不再假装知道机器能力。
- *
- * 订正 2026-10-06（代码检查：算力封顶未闭环）：上面那轮改动只搬走了控制律里的
- * Math.min(..., 32)，封顶本身没有解除。safetyCeiling 在全仓库没有任何生产者
- * （browserPlannerResources 只返回 hardwareConcurrency / deviceMemory），于是本函数
- * 恒返回 PLANNER_SAFETY_CEILING = 32，capacity-calibration 的上探 ceiling 也被钉在 32 ——
- * 64/128 核机器永远测不出真实平台，与「完全释放 CPU 性能极限」的目标直接冲突。
- * 开发机是 28 核、标定平台 27 通道（27 < 32），且测试恰好用 hardwareConcurrency: 32
- * 断言 PLANNER_SAFETY_CEILING，边界因此被一起掩盖。
- * 现在的优先级：显式 safetyCeiling > 逻辑核数 > PLANNER_SAFETY_CEILING 兜底。
- */
-export function plannerProbeCeiling(hints: PlannerResourceHints): number {
-  const explicit = hints.safetyCeiling;
-  if (Number.isSafeInteger(explicit) && explicit! > 0) return explicit!;
-  // 逻辑核数是「同时能跑多少线程」的物理上界，用它做防无界试探的安全阀是合适的；
-  // 它仍然**不是**容量结论 —— 真实平台一律由 capacity-calibration 实测得出。
-  const cores = hints.hardwareConcurrency;
-  if (Number.isSafeInteger(cores) && cores! > 0) return cores!;
-  return PLANNER_SAFETY_CEILING;
+/** 容量提示只给保守上限，不能解释为整机空闲 CPU 或可用内存。 */
+// 订正 2026-10-06：这是搜索与验证共用的资源安全阀；实际并发由在线吞吐决定。
+// 按每通道 256 MiB、半数粗略内存留给本任务预算，取代每 GiB 只允许一个 Worker。
+// 该预留是保护性估计，浏览器不能据此保证整机剩余内存；仍需响应延迟与压力退让。
+export function plannerConcurrencyLimit(hints: PlannerResourceHints): number {
+  const cores = Number.isSafeInteger(hints.hardwareConcurrency) && hints.hardwareConcurrency! > 0 ? hints.hardwareConcurrency! : 2;
+  const memory = Number.isFinite(hints.deviceMemory) && hints.deviceMemory! > 0 ? hints.deviceMemory! : 4;
+  return Math.max(1, Math.min(32, Math.floor(cores * 0.8) - 1, Math.floor(memory * 1024 * 0.5 / 256)));
 }
 
 // AI-REMOVED 2026-10-06:
-// Reason: 用「核数 × 0.8 - 1」与「内存 GB 数」直接当并发上限，是与机型无关的写死公式：
-//         不同配置的机器会被误伤或浪费，也正是"CPU 长期只占两成"的根因之一。
-// Trigger: 用户要求算力上限必须基于实测动态获取，不能每台机写死。
-// Evidence: 上游该函数被 blueprint-planner-host.ts 直接当 maximum 使用，与标定值无关。
-// Replacement: 容量结论改由 capacity-calibration.ts 实测；未标定时的上界只用 plannerProbeCeiling 的安全阀。
-// Risk: 未标定的机器在首次标定前只从保守起点上探，收敛更慢。Human Review: Required
-//
+// Reason: 单步爬升过慢，快批次交接会被采样成空闲，且缺少缓存起点的重新测量。
+// Trigger: 用户要求吸收 PR 的 CPU 实测并发思路。
+// Evidence: 32 线程实测仅用到 8 路；PR 的多步爬升只退一步会在无收益时继续加容。
+// Replacement: 下方 PlannerAutomaticConcurrency，保留原资源压力保护并完整回退探测。
+// Risk: 调度次序变化，必须验证预算与产物质量。
+// Human Review: Required
 // Original code:
-// export function plannerConcurrencyLimit(hints: PlannerResourceHints): number {
-//   const cores = Number.isSafeInteger(hints.hardwareConcurrency) && hints.hardwareConcurrency! > 0 ? hints.hardwareConcurrency! : 2;
-//   const memory = Number.isFinite(hints.deviceMemory) && hints.deviceMemory! > 0 ? hints.deviceMemory! : 4;
-//   return Math.max(1, Math.min(32, Math.floor(cores * 0.8) - 1, Math.floor(memory)));
+// /** 小步试探，以完整窗口吞吐决定保留；响应变差时快速收缩，冷却后允许重新探测。 */
+// export class PlannerAutomaticConcurrency {
+//   target = 1;
+//   private startedAt: number;
+//   private startedEvaluations: number;
+//   private busySamples = 0;
+//   private samples = 0;
+//   private baselineRate: number | null = null;
+//   private probing = false;
+//   private nextProbeAt = 0;
+//   private slowSamples = 0;
+//
+//   constructor(readonly maximum: number, at: number, evaluations: number) {
+//     this.startedAt = at; this.startedEvaluations = evaluations;
+//   }
+//
+//   private reset(sample: PlannerConcurrencySample): void {
+//     this.startedAt = sample.at; this.startedEvaluations = sample.evaluations;
+//     this.busySamples = 0; this.samples = 0;
+//   }
+//
+//   observe(sample: PlannerConcurrencySample): number {
+//     const duration = sample.at - this.startedAt;
+//     // 验证积压由 Host 暂停领批；一次卡顿和验证队列均不代表 CPU 容量耗尽。
+//     this.slowSamples = sample.lagMs >= 100 ? this.slowSamples + 1 : 0;
+//     // AI-REMOVED 2026-10-03:
+//     // Reason: 瞬时卡顿与串行验证会反复刷新冷却，空闲机器被长期锁在单 Worker。
+//     // Trigger: Windows 真机并发在 0/1 间切换。Evidence: before-desktop-02 决策采样。
+//     // Replacement: 连续三次响应延迟或 CPU 压力收缩；验证限流位于 Host.claim。
+//     // Risk: 最多三个采样周期后响应持续卡顿。Human Review: Required
+//     // Original code:
+//     // if (sample.lagMs >= 100 || sample.pressure === "serious" || sample.pressure === "critical" || sample.pendingVerifications >= 2) {
+//     if (this.slowSamples >= 3 || sample.pressure === "serious" || sample.pressure === "critical") {
+//       this.target = Math.max(1, this.target - Math.max(1, Math.floor(this.target / 4)));
+//       this.probing = false; this.baselineRate = null; this.nextProbeAt = sample.at + 4_000; this.reset(sample);
+//       return this.target;
+//     }
+//     this.samples++;
+//     if (sample.activeWorkers >= this.target) this.busySamples++;
+//     if (duration < 4_000) return this.target;
+//     const rate = Math.max(0, sample.evaluations - this.startedEvaluations) / duration;
+//     const busy = this.busySamples >= this.samples * 0.75;
+//     if (this.probing && this.baselineRate !== null && rate < this.baselineRate * 1.05) {
+//       this.target = Math.max(1, this.target - 1);
+//       this.nextProbeAt = sample.at + 8_000;
+//     } else if (busy && rate > 0 && sample.lagMs < 100
+//       && sample.at >= this.nextProbeAt && this.target < this.maximum) {
+//       this.baselineRate = rate;
+//       this.target++;
+//       this.probing = true;
+//       this.reset(sample);
+//       return this.target;
+//     }
+//     this.probing = false; this.baselineRate = rate; this.reset(sample);
+//     return this.target;
+//   }
 // }
 
-/** 并发控制参数；默认值即生产策略，测试与离线客户端可覆盖。 */
-export interface PlannerConcurrencyPolicy {
-  /** 目标并发：显式数值由用户指定，auto 时取容量上限。 */
-  readonly target?: number | "auto";
-  /**
-   * 2026-10-06：经基准测试标定出的并发上限。
-   * 浏览器不暴露 CPU/GPU 占用百分比，无法直接闭环控制占用率，
-   * 因此先用基准测试量出「并发数 → 吞吐」曲线的膝盖点，再让本策略在该上限内自适应。
-   * 已标定时它是上限，容量提示只作为缺失时的兜底。
-   */
-  readonly calibratedWorkers?: number;
-  /** 爬升时把剩余空间按此比例一次性分配。 */
-  readonly rampFraction: number;
-  /** 退让时的相对降幅，例如 0.2 表示当前占用降低 20%。 */
-  readonly shedFraction: number;
-  /** 连续满窗仍卡顿的窗口数，达到后触发退让。 */
-  readonly shedWindows: number;
-  /** 观测窗口时长；窗口必须跑满才允许调整容量。 */
-  readonly windowMs: number;
-  /** 增容后吞吐未达到此倍数即视为没有收益。 */
-  readonly gainThreshold: number;
-  /** 收缩后的冷却时长，避免连续抖动。 */
-  readonly cooldownMs: number;
-  /** 压力观察的采样间隔。 */
-  readonly pressureSampleIntervalMs: number;
-  /**
-   * 交互保护门槛：主线程事件循环延迟达到该值才算"用户已经明显卡住"，才允许退让。
-   *
-   * 订正 2026-10-07：这个门槛以前是写死的 100ms，而且被当成"算力到顶"的判据。实测（28 逻辑核
-   * 机器、标定平台 27 通道）把 CPU 占满本身就会让主线程延迟超过 100ms，于是控制律一边把算力
-   * 用到 94%，一边把自己刚测出来的平台按每窗 20% 撤到 4 通道，整机占用从 94% 掉到 20% 以下，
-   * 验证队列一满还会整轮停摆（复现日志见 PR 说明）。占用算力带来的延迟是**结果**，不是容量
-   * 上限；只有持续到明显影响交互的极端延迟才值得退让，系统压力信号只把这个门槛减半。
-   */
-  readonly uiGuardMs: number;
-}
+// AI-REMOVED 2026-10-07:
+// Reason: 频繁加压和连续退让没有稳定观测阶段，主线程延迟反复覆盖吞吐判断。
+// Trigger: 用户要求以长时间平均尝试数选择并发，授权修改并实测。
+// Evidence: Windows 13 次缩容有 11 次由延迟触发，约三秒内 20→15→12→9。
+// Replacement: 下方 PlannerAutomaticConcurrency 的加压、邻档复测与稳定保持。
+// Risk: 选档窗口改变；需验证长时吞吐、压力退让和预算守恒。
+// Human Review: Required
+// Original code:
+// /** 在线测量单个阶段的吞吐；搜索与验证各自测量，由 Host 共用一个资源上限。 */
+// export class PlannerAutomaticConcurrency {
+//   target: number;
+//   /** 只记录已观测的档位，不缓存尚未验证的增容。 */
+//   confirmedTarget = 1;
+//   private startedAt: number;
+//   private startedEvaluations: number;
+//   private startedBusyMs = 0;
+//   private busySamples = 0;
+//   private samples = 0;
+//   private slowSamples = 0;
+//   private nextProbeAt = 0;
+//   private step: number | null = null;
+//   private revalidate: boolean;
+//   private probe: { target: number; rate: number; direction: "up" | "down" } | null = null;
+//
+//   constructor(readonly maximum: number, at: number, evaluations: number, initialTarget = 1) {
+//     this.target = Math.max(1, Math.min(maximum, Number.isSafeInteger(initialTarget) ? initialTarget : 1));
+//     this.revalidate = this.target > 1;
+//     this.startedAt = at; this.startedEvaluations = evaluations;
+//   }
+//
+//   private reset(sample: PlannerConcurrencySample): void {
+//     this.startedAt = sample.at; this.startedEvaluations = sample.evaluations;
+//     this.startedBusyMs = sample.busyMs ?? 0;
+//     this.busySamples = 0; this.samples = 0;
+//   }
+//
+//   observe(sample: PlannerConcurrencySample): number {
+//     this.slowSamples = sample.lagMs >= 100 ? this.slowSamples + 1 : 0;
+//     if (this.slowSamples >= 3 || sample.pressure === "serious" || sample.pressure === "critical") {
+//       this.target = Math.max(1, this.target - Math.max(1, Math.floor(this.target / 4)));
+//       this.confirmedTarget = Math.min(this.confirmedTarget, this.target);
+//       this.probe = null; this.revalidate = false; this.nextProbeAt = sample.at + 4_000;
+//       this.reset(sample);
+//       return this.target;
+//     }
+//     this.samples++;
+//     if (sample.activeWorkers >= this.target) this.busySamples++;
+//     const duration = sample.at - this.startedAt;
+//     if (duration < 4_000) return this.target;
+//     const rate = Math.max(0, sample.evaluations - this.startedEvaluations) / duration;
+//     const busy = sample.busyMs === undefined ? this.busySamples >= this.samples * 0.75
+//       : sample.busyMs - this.startedBusyMs >= duration * this.target * 0.75;
+//     this.reset(sample);
+//     // 队列缺工作、被另一阶段占用或尚无完成计数时，不把低吞吐解释为容量结论。
+//     if (!busy || rate <= 0 || sample.lagMs >= 100) return this.target;
+//     if (this.probe) {
+//       const previous = this.probe;
+//       this.probe = null;
+//       if (previous.direction === "down") {
+//         // 缓存只给起点：减半仍保留 95% 吞吐时采用较少通道，否则恢复原档。
+//         if (rate < previous.rate * 0.95) this.target = previous.target;
+//         this.confirmedTarget = this.target;
+//         this.nextProbeAt = sample.at + 8_000;
+//         return this.target;
+//       }
+//       if (rate < previous.rate * 1.05) {
+//         this.step = Math.max(1, Math.floor((this.target - previous.target) / 2));
+//         this.target = previous.target;
+//         this.confirmedTarget = this.target;
+//         this.nextProbeAt = sample.at + 8_000;
+//         return this.target;
+//       }
+//     }
+//     this.confirmedTarget = this.target;
+//     if (sample.at < this.nextProbeAt) return this.target;
+//     if (this.revalidate) {
+//       this.revalidate = false;
+//       this.probe = { target: this.target, rate, direction: "down" };
+//       this.target = Math.max(1, Math.floor(this.target / 2));
+//     } else if (this.target < this.maximum) {
+//       this.probe = { target: this.target, rate, direction: "up" };
+//       this.target = Math.min(this.maximum, this.target + (this.step ?? Math.max(1, Math.ceil(this.target / 2))));
+//     }
+//     return this.target;
+//   }
+// }
+//
 
-export const DEFAULT_PLANNER_CONCURRENCY_POLICY: PlannerConcurrencyPolicy = Object.freeze({
-  target: "auto",
-  rampFraction: 0.25,
-  shedFraction: 0.2,
-  shedWindows: 2,
-  windowMs: 4_000,
-  gainThreshold: 1.05,
-  cooldownMs: 4_000,
-  pressureSampleIntervalMs: 1_000,
-  uiGuardMs: 600,
-});
-
-/**
- * 2026-10-06 并发策略重写：旧策略每次最多 +1，且要求 75% 窗口忙、延迟 <100ms 才敢加，
- * 无头客户端实测长期停在 1~2 个 Worker（CPU 占用约 20%）。
- * 现策略按用户确认的算力规则执行：窗口跑满后把「剩余空间 × rampFraction」一次分下去，
- * 压力信号持续时把当前占用相对降低 shedFraction；显式指定并发数时该数值就是目标。
- *
- * 订正 2026-10-07（用户要求"完全释放 CPU 性能极限"）：上面"压力信号"的判据不成立——
- * 主线程延迟 ≥100ms 在 CPU 被占满时是必然结果，用它退让等于自己撤销自己测出来的容量。
- * 退让判据已改为 uiGuardMs（默认 600ms）的持续极端延迟，详见该字段说明；
- * 爬升、探测、无收益回退与显式并发数优先的规则不变。
- */
+/** 在线测量单个阶段的吞吐；搜索与验证各自测量，由 Host 共用一个资源上限。 */
+// 订正 2026-10-07：冷启动加压、平台附近减容复测、稳定保持；不再周期性重复上探。
 export class PlannerAutomaticConcurrency {
-  target = 1;
-  private windowStartedAt: number;
-  private windowStartedEvaluations: number;
-  private slowWindows = 0;
-  private probing = false;
-  private probeBaselineRate: number | null = null;
-  /**
-   * 探测发起前的并发数。
-   * 订正 2026-10-06（评审 P2）：爬升一次最多加 floor(剩余×rampFraction) 路（32 上限时一次 +7），
-   * 而"没有收益"原先只减一格，净效果是持续上涨（固定吞吐实测 1→8→7→…→25，直冲上限）。
-   * 退回必须回到探测前的并发，才谈得上"不留在无收益的容量上"。
-   */
-  private probeBaselineTarget: number | null = null;
-  private nextChangeAt = 0;
-  /** 容量上限：target 显式指定时为该数值，否则为容量提示。 */
-  readonly maximum: number;
-  readonly policy: PlannerConcurrencyPolicy;
-  private readonly requestedTarget: number | null;
+  target: number;
+  /** 只记录已观测的档位，不缓存尚未验证的增容。 */
+  confirmedTarget = 1;
+  private startedAt: number;
+  private startedEvaluations: number;
+  private startedBusyMs = 0;
+  private busySamples = 0;
+  private samples = 0;
+  private slowSamples = 0;
+  private settleUntil: number;
+  private settling = true;
+  private retreatAfter = 0;
+  private holdUntil = 0;
+  private lowWindows = 0;
+  private windows: Array<{ evaluations: number; duration: number }> = [];
+  private mode: "ramp" | "trim" | "hold";
+  private best: { target: number; rate: number } | null = null;
 
-  constructor(maximum: number, at: number, evaluations: number, policy: PlannerConcurrencyPolicy = DEFAULT_PLANNER_CONCURRENCY_POLICY) {
-    this.policy = policy;
-    const calibrated = Number.isSafeInteger(policy.calibratedWorkers) && policy.calibratedWorkers! >= 1
-      ? policy.calibratedWorkers! : null;
-    // AI-CORRECTION 2026-10-06：原先这里对 target 与 maximum 都取 Math.min(..., 32)。
-    // 32 是与机型无关的写死常量：64 核机器标定出 64 通道也会被削到 32，标定结果形同作废。
-    // 现在的边界只来自两处 —— 显式并发数（用户目标）与标定测量值（机器实测），
-    // 无标定时的上界由 plannerProbeCeiling 的安全阀负责，不在控制律里再设常量。
-    this.requestedTarget = typeof policy.target === "number" && Number.isSafeInteger(policy.target) && policy.target >= 1
-      ? policy.target : null;
-    this.maximum = Math.max(1, this.requestedTarget ?? calibrated ?? maximum);
-    // 订正 2026-10-06：显式并发数必须**立即**生效，不能从 1 开始逐窗爬升。
-    // 原实现让 target 恒从 1 起，而爬升要等观测窗口（缺省 4 秒）跑满；
-    // 于是"用户指定 2 个通道"会退化成"先只用 1 个、4 秒后才到 2"，
-    // 短任务里等于完全没按用户要求并发（task-sharding 的显式并发用例由此失败）。
-    //
-    // 订正 2026-10-06（第二处）：标定值同样是**测量结论**，必须直接作为起点。
-    // 基准测试逐档上探时已经量过"1 通道 7.7k 评估/秒、27 通道 74.9k 评估/秒"这条曲线，
-    // 并把吞吐平台点记成了 concurrentWorkers；正式规划再从 1 爬一遍等于把已经测出的
-    // 前 20 秒（1→7→12→15→18 共 5 个窗口，平均只有满速的 1/4）重新浪费一次，
-    // 而且上探增益会先撞上 1.05 的阈值、在 19~22 之间来回试探，永远到不了标定平台。
-    // 现在：显式并发数与标定平台都直接作为起点；只有**无标定**时才从保守起点上探。
-    // 机器被别的负载抢走时不需要靠起点保守来兜底：压力信号会按相对 20% 退让。
-    this.target = this.requestedTarget ?? calibrated ?? PLANNER_CONSERVATIVE_START;
-    this.windowStartedAt = at;
-    this.windowStartedEvaluations = evaluations;
+  constructor(readonly maximum: number, at: number, evaluations: number, initialTarget = 1) {
+    this.target = Math.max(1, Math.min(maximum, Number.isSafeInteger(initialTarget) ? initialTarget : 1));
+    this.mode = this.target > 1 ? "trim" : "ramp";
+    this.startedAt = at; this.startedEvaluations = evaluations;
+    this.settleUntil = at + 1000;
   }
 
-  private resetWindow(sample: PlannerConcurrencySample): void {
-    this.windowStartedAt = sample.at;
-    this.windowStartedEvaluations = sample.evaluations;
+  private reset(sample: PlannerConcurrencySample): void {
+    this.startedAt = sample.at; this.startedEvaluations = sample.evaluations;
+    this.startedBusyMs = sample.busyMs ?? 0;
+    this.busySamples = 0; this.samples = 0;
   }
 
-  /**
-   * 相对退让：当前占用降低 shedFraction，至少退让一格，且**永不退到 0**。
-   *
-   * 订正 2026-10-06：原式 `next >= target ? target - 1 : next` 在 target = 1 时先算出
-   * `max(1, floor(0.8)) = 1`，再落到 `target - 1 = 0`。而派发循环是
-   * `for (index = 0; index < target; ...)`，target 归零后一个通道都不派发，
-   * `active.size === 0 && pendingVerifications === 0` 立刻成立并 break，整轮计算直接结束；
-   * 此时每窗速率恒为 0，控制律也再没有机会爬回来。
-   * 正式规划恰好就是从 target = 1 起步的，因此只要第一个观测窗口持续卡顿就会踩中。
-   */
-  private shed(): void {
-    const next = Math.max(1, Math.floor(this.target * (1 - this.policy.shedFraction)));
-    this.target = Math.max(1, next >= this.target ? this.target - 1 : next);
+  private change(target: number, sample: PlannerConcurrencySample): number {
+    this.target = Math.max(1, Math.min(this.maximum, target));
+    this.settling = true; this.settleUntil = sample.at + 1000;
+    this.windows = []; this.slowSamples = 0; this.lowWindows = 0;
+    this.reset(sample);
+    return this.target;
   }
 
-  /** 爬升：把剩余空间按 rampFraction 分配，至少 +1。 */
-  private ramp(): void {
-    const headroom = this.maximum - this.target;
-    if (headroom <= 0) return;
-    this.target += Math.max(1, Math.floor(headroom * this.policy.rampFraction));
+  private hold(sample: PlannerConcurrencySample): number {
+    this.mode = "hold"; this.holdUntil = sample.at + 30_000;
+    this.lowWindows = 0;
+    return this.target;
+  }
+
+  private trim(sample: PlannerConcurrencySample): number {
+    const best = this.best!;
+    this.mode = "trim";
+    if (best.target === 1) { this.change(1, sample); return this.hold(sample); }
+    return this.change(best.target - (best.target > 8 ? 2 : 1), sample);
   }
 
   observe(sample: PlannerConcurrencySample): number {
-    // 订正 2026-10-07：退让只看"交互保护"信号，不再把普通的主线程延迟当作算力到顶。
-    // 占满 CPU 必然推迟主线程调度（27 通道时实测延迟数百毫秒），把 100ms 当压力信号
-    // 会让控制律每 4 秒砍掉 20% 并发，一路把自己测出来的平台撤掉；系统压力只把门槛减半。
-    const guardMs = sample.pressure === "critical" ? this.policy.uiGuardMs / 2 : this.policy.uiGuardMs;
-    const pressured = sample.lagMs >= guardMs;
-    const elapsed = sample.at - this.windowStartedAt;
-    if (elapsed < this.policy.windowMs) {
-      // 窗口内只累计卡顿信号；容量调整必须等窗口跑满，避免用瞬时抖动改容量。
-      if (pressured) this.slowWindows++;
+    // 普通界面延迟不否决吞吐窗口；持续明显卡顿和系统压力仍是独立保护信号。
+    this.slowSamples = sample.lagMs >= 500 ? this.slowSamples + 1 : 0;
+    const pressure = sample.pressure === "serious" || sample.pressure === "critical";
+    if ((this.slowSamples >= 3 || pressure) && sample.at >= this.retreatAfter) {
+      this.retreatAfter = sample.at + 10_000;
+      this.best = null;
+      this.change(this.target - Math.max(1, Math.floor(this.target / 4)), sample);
+      this.confirmedTarget = Math.min(this.confirmedTarget, this.target);
+      return this.hold(sample);
+    }
+    if (this.settling) {
+      // 等上档冷启动或下档在途批次结束；过渡计数不参与新档位比较。
+      if (sample.at >= this.settleUntil && sample.activeWorkers <= this.target) this.settling = false;
+      this.reset(sample);
       return this.target;
     }
-    const rate = Math.max(0, sample.evaluations - this.windowStartedEvaluations) / elapsed;
-    // 冷却期内既不爬升也不再退让，只累计卡顿信号并换窗；否则退回后下一窗立刻又爬升，形成 1↔2 抖动。
-    // 冷却边界取闭区间：窗口起点正好等于 nextChangeAt 时仍算冷却内，否则探针会在同一时刻反复进退。
-    if (sample.at <= this.nextChangeAt) {
-      if (pressured) this.slowWindows++;
-      this.resetWindow(sample);
-      return this.target;
+    this.samples++;
+    if (sample.activeWorkers >= this.target) this.busySamples++;
+    const duration = sample.at - this.startedAt;
+    if (duration < 3000) return this.target;
+    const evaluations = Math.max(0, sample.evaluations - this.startedEvaluations);
+    const busy = sample.busyMs === undefined ? this.busySamples >= this.samples * 0.75
+      : sample.busyMs - this.startedBusyMs >= duration * this.target * 0.75;
+    this.reset(sample);
+    // 验证占用、队列缺工作时不能归因于并发；只比较连续有效窗口。
+    if (!busy || evaluations <= 0) { this.windows = []; return this.target; }
+    this.windows.push({ evaluations, duration });
+    if (this.windows.length < 2) return this.target;
+    const rate = this.windows.reduce((sum, value) => sum + value.evaluations, 0)
+      / this.windows.reduce((sum, value) => sum + value.duration, 0);
+    this.windows = [];
+    if (this.mode === "hold") {
+      if (this.best === null) {
+        this.best = { target: this.target, rate }; this.confirmedTarget = this.target;
+        return this.target;
+      }
+      this.lowWindows = rate < this.best.rate * 0.8 ? this.lowWindows + 1 : 0;
+      if (sample.at < this.holdUntil || this.lowWindows < 2) return this.target;
+      // 持续退化后只在邻档有限复测；不会把偶发消息峰谷当作重新启动的理由。
+      this.best = { target: this.target, rate }; this.mode = "ramp";
+      if (this.target === this.maximum) return this.trim(sample);
+      return this.change(this.target + (this.target > 8 ? 2 : 1), sample);
     }
-    const gain = this.probeBaselineRate === null || this.probeBaselineRate <= 0 ? null : rate / this.probeBaselineRate;
-    if (pressured) this.slowWindows++;
-    else this.slowWindows = 0;
-    // 持续卡顿才退让；偶发一次延迟不收缩，否则验证排队会把并发永久压在 1。
-    if (this.slowWindows >= this.policy.shedWindows) {
-      this.shed();
-      this.slowWindows = 0;
-      this.probing = false;
-      this.probeBaselineRate = null;
-      this.probeBaselineTarget = null;
-      this.nextChangeAt = sample.at + this.policy.cooldownMs;
-      this.resetWindow(sample);
-      return this.target;
+    if (this.mode === "trim") {
+      // 会话缓存仍需测量：先获得当前基线，再试少一至两个通道。
+      if (this.best === null) { this.best = { target: this.target, rate }; this.confirmedTarget = this.target; return this.trim(sample); }
+      if (rate >= this.best.rate * 0.97) {
+        this.best = { target: this.target, rate }; this.confirmedTarget = this.target;
+      } else {
+        this.change(this.best.target, sample); this.confirmedTarget = this.best.target;
+      }
+      return this.hold(sample);
     }
-    // 探测未兑现吞吐收益则退回探测前的并发并冷却，避免在无收益的容量上长期停留。
-    // 订正 2026-10-06（评审 P2）：原实现只减一格（this.target = Math.max(1, this.target - 1)），
-    // 抵消不了爬升一次加的多路，净效果是持续上涨；原式见上。
-    if (this.probing && gain !== null && gain < this.policy.gainThreshold) {
-      this.target = Math.max(1, this.probeBaselineTarget ?? this.target - 1);
-      this.probeBaselineTarget = null;
-      this.probing = false;
-      this.nextChangeAt = sample.at + this.policy.cooldownMs;
-      this.resetWindow(sample);
-      return this.target;
-    }
-    if (sample.at >= this.nextChangeAt && this.target < this.maximum && rate > 0) {
-      // 基线必须固定在「加容前的实测速率」：若先 ramp 再写基线，下一窗增益恒为 1.0，会在同一档反复进退。
-      this.probeBaselineRate = rate;
-      this.probeBaselineTarget = this.target;
-      this.ramp();
-      this.probing = true;
-      this.slowWindows = 0;
-      this.resetWindow(sample);
-      return this.target;
-    }
-    this.probing = false;
-    this.resetWindow(sample);
-    return this.target;
+    if (this.best !== null && rate < this.best.rate * 1.05) return this.trim(sample);
+    this.best = { target: this.target, rate }; this.confirmedTarget = this.target;
+    if (this.target === this.maximum) return this.trim(sample);
+    return this.change(this.target < 8 ? this.target * 2 : this.target + Math.ceil(this.target / 2), sample);
   }
 }
 
-/** 浏览器侧容量提示；无法采到核心数时交给上限函数回退。 */
+/** 仅在本 Host 会话复用相同请求的观测；不写任务文件，不跨机器或版本持久化。 */
+export class PlannerConcurrencyMemory {
+  private readonly entries = new Map<string, { target: number; at: number }>();
+
+  read(key: string, at: number): number {
+    const entry = this.entries.get(key);
+    if (!entry || at - entry.at > 10 * 60_000) { this.entries.delete(key); return 1; }
+    return entry.target;
+  }
+
+  remember(key: string, target: number, at: number): void {
+    this.entries.delete(key);
+    this.entries.set(key, { target, at });
+    if (this.entries.size > 32) this.entries.delete(this.entries.keys().next().value!);
+  }
+}
+
 export function browserPlannerResources(): PlannerResourceHints {
-  if (typeof navigator === "undefined") return {};
-  const hardwareConcurrency = navigator.hardwareConcurrency;
-  return {
-    hardwareConcurrency,
+  return typeof navigator === "undefined" ? {} : {
+    hardwareConcurrency: navigator.hardwareConcurrency,
     deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
-    // 订正 2026-10-06：安全阀此前没有任何生产者，导致 plannerProbeCeiling 恒为 32、
-    // 标定上探 ceiling 被钉死，大核数机器无法释放算力。逻辑核数是防无界试探的合适上界，
-    // 但它不是容量结论：真实平台仍由 capacity-calibration 逐档实测得出。
-    safetyCeiling: Number.isSafeInteger(hardwareConcurrency) && hardwareConcurrency > 0
-      ? hardwareConcurrency : undefined,
   };
 }
 
 /** 压力观察是可选信号；权限或平台不支持时继续用吞吐和事件循环延迟。 */
-export function observePlannerPressure(update: (value: PlannerConcurrencySample["pressure"]) => void,
-  sampleIntervalMs = DEFAULT_PLANNER_CONCURRENCY_POLICY.pressureSampleIntervalMs): () => void {
+export function observePlannerPressure(update: (value: PlannerConcurrencySample["pressure"]) => void): () => void {
   type Observer = { observe(source: "cpu", options: { sampleInterval: number }): Promise<void>; disconnect(): void };
   const Constructor = (globalThis as unknown as { PressureObserver?: new (callback: (records: Array<{ state: PlannerConcurrencySample["pressure"] }>) => void) => Observer }).PressureObserver;
   if (!Constructor) return () => undefined;
@@ -277,7 +333,7 @@ export function observePlannerPressure(update: (value: PlannerConcurrencySample[
   let observer: Observer | undefined;
   try {
     observer = new Constructor(records => { if (!stopped) update(records.at(-1)?.state); });
-    void observer.observe("cpu", { sampleInterval: sampleIntervalMs }).catch(() => { observer?.disconnect(); });
+    void observer.observe("cpu", { sampleInterval: 1000 }).catch(() => { observer?.disconnect(); });
   } catch { observer?.disconnect(); }
   return () => { stopped = true; observer?.disconnect(); };
 }

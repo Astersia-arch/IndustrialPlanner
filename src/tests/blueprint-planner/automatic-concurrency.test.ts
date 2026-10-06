@@ -1,258 +1,236 @@
-// @vitest-environment node
 import { expect, it } from "vitest";
-import { DEFAULT_PLANNER_CONCURRENCY_POLICY, PlannerAutomaticConcurrency, plannerProbeCeiling,
-  PLANNER_SAFETY_CEILING } from "@/blueprint-planner/automatic-concurrency";
-import { nextStep, pickPlateau, stepUpThroughput } from "@/blueprint-planner/capacity-growth";
+import { PlannerAutomaticConcurrency, PlannerConcurrencyMemory, plannerConcurrencyLimit } from "@/blueprint-planner/automatic-concurrency";
 
-it("未标定时只给安全阀，容量结论不再由核数公式给出", () => {
-  // 缺少提示或提示不影响容量：公式已删除，这里只回答"允许试探到多高"。
-  expect(plannerProbeCeiling({})).toBe(PLANNER_SAFETY_CEILING);
-  // 订正 2026-10-06：核数从此参与安全阀推导（见下方新增用例），这条断言的期望值改为显式常量，
-  // 避免"核数 32 恰好等于兜底常量 32"造成误读。原式为 toBe(PLANNER_SAFETY_CEILING)。
-  expect(plannerProbeCeiling({ hardwareConcurrency: 32 })).toBe(32);
-  expect(plannerProbeCeiling({ safetyCeiling: 6 })).toBe(6);
-  expect(plannerProbeCeiling({ safetyCeiling: 0 })).toBe(PLANNER_SAFETY_CEILING);
-  // 订正 2026-10-06：原断言是 toBe(PLANNER_SAFETY_CEILING)，即把 999 也削到 32。
-  // 该断言固化的正是"算力封顶未闭环"这一缺陷：safetyCeiling 在全仓库没有生产者时函数恒为 32，
-  // capacity-calibration 的上探 ceiling 随之钉死在 32，64/128 核机器永远测不出真实平台。
-  // 新行为：显式安全阀优先于兜底常量，不再被 32 削顶。
-  expect(plannerProbeCeiling({ safetyCeiling: 999 })).toBe(999);
+it("容量提示保留 CPU 余量，缺失提示时不会盲目启满 32 Worker", () => {
+  expect(plannerConcurrencyLimit({})).toBe(1);
+  // 2026-10-06：用户要求放宽经验上限；每通道预留 256 MiB，实际档位交给在线测量。
+  expect(plannerConcurrencyLimit({ hardwareConcurrency: 32 })).toBe(8);
+  expect(plannerConcurrencyLimit({ hardwareConcurrency: 32, deviceMemory: 8 })).toBe(16);
+  expect(plannerConcurrencyLimit({ hardwareConcurrency: 32, deviceMemory: 64 })).toBe(24);
+  expect(plannerConcurrencyLimit({ hardwareConcurrency: 8, deviceMemory: 2 })).toBe(4);
+  expect(plannerConcurrencyLimit({ hardwareConcurrency: 1, deviceMemory: 0.5 })).toBe(1);
 });
 
-it("安全阀按逻辑核数推导，大核数机器不被写死常量削顶", () => {
-  // 2026-10-06 代码检查回归：safetyCeiling 此前没有任何生产者（browserPlannerResources 只返回
-  // hardwareConcurrency / deviceMemory），plannerProbeCeiling 恒返回 32，标定上探 ceiling 也被钉在 32。
-  // 开发机是 28 核、标定平台 27 通道（27 < 32），缺口在开发机上不可见，因此这里固化新口径。
-  expect(plannerProbeCeiling({ hardwareConcurrency: 64 })).toBe(64);
-  expect(plannerProbeCeiling({ hardwareConcurrency: 128 })).toBe(128);
-  // 显式安全阀优先于核数推导。
-  expect(plannerProbeCeiling({ hardwareConcurrency: 64, safetyCeiling: 8 })).toBe(8);
-  // 核数缺失或非法时回落到兜底常量，保证仍有防无界试探的上界。
-  expect(plannerProbeCeiling({ hardwareConcurrency: 0 })).toBe(PLANNER_SAFETY_CEILING);
-  expect(plannerProbeCeiling({ hardwareConcurrency: -4 })).toBe(PLANNER_SAFETY_CEILING);
-});
+// AI-REMOVED 2026-10-07:
+// Reason: 旧用例要求四秒周期加压、连续缩容与缓存减半，和新的稳定吞吐策略冲突。
+// Trigger: 用户授权修改控制器并以长时平均吞吐验收。
+// Evidence: Windows 响应延迟反复触发 20→15→12→9，原测试未覆盖稳定保持。
+// Replacement: 下方基于吞吐平台、过渡阶段和持续压力的回归。
+// Risk: 不再保证旧调档时刻；保留资源上限与会话缓存测试。
+// Human Review: Required
+// Original code:
+// it("增加并发没有吞吐收益时退回，冷却后仍可再次试探", () => {
+//   const control = new PlannerAutomaticConcurrency(4, 0, 0);
+//   const sample = (at: number, evaluations: number, activeWorkers: number) => control.observe({ at, evaluations, activeWorkers,
+//     pendingVerifications: 0, lagMs: 0 });
+//   expect(sample(1000, 100, 1)).toBe(1);
+//   expect(sample(4000, 400, 1)).toBe(2);
+//   expect(sample(8000, 800, 2)).toBe(1);
+//   expect(sample(12_000, 1200, 1)).toBe(1);
+//   expect(sample(40_000, 4000, 1)).toBe(2);
+// });
+//
+// it("吞吐提升允许增容，验证积压和偶发卡顿不收缩，持续卡顿才退让", () => {
+//   const control = new PlannerAutomaticConcurrency(3, 0, 0);
+//   expect(control.observe({ at: 4000, evaluations: 400, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
+//   expect(control.observe({ at: 8000, evaluations: 1200, activeWorkers: 2, pendingVerifications: 0, lagMs: 0 })).toBe(3);
+//   expect(control.observe({ at: 12_000, evaluations: 2400, activeWorkers: 3, pendingVerifications: 0, lagMs: 0 })).toBe(3);
+//   // AI-REMOVED 2026-10-03:
+//   // Reason: 用户要求修正 Windows 上验证排队和一次卡顿导致长期单 Worker 的错误判断。
+//   // Trigger: CPU 容量判断与验证背压分离。Evidence: before-desktop-02 的 nominal 压力及冷却记录。
+//   // Replacement: 下方持续压力、偶发延迟与恢复断言。Risk: Low。Human Review: Required
+//   // Original code:
+//   // expect(control.observe({ at: 13_000, evaluations: 2700, activeWorkers: 3, pendingVerifications: 0, lagMs: 200 })).toBe(2);
+//   // expect(control.observe({ at: 14_000, evaluations: 2900, activeWorkers: 2, pendingVerifications: 2, lagMs: 0 })).toBe(1);
+//   // expect(control.observe({ at: 18_000, evaluations: 3300, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(1);
+//   expect(control.observe({ at: 13_000, evaluations: 2700, activeWorkers: 3, pendingVerifications: 0, lagMs: 200 })).toBe(3);
+//   expect(control.observe({ at: 14_000, evaluations: 2900, activeWorkers: 0, pendingVerifications: 3, lagMs: 0 })).toBe(3);
+//   for (const at of [15_000, 16_000]) {
+//     expect(control.observe({ at, evaluations: at / 4, activeWorkers: 3, pendingVerifications: 0, lagMs: 200 })).toBe(3);
+//   }
+//   expect(control.observe({ at: 17_000, evaluations: 4500, activeWorkers: 3, pendingVerifications: 0, lagMs: 200 })).toBe(2);
+//   expect(control.observe({ at: 21_000, evaluations: 5500, activeWorkers: 2, pendingVerifications: 0, lagMs: 0 })).toBe(3);
+// });
+//
+// it("没有工作进展或执行通道未用满时不增容，CPU 压力可独立触发收缩", () => {
+//   const control = new PlannerAutomaticConcurrency(8, 0, 0);
+//   expect(control.observe({ at: 4000, evaluations: 0, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(1);
+//   expect(control.observe({ at: 8000, evaluations: 100, activeWorkers: 0, pendingVerifications: 0, lagMs: 0 })).toBe(1);
+//   expect(control.observe({ at: 12_000, evaluations: 200, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
+//   expect(control.observe({ at: 13_000, evaluations: 250, activeWorkers: 2, pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(1);
+// });
+//
+//
+// it("高上限先较大步幅爬升，无收益时回到探测前的完整档位", () => {
+//   const control = new PlannerAutomaticConcurrency(24, 0, 0);
+//   const sample = (at: number, evaluations: number) => control.observe({ at, evaluations,
+//     activeWorkers: control.target, pendingVerifications: 0, lagMs: 0 });
+//   expect(sample(4000, 100)).toBe(2);
+//   expect(sample(8000, 300)).toBe(3);
+//   expect(sample(12000, 600)).toBe(5);
+//   expect(control.confirmedTarget).toBe(3);
+//   expect(sample(16000, 900)).toBe(3);
+//   expect(control.confirmedTarget).toBe(3);
+//   expect(sample(20000, 1200)).toBe(3);
+//   // 下一次改用更细的步幅，不反复从 3 跳到已经无收益的 5。
+//   expect(sample(24000, 1500)).toBe(4);
+// });
+//
+// it("恒定吞吐下重复探测不会让并发逐步漂移到上限", () => {
+//   const control = new PlannerAutomaticConcurrency(32, 0, 0);
+//   for (let window = 1; window <= 30; window++) {
+//     const target = control.observe({ at: window * 4000, evaluations: window * 100,
+//       activeWorkers: control.target, pendingVerifications: 0, lagMs: 0 });
+//     expect(target).toBeLessThanOrEqual(2);
+//     expect(control.confirmedTarget).toBe(1);
+//   }
+// });
+//
+// it("缓存起点必须重新测量，更少通道保留吞吐时采用较少通道", () => {
+//   for (const retained of [true, false]) {
+//     const control = new PlannerAutomaticConcurrency(8, 0, 0, 8);
+//     expect(control.target).toBe(8);
+//     expect(control.observe({ at: 4000, evaluations: 800, activeWorkers: 8, pendingVerifications: 0, lagMs: 0 })).toBe(4);
+//     expect(control.observe({ at: 8000, evaluations: retained ? 1600 : 1200,
+//       activeWorkers: 4, pendingVerifications: 0, lagMs: 0 })).toBe(retained ? 4 : 8);
+//     expect(control.confirmedTarget).toBe(retained ? 4 : 8);
+//   }
+// });
+//
+// it("连续压力永不退到零，缓存并发受当前机器资源上限约束", () => {
+//   const control = new PlannerAutomaticConcurrency(2, 0, 0, 16);
+//   expect(control.target).toBe(2);
+//   for (let second = 1; second <= 8; second++) {
+//     expect(control.observe({ at: second * 1000, evaluations: second * 100, activeWorkers: 1,
+//       pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(1);
+//   }
+// });
+//
+// it("累计工作时间识别批次交接，资源被另一阶段占用时不误判探测失败", () => {
+//   const control = new PlannerAutomaticConcurrency(8, 0, 0);
+//   expect(control.observe({ at: 4000, evaluations: 100, activeWorkers: 0,
+//     pendingVerifications: 0, lagMs: 0, busyMs: 3900 })).toBe(2);
+//   // 此窗被验证占用，只用了少量搜索时间，不能据此回退新增通道。
+//   expect(control.observe({ at: 8000, evaluations: 110, activeWorkers: 0,
+//     pendingVerifications: 4, lagMs: 0, busyMs: 4100 })).toBe(2);
+//   expect(control.confirmedTarget).toBe(1);
+//   expect(control.observe({ at: 12000, evaluations: 310, activeWorkers: 0,
+//     pendingVerifications: 0, lagMs: 0, busyMs: 11900 })).toBe(3);
+//   expect(control.confirmedTarget).toBe(2);
+// });
+//
 
-it("上探档位按 1.5 倍增长并在安全阀处停下", () => {
-  expect(nextStep(1, 32)).toBe(2);
-  expect(nextStep(2, 32)).toBe(3);
-  expect(nextStep(3, 32)).toBe(5);
-  expect(nextStep(16, 32)).toBe(24);
-  expect(nextStep(24, 32)).toBe(32);
-  expect(nextStep(32, 32)).toBeNull();
-  expect(nextStep(8, 10)).toBe(10);
-  // 固定步长模式（测试与离线对照用）。
-  expect(nextStep(1, 32, 2)).toBe(2);
-  expect(nextStep(2, 32, 2)).toBe(4);
-  expect(nextStep(4, 32, 2)).toBe(6);
-});
-
-it("增益不足即取平台前一档，从未增长时取起点", () => {
-  const flat = [{ value: 1, throughput: 100, gain: 1 }, { value: 2, throughput: 105, gain: 1.05 }];
-  expect(pickPlateau(flat, 1, 1.1).best).toBe(1);
-  const growing = [{ value: 1, throughput: 100, gain: 1 }, { value: 2, throughput: 195, gain: 1.95 },
-    { value: 4, throughput: 380, gain: 1.95 }, { value: 8, throughput: 400, gain: 1.05 }];
-  expect(pickPlateau(growing, 1, 1.1).best).toBe(4);
-  expect(pickPlateau([], 1, 1.1).best).toBe(1);
-});
-
-it("上探测量在真实增益消失处停止，不依赖任何预设档位数", async () => {
-  const seen: number[] = [];
-  // 吞吐在 4 档后饱和：模拟一台只有 4 路可用算力的机器。
-  const result = await stepUpThroughput(async value => {
-    seen.push(value);
-    return { throughput: Math.min(value, 4) * 100 };
-  }, { start: 1, ceiling: 64, minGain: 1.1 });
-  expect(seen).toEqual([1, 2, 3, 5, 8]);
-  expect(result.best).toBe(5);
-  expect(result.reason).toContain("增益仅");
-});
-
-it("上探测量遇到安全阀即停，仍在增长时取安全阀", async () => {
-  const seen: number[] = [];
-  const result = await stepUpThroughput(async value => {
-    seen.push(value);
-    return { throughput: value * 100 };
-  }, { start: 1, ceiling: 5, minGain: 1.1 });
-  expect(seen).toEqual([1, 2, 3, 5]);
-  expect(result.best).toBe(5);
-});
-
-/** 每窗速率按 perWorker 累加：并发真的带来吞吐提升时才会继续加容。 */
-function drive(control: PlannerAutomaticConcurrency, windows: number, perWorker: number, at0 = 0): number[] {
-  const sequence: number[] = [];
-  let at = at0, evaluations = 0, target = control.target;
-  for (let index = 0; index < windows; index++) {
-    evaluations += perWorker * target;
-    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    target = control.observe({ at, evaluations, activeWorkers: target, pendingVerifications: 0, lagMs: 0 });
-    sequence.push(target);
-  }
-  return sequence;
+/** 输入吞吐曲线，观察真实控制器的收敛与保护；不预设每次调档的内部时刻。 */
+function drive(initial = 1, maximum = 24) {
+  const control = new PlannerAutomaticConcurrency(maximum, 0, 0, initial);
+  let at = 0, evaluations = 0, busyMs = 0;
+  const changes: Array<{ at: number; from: number; to: number }> = [];
+  const run = (seconds: number, rate: (workers: number) => number,
+    options: { lagMs?: number; pressure?: "critical"; activeWorkers?: number; busy?: boolean } = {}) => {
+    for (let second = 0; second < seconds; second++) {
+      const from = control.target;
+      at += 1000; evaluations += rate(from);
+      busyMs += options.busy === false ? 0 : from * 1000;
+      control.observe({ at, evaluations, busyMs, activeWorkers: options.activeWorkers ?? from,
+        pendingVerifications: 0, lagMs: options.lagMs ?? 0, pressure: options.pressure });
+      if (from !== control.target) changes.push({ at, from, to: control.target });
+    }
+  };
+  return { control, changes, run };
 }
 
-it("吞吐随并发近似线性时，按剩余空间的 25% 逐窗爬升到上限", () => {
-  const control = new PlannerAutomaticConcurrency(8, 0, 0);
-  expect(drive(control, 8, 100)).toEqual([2, 3, 4, 5, 6, 7, 8, 8]);
+it("真实吞吐在八路到达平台后回到最好档位，长期保持而非重复加压", () => {
+  const test = drive();
+  test.run(120, workers => Math.min(workers, 8) * 100);
+  expect(test.control.target).toBe(8);
+  expect(test.control.confirmedTarget).toBe(8);
+  expect(Math.max(...test.changes.map(value => value.to))).toBeGreaterThan(8);
+  const changes = test.changes.length;
+  test.run(180, workers => Math.min(workers, 8) * 100);
+  expect(test.changes).toHaveLength(changes);
 });
 
-it("吞吐不随并发提升时退回一格并冷却，冷却后仍可再试探", () => {
-  const control = new PlannerAutomaticConcurrency(4, 0, 0);
-  // 无论并发多少，每窗只增加固定吞吐：第一窗加容后立即发现没有收益。
-  let at = 4000, evaluations = 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
-  at += 4000; evaluations += 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 2, pendingVerifications: 0, lagMs: 0 })).toBe(1);
-  // 冷却窗口内保持不动（冷却覆盖两窗）。
-  at += 4000; evaluations += 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(1);
-  // 冷却结束后重新试探加容。
-  at += 4000; evaluations += 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
-  // 再次没有收益，继续退回并冷却。
-  at += 4000; evaluations += 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 2, pendingVerifications: 0, lagMs: 0 })).toBe(1);
-  at += 4000; evaluations += 100;
-  expect(control.observe({ at, evaluations, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(1);
+it("恒定吞吐不因较大上限漂移，短窗交替峰谷不造成持续上探", () => {
+  const test = drive();
+  let second = 0;
+  test.run(240, () => ++second % 2 ? 170 : 30);
+  expect(test.control.target).toBe(1);
+  expect(test.control.confirmedTarget).toBe(1);
+  expect(Math.max(...test.changes.map(value => value.to))).toBe(2);
 });
 
-it("显式指定并发数时该数值即目标", () => {
-  const control = new PlannerAutomaticConcurrency(32, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, target: 4 });
-  expect(control.maximum).toBe(4);
-  expect(drive(control, 6, 100).at(-1)).toBe(4);
-});
-
-it("标定值作为上限，容量提示只作兜底", () => {
-  const calibrated = new PlannerAutomaticConcurrency(21, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 8 });
-  expect(calibrated.maximum).toBe(8);
-  expect(drive(calibrated, 10, 100).at(-1)).toBe(8);
-  // 显式并发数优先于标定值。
-  const explicit = new PlannerAutomaticConcurrency(21, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 8, target: 3 });
-  expect(explicit.maximum).toBe(3);
-});
-
-it("标定平台直接作为起点，不再从保守起点重爬", () => {
-  // 标定已经量出"1 通道 7.7k 评估/秒 … 27 通道 74.9k 评估/秒"这条曲线，并把吞吐平台点
-  // 记成 concurrentWorkers。正式规划再从 1 重爬要 5 个窗口（20 秒）才到 18，
-  // 而且上探增益会先撞上 1.05 的阈值、在 19~22 之间来回试探，永远到不了标定平台。
-  const calibrated = new PlannerAutomaticConcurrency(32, 0, 0,
-    { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 27 });
-  expect(calibrated.maximum).toBe(27);
-  expect(calibrated.target).toBe(27);
-  // 已到达上限，窗口内保持不动，不再无意义地上探。
-  expect(drive(calibrated, 3, 100)).toEqual([27, 27, 27]);
-  // 无标定时仍必须从保守起点上探：上探是唯一能获得容量结论的手段。
-  const uncalibrated = new PlannerAutomaticConcurrency(8, 0, 0);
-  expect(uncalibrated.target).toBe(1);
-  expect(drive(uncalibrated, 3, 100)).toEqual([2, 3, 4]);
-});
-
-it("标定值不被与机型无关的常量削顶", () => {
-  // 2026-10-06 回归：控制律曾对 maximum 取 Math.min(..., 32)，
-  // 64 核机器实测出 64 通道也会被削到 32，标定结果形同作废。
-  const calibrated = new PlannerAutomaticConcurrency(64, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 48 });
-  expect(calibrated.maximum).toBe(48);
-  // 爬升按剩余空间的 25% 分配：越接近上限增量越小，会停在上限下方一个"不足一格"的固定点
-  // （48 档时是 41）。这里只验证它确实越过了旧常量的 32，没有被常量削顶。
-  let at = 0, evaluations = 0, target = calibrated.target;
-  for (let index = 0; index < 200; index++) {
-    evaluations += 100 * target;
-    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    const next = calibrated.observe({ at, evaluations, activeWorkers: target, pendingVerifications: 0, lagMs: 0 });
-    if (next === target) break;
-    target = next;
+it("缓存并发先重新测量，少一个通道保留吞吐则采用，否则恢复", () => {
+  for (const plateau of [6, 8]) {
+    const test = drive(8);
+    test.run(60, workers => Math.min(workers, plateau) * 100);
+    expect(test.control.target).toBe(plateau === 6 ? 7 : 8);
+    expect(test.control.confirmedTarget).toBe(test.control.target);
   }
-  expect(target).toBeGreaterThan(32);
-  // 无标定时上界仍是调用方给的安全阀，不用常量另设一道。
-  expect(new PlannerAutomaticConcurrency(40, 0, 0).maximum).toBe(40);
 });
 
-it("交互保护：普通延迟不再撤掉算力，只有持续极端延迟才退让", () => {
-  // 订正 2026-10-07：旧实现把 lagMs >= 100 当"算力到顶"，于是控制律一边把 CPU 用到 94%，
-  // 一边把自己刚标定出来的平台按每窗 20% 撤掉（28 核机器实测 27 → 21 → 16 → … → 4，
-  // 整机占用从 94% 掉到 20% 以下）。占满 CPU 带来的主线程延迟是结果，不是容量上限。
-  const control = new PlannerAutomaticConcurrency(8, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 6 });
-  expect(control.target).toBe(6);
-  let at = 0, evaluations = 0;
-  for (let window = 0; window < 4; window++) {
-    evaluations += 600;
-    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0 })).toBe(6);
-  }
-  for (const lagMs of [120, 250, 400, 500]) {
-    evaluations += 100;
-    at += 1_000;
-    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs })).toBe(6);
-  }
-  // 持续到明显影响交互（>= uiGuardMs）才退让：6 → 4（保留 80%）。
-  evaluations += 100;
-  at += 1_000;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 700 })).toBe(6);
-  evaluations += 100;
-  at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 700 })).toBe(4);
-  // 冷却期内不再调整。
-  evaluations += 100;
-  at += 1_000;
-  expect(control.observe({ at, evaluations, activeWorkers: 4, pendingVerifications: 0, lagMs: 900 })).toBe(4);
+it("持续明显卡顿每次退让后等待生效，不在三秒内连续砍半", () => {
+  const test = drive(20);
+  test.run(3, workers => workers * 100, { lagMs: 600 });
+  expect(test.control.target).toBe(15);
+  test.run(6, workers => workers * 100, { lagMs: 600 });
+  expect(test.control.target).toBe(15);
+  test.run(25, workers => workers * 100, { lagMs: 600 });
+  const decreases = test.changes.filter(value => value.to < value.from);
+  for (let i = 1; i < decreases.length; i++) expect(decreases[i]!.at - decreases[i - 1]!.at).toBeGreaterThanOrEqual(10_000);
+  expect(test.control.target).toBeGreaterThanOrEqual(1);
 });
 
-it("小上限时至少退让一个通道，不会卡死在同一占用", () => {
-  const control = new PlannerAutomaticConcurrency(2, 0, 0);
-  expect(drive(control, 2, 100).at(-1)).toBe(2);
-  expect(control.observe({ at: 9000, evaluations: 400, activeWorkers: 2, pendingVerifications: 0, lagMs: 700 })).toBe(2);
-  expect(control.observe({ at: 12_000, evaluations: 420, activeWorkers: 2, pendingVerifications: 0, lagMs: 700 })).toBe(1);
+it("普通响应延迟不否决吞吐观测，严重压力仍独立保护", () => {
+  const test = drive();
+  test.run(100, workers => Math.min(workers, 8) * 100, { lagMs: 200 });
+  expect(test.control.target).toBe(8);
+  test.run(1, workers => workers * 100, { pressure: "critical" });
+  expect(test.control.target).toBe(6);
+  test.run(60, workers => workers * 100, { pressure: "critical" });
+  expect(test.control.target).toBe(1);
 });
 
-it("退让不会把通道降到 0，否则派发循环会直接结束整轮计算", () => {
-  // 2026-10-06 回归：原式先算 max(1, floor(1 * 0.8)) = 1，再落到 target - 1 = 0。
-  // 派发循环是 for (index = 0; index < target; ...)，target 归零后一个通道都不派发，
-  // active.size === 0 && pendingVerifications === 0 立即成立并 break，整轮计算直接结束；
-  // 此时每窗速率恒为 0，控制律也再没有机会爬回来。正式规划正是从 target = 1 起步的。
-  const control = new PlannerAutomaticConcurrency(8, 0, 0);
-  expect(control.target).toBe(1);
-  expect(control.observe({ at: 1_000, evaluations: 100, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
-  expect(control.observe({ at: 2_000, evaluations: 200, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
-  // 窗口跑满且持续卡顿：退让后仍保留 1 个通道。
-  expect(control.observe({ at: 4_000, evaluations: 400, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
-  // 压力消失、冷却结束后仍能重新加容，不会永久卡在 1。
-  expect(control.observe({ at: 9_000, evaluations: 500, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
+it("工作量不足与无进展不被误判为机器吞吐平台", () => {
+  const test = drive();
+  test.run(20, () => 0);
+  expect(test.control.target).toBe(1);
+  test.run(20, () => 100, { busy: false, activeWorkers: 0 });
+  expect(test.control.target).toBe(1);
+  test.run(40, workers => workers * 100);
+  expect(test.control.target).toBeGreaterThan(1);
 });
 
-it("系统压力只把交互保护门槛减半，不能单独把算力撤下来", () => {
-  // 订正 2026-10-07：Chrome 的 PressureObserver 在算力被主动占满时会长期报告 critical，
-  // 把它单独当退让理由等于自己撤销自己的容量结论；它现在只把延迟门槛减半。
-  const control = new PlannerAutomaticConcurrency(8, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 6 });
-  let at = 0, evaluations = 0;
-  for (let window = 0; window < 6; window++) {
-    evaluations += 600;
-    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0 })).toBe(6);
-  }
-  evaluations += 100; at += 500;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(6);
-  // critical 门槛减半（300ms）：200ms 仍不触发。
-  evaluations += 100; at += 500;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 200, pressure: "critical" })).toBe(6);
-  evaluations += 100; at += 1_500;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 400, pressure: "critical" })).toBe(6);
-  // 窗口跑满且持续超过减半门槛：6 → 4（保留 80%）。
-  evaluations += 100; at += 1_500;
-  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 400, pressure: "critical" })).toBe(4);
+it("缩容时旧批次尚未退出，不把过渡期产出当成新档位的测量", () => {
+  const test = drive(16);
+  test.run(1, () => 1000, { pressure: "critical" });
+  expect(test.control.target).toBe(12);
+  test.run(8, () => 50_000, { activeWorkers: 16 });
+  expect(test.control.confirmedTarget).toBe(1);
+  test.run(30, () => 1000);
+  expect(test.control.confirmedTarget).toBe(12);
 });
 
-it("没有吞吐收益时退回探测前的并发，不随冷却反复上探", () => {
-  // 订正 2026-10-06（评审 P2）：原实现探测失败只减一格，而爬升一次最多加 floor(剩余×25%) 路，
-  // 于是固定吞吐下会一路涨到上限（实测 1→8→7→…→25）。退回必须回到探测前的并发。
-  const control = new PlannerAutomaticConcurrency(32, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, target: "auto" });
-  const sequence: number[] = [];
-  let at = 0, evaluations = 0, target = control.target;
-  for (let window = 0; window < 24; window++) {
-    evaluations += 100;   // 固定吞吐：与并发无关，任何加容都不该被保留
-    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    target = control.observe({ at, evaluations, activeWorkers: target, pendingVerifications: 0, lagMs: 0 });
-    sequence.push(target);
-  }
-  // 峰值只来自一次爬升（1 → 8），每次探测失败都回到探测前的 1。
-  expect(Math.max(...sequence)).toBe(8);
-  expect(sequence.filter(value => value === 1).length).toBeGreaterThanOrEqual(8);
+it("长期吞吐持续恶化才重新测量，随后仍收敛到新的平台", () => {
+  const test = drive();
+  test.run(100, workers => Math.min(workers, 8) * 100);
+  expect(test.control.target).toBe(8);
+  const changes = test.changes.length;
+  test.run(180, workers => Math.min(workers, 6) * 70);
+  expect(test.changes.length).toBeGreaterThan(changes);
+  expect(test.control.target).toBe(7);
+  const settled = test.changes.length;
+  test.run(120, workers => Math.min(workers, 6) * 70);
+  expect(test.changes).toHaveLength(settled);
+});
+
+it("会话缓存按请求隔离、过期失效并限制存量", () => {
+  const memory = new PlannerConcurrencyMemory();
+  memory.remember("first", 8, 100);
+  expect(memory.read("other", 101)).toBe(1);
+  expect(memory.read("first", 101)).toBe(8);
+  expect(memory.read("first", 600101)).toBe(1);
+  for (let index = 0; index <= 32; index++) memory.remember(String(index), 4, 0);
+  expect(memory.read("0", 1)).toBe(1);
+  expect(memory.read("32", 1)).toBe(4);
+  expect(new PlannerConcurrencyMemory().read("32", 1)).toBe(1);
 });

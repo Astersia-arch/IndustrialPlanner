@@ -381,7 +381,8 @@ for (const profile of profiles) {
         writeFile(resolve(success, "report.json"), JSON.stringify({ progress: task.progress,
           report: task.checkpoint.best.report, metrics: task.checkpoint.result.metrics, ticksPerSecond: 2 })),
       ]);
-      await cli.runCode("async page => { await page.getByRole('button',{name:'删除任务',exact:true}).click(); }", "delete.log");
+      expect(await cli.runCode("async page => { await page.getByRole('button',{name:'删除任务',exact:true}).click(); }", "delete.log"))
+        .toContain("删除后不可恢复");
       await cli.invoke(["dialog-accept"], "confirm.log");
       const deleted = await cli.runJson(`async page => {
         await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.queries.listTasks().length === 1);

@@ -311,18 +311,6 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
       </aside>
       <div className={styles.main}>
         <div className={styles.scroll}>
-              {selectedId !== null || plan !== null ? <div className={styles.taskActions}>
-                <button type="button" disabled={!planner || fileBusy} onClick={download}>{t("eda.downloadTask")}</button>
-                {selectedId !== null ? <button type="button" disabled={busy || fileBusy} onClick={() => act(async () => {
-                  if (!planner || !window.confirm(t("eda.confirmDelete"))) return;
-                  setFileBusy(true);
-                  try {
-                    await planner.actions.deleteTask(selectedId);
-                    const next = planner.queries.listTasks()[0];
-                    if (next) select(next.taskId); else controller.selectTask(null);
-                  } finally { setFileBusy(false); }
-                })}>{t("eda.deleteTask")}</button> : null}
-              </div> : null}
           {controller.blueprintDraft ? <BlueprintIdentification key={controller.blueprintDraft.blueprintId}
             appHost={appHost} blueprint={controller.blueprintDraft} onBusy={setFileBusy} /> : plan === null && progress === null ? <div className={styles.empty}><p>{t("eda.noPlan")}</p>
             <button type="button" disabled={busy} onClick={openProductionPlanning}>{t("eda.openProductionPlanning")}</button></div> : plan !== null ? <>
@@ -441,54 +429,68 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
           {error !== null ? <p role="alert" className={styles.error}>{error}</p> : null}
         </div>
         <footer className={styles.footer}>
-          {progress !== null && plan !== null && !busy && !controller.blueprintRequest ? <button type="button" disabled={anyBusy}
-            onClick={() => { controller.open(plan); setError(null); }}>{t("eda.replan")}</button> : null}
-          {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
-          {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
-            onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
-              controller.options.evaluationsPerRound, controller.options.concurrency))}>{t("eda.continue")}</button> : null}
-          {result !== null ? <>
-            <button type="button" onClick={() => {
-              appHost.blueprintPreview.open({ ...result.blueprint, parentFolderId: result.folderId }, { canDelete: false });
-              // AI-REMOVED 2026-09-30:
-              // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
-              // Trigger: 用户批准本轮接口与交互调整。
-              // Evidence: 原实现使用时间截止或关闭任务面板。
-              // Replacement: 保留规划面板，由预览窗口管理自身关闭
-              // Risk: Low。Human Review: Required
-              // Original code:
-              // controller.close();
-
-            }}>{t("eda.preview")}</button>
-            <button type="button" className={styles.primary} disabled={busy || result.folderId !== null}
-              onClick={() => act(() => planner?.actions.save(result.taskId))}>{t(progress?.status === "save-failed" ? "eda.retrySave" : "eda.save")}</button>
-            <button type="button" onPointerUp={event => place(event.pointerType === "mouse" ? "mouse" : "touch")}
-              onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
-          </> : null}
-          {progress === null && plan !== null ? <button type="button" className={styles.primary}
-            disabled={plan.containsModules || !planner || busy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
-              if (planner) {
-                // AI-REMOVED 2026-10-04:
-                // Reason: 启动与下载共用可见配置的整理逻辑。
-                // Trigger: 用户要求草稿下载包含当前任务及配置。
-                // Evidence: 原逐物品与环境规则只在启动点击处理器中固化。
-                // Replacement: 本组件 getConfiguredRequest。
-                // Risk: Low；环境视图无效时导出保留原规则，启动仍按原条件禁用。
-                // Human Review: Required
+          {selectedId !== null || plan !== null ? <div className={styles.taskActions}>
+            <button type="button" disabled={!planner || fileBusy} onClick={download}>{t("eda.downloadTask")}</button>
+            {selectedId !== null ? <button type="button" disabled={busy || fileBusy} onClick={() => act(async () => {
+              if (!planner || !window.confirm(t("eda.confirmDelete"))) return;
+              setFileBusy(true);
+              try {
+                await planner.actions.deleteTask(selectedId);
+                const next = planner.queries.listTasks()[0];
+                if (next) select(next.taskId); else controller.selectTask(null);
+              } finally { setFileBusy(false); }
+            })}>{t("eda.deleteTask")}</button> : null}
+          </div> : null}
+          <div className={styles.planningActions}>
+            {progress !== null && plan !== null && !busy && !controller.blueprintRequest ? <button type="button" disabled={anyBusy}
+              onClick={() => { controller.open(plan); setError(null); }}>{t("eda.replan")}</button> : null}
+            {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
+            {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
+              onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
+                controller.options.evaluationsPerRound, controller.options.concurrency))}>{t("eda.continue")}</button> : null}
+            {result !== null ? <>
+              <button type="button" onClick={() => {
+                appHost.blueprintPreview.open({ ...result.blueprint, parentFolderId: result.folderId }, { canDelete: false });
+                // AI-REMOVED 2026-09-30:
+                // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
+                // Trigger: 用户批准本轮接口与交互调整。
+                // Evidence: 原实现使用时间截止或关闭任务面板。
+                // Replacement: 保留规划面板，由预览窗口管理自身关闭
+                // Risk: Low。Human Review: Required
                 // Original code:
-                // const request = controller.getRequest();
-                // // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
-                // const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? [];
-                // const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
-                // const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
-                //   itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
-                //   ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
-                //   ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
-                // })) : request.options.itemPolicies;
-                // select(planner.actions.start({ ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } }));
-                select(planner.actions.start(getConfiguredRequest()));
-              }
-            })}>{t("eda.start")}</button> : null}
+                // controller.close();
+
+              }}>{t("eda.preview")}</button>
+              <button type="button" className={styles.primary} disabled={busy || result.folderId !== null}
+                onClick={() => act(() => planner?.actions.save(result.taskId))}>{t(progress?.status === "save-failed" ? "eda.retrySave" : "eda.save")}</button>
+              <button type="button" onPointerUp={event => place(event.pointerType === "mouse" ? "mouse" : "touch")}
+                onClick={event => { if (event.detail === 0) place("mouse"); }}>{t("eda.place")}</button>
+            </> : null}
+            {progress === null && plan !== null ? <button type="button" className={styles.primary}
+              disabled={plan.containsModules || !planner || busy || !validRoundSettings || Boolean(supply.error) || Boolean(supply.view?.issues.length)} onClick={() => act(() => {
+                if (planner) {
+                  // AI-REMOVED 2026-10-04:
+                  // Reason: 启动与下载共用可见配置的整理逻辑。
+                  // Trigger: 用户要求草稿下载包含当前任务及配置。
+                  // Evidence: 原逐物品与环境规则只在启动点击处理器中固化。
+                  // Replacement: 本组件 getConfiguredRequest。
+                  // Risk: Low；环境视图无效时导出保留原规则，启动仍按原条件禁用。
+                  // Human Review: Required
+                  // Original code:
+                  // const request = controller.getRequest();
+                  // // 保存当前可见路线的确定选择，隐藏上游不成为额外的供给授权。
+                  // const supplyPolicies = supply.view?.rows.flatMap(row => !row.inherited && row.policy ? [row.policy] : []) ?? [];
+                  // const rules = new PlannerItemRules(appHost.workspace.registry, request.options);
+                  // const itemPolicies = supply.view ? collectPlannerItemBoundaries(appHost.workspace.registry, request.plan, supply.view).map(row => ({
+                  //   itemId: row.itemId, ...(row.supply ? { supply: rules.supply(row.itemId) } : {}),
+                  //   ...(row.output && rules.isSolid(row.itemId) ? { output: rules.output(row.itemId) } : {}),
+                  //   ...(row.byproducts ? { byproducts: rules.byproducts(row.itemId) } : {}),
+                  // })) : request.options.itemPolicies;
+                  // select(planner.actions.start({ ...request, plan: { ...request.plan, supplyPolicies }, options: { ...request.options, itemPolicies } }));
+                  select(planner.actions.start(getConfiguredRequest()));
+                }
+              })}>{t("eda.start")}</button> : null}
+          </div>
         </footer>
       </div>
     </div>

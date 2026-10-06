@@ -26,9 +26,14 @@ import { inspectBlueprintBoundaries, blueprintBoundaryKey, assertBlueprintRecogn
 import { blueprintRecognitionScene } from "./blueprint-scene";
 import { identifyBlueprintNetwork } from "./blueprint-network";
 import { assertBlueprintPreserved } from "./blueprint-constraints";
-import { browserPlannerResources, DEFAULT_PLANNER_CONCURRENCY_POLICY, observePlannerPressure, plannerProbeCeiling,
-  PlannerAutomaticConcurrency, type PlannerConcurrencySample } from "./automatic-concurrency";
-import { calibratePlannerCapacity, planVerificationParallelism } from "./capacity-calibration";
+// 订正 2026-10-07（合并上游 0cca0f89）：并发与验证调度整体采用上游实现
+// （plannerConcurrencyLimit + PlannerAutomaticConcurrency + PlannerConcurrencyMemory），
+// 本地原有的 plannerProbeCeiling / DEFAULT_PLANNER_CONCURRENCY_POLICY 及其"实测容量抬高上限"
+// 的做法一并不再保留——按用户确认，这一点不重做进上游结构。
+import { browserPlannerResources, observePlannerPressure, plannerConcurrencyLimit,
+  PlannerAutomaticConcurrency, PlannerConcurrencyMemory,
+  type PlannerConcurrencySample } from "./automatic-concurrency";
+import { calibratePlannerCapacity } from "./capacity-calibration";
 import { measureGpuCrossover, DEFAULT_GPU_CROSSOVER_SCALES } from "./gpu-crossover";
 import { probeBrowserPlannerCapacity } from "./browser-capacity-probe";
 import { loadPlannerCapacity, plannerCapacitySignature, savePlannerCapacity } from "@/shared/storage/planner-capacity-storage";
@@ -64,6 +69,8 @@ export interface PlannerHostOptions {
   readonly storage?: typeof edaTaskStorage | null;
   readonly roundLimit?: () => number;
   /** 并行验证上限；默认 4。各通道是独立仿真 Worker，可真正并行。 */
+  // 订正 2026-10-07（合并上游 0cca0f89）：默认值不再是 4——搜索与验证共用同一个 maximum，
+  // 本项改为验证控制器自身的 maximum 上限（不填则与搜索同上限）。无头入口按实测显式填 1。
   readonly verificationConcurrency?: number;
   readonly shardSelection?: { readonly count: number; readonly start: number; readonly end: number };
 }
@@ -90,6 +97,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         && Number.isSafeInteger(point.bestArea) && point.bestArea > 0) ? structuredClone(history) : [],
       message: `任务无法继续，原始记录已保留，可导出或删除。${errorMessage(error)}` } });
   };
+  const concurrencyMemory = new PlannerConcurrencyMemory();
   const worker = options.worker ?? new PlannerWorkerClient();
   const workers = new Map<number, Pick<PlannerWorkerClient, "build" | "dispose">>();
   const workerFor = (index: number) => {
@@ -108,9 +116,23 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   let writes: Promise<void> = Promise.resolve();
   const pendingWrites = new Set<PlannerTask>();
   let writing = false;
+  let lastWriteAt = -Infinity;
+  let flushWrite: (() => void) | null = null;
+  let notificationTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastNotificationAt = -Infinity;
   // 导入包含异步持久化；从准入到提交占用入口，避免导入期间启动计算。
   let importing = false;
-  const notify = () => runInAction(() => { state.revision++; });
+  const notify = (immediate = true) => {
+    if (disposed) return;
+    if (!immediate && performance.now() - lastNotificationAt < 250) {
+      notificationTimer ??= setTimeout(() => { notificationTimer = null; notify(); },
+        Math.max(0, 250 - (performance.now() - lastNotificationAt)));
+      return;
+    }
+    if (notificationTimer !== null) { clearTimeout(notificationTimer); notificationTimer = null; }
+    lastNotificationAt = performance.now();
+    runInAction(() => { state.revision++; });
+  };
   const elapsed = (task: PlannerTask) => task.file.progress.elapsedMs + (task.resumedAt === null ? 0 : performance.now() - task.resumedAt);
   // 只保存已完成的搜索阶段；运行中的计数没有可恢复的退火状态，刷新后必须从安全边界重做。
   const snapshot = (task: PlannerTask): BlueprintPlannerTaskFile => structuredClone({ ...task.file,
@@ -130,13 +152,23 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     // const file = snapshot(task);
     // writes = writes.then(() => storage.save(file)).catch(error => reportStorageFailure("eda-task", error));
     pendingWrites.add(task);
+    // 运行时只保留最新引用，两秒内合并检查点；收尾与关闭立即唤醒，仍等待最终写入。
+    if (disposed || task.file.progress.status !== "running") flushWrite?.();
     if (writing) return;
     writing = true;
     writes = Promise.resolve().then(async () => {
       try {
         while (pendingWrites.size > 0) {
+          const delay = 2000 - (performance.now() - lastWriteAt);
+          if (!disposed && delay > 0 && [...pendingWrites].every(value => value.file.progress.status === "running")) {
+            await new Promise<void>(resolve => {
+              const timer = setTimeout(() => { flushWrite = null; resolve(); }, delay);
+              flushWrite = () => { clearTimeout(timer); flushWrite = null; resolve(); };
+            });
+          }
           const next = pendingWrites.values().next().value!;
           pendingWrites.delete(next);
+          lastWriteAt = performance.now();
           // 等待期间只保留任务引用；写入中的独立快照不会随继续搜索而变化。
           try { await storage.save(snapshot(next)); }
           catch (error) { reportStorageFailure("eda-task", error); }
@@ -144,11 +176,11 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       } finally { writing = false; }
     });
   };
-  const publish = (task: PlannerTask, patch: Partial<BlueprintPlannerProgress>) => {
+  const publish = (task: PlannerTask, patch: Partial<BlueprintPlannerProgress>, immediate = true) => {
     const spent = elapsed(task);
     if (task.resumedAt !== null) task.resumedAt = performance.now();
     task.file = { ...task.file, progress: { ...task.file.progress, ...patch, elapsedMs: spent } };
-    notify();
+    notify(immediate);
   };
   const assertReady = () => {
     if (disposed) throw new Error("规划器已关闭。");
@@ -317,6 +349,28 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     const idleStatus = () => point.result !== null && point.savedBlueprintId === point.result.blueprint.blueprintId ? "completed" as const : "waiting" as const;
     let lastFailure = "尚未找到通过验证的布局";
     let interruption: unknown = null;
+// 订正 2026-10-07（合并上游 0cca0f89）：
+// 本处原为本地实现的两套并发机制——搜索侧 plannerProbeCeiling + 标定起点，
+// 验证侧 verificationCeiling + planVerificationParallelism（"吃掉搜索未占用的全部算力"）。
+// 上游本次提交给出的共享额度模型（search + verification 在途数之和不超过同一个 maximum，
+// 验证另有 verificationTarget 控制器）与之职责完全重叠，按用户确认的口径采用上游实现。
+// 被替换的本地实现完整保留在本地提交 abe06625 / f7fea518 / 70f985fc 中，不在此重复留档。
+// Risk: 验证并发不再等于"搜索未占用的全部算力"，改为独立控制器在共享上限内爬升；
+//       搜索空闲时验证吞吐可能低于原实现，需以实机占用率复核。Human Review: Required
+// AI-REMOVED 2026-10-06:
+// Reason: 串行 Promise 链改为共享资源额度内的验证队列。
+// Trigger: 用户要求吸收 CPU 并发优化。
+// Evidence: 原搜索与串行验证独立占用资源，验证积压无法并行消化。
+// Replacement: verificationQueue / verificationActive / settleVerifications
+// Risk: 取消时必须保留未验证候选并等待全部在途操作。
+// Human Review: Required
+// Original code:
+//     let verificationTail: Promise<void> = Promise.resolve();
+    const verificationQueue: Array<{ shard: PlannerShardCheckpoint; portfolio: PlannerSearchPortfolio }> = [];
+    const verificationActive = new Map<Promise<void>, number>();
+    const searchStarted = new Map<number, number>();
+    let searchBusyMs = 0, verificationBusyMs = 0, completedVerifications = 0;
+    let maximum = 1, target = 1, verificationTarget = 1;
     let pendingVerifications = 0;
     const verifying = new Set<number>();
     let wake: (() => void) | null = null;
@@ -329,7 +383,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       publish(task, { evaluatedProposals: total, roundEvaluatedProposals: round, activeWorkerCount: task.activeShards.size,
         candidateCount: point.attempt + task.activeShards.size,
         estimatedProgress: Math.min(1, round / task.file.request.options.evaluationsPerRound),
-        ...(phase ? { phase } : {}), ...(message ? { message } : {}) });
+        ...(phase ? { phase } : {}), ...(message ? { message } : {}) }, false);
     };
     const verify = async (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
       const candidate = shard.pendingCandidate;
@@ -338,7 +392,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       check(task);
       const simulation = workspace.simulation;
       if (simulation === null) throw new Error("仿真服务不可用。");
-      publish(task, { phase: "verification", message: "正在验证产量与循环运行" });
+      publish(task, { phase: "verification", message: "正在验证产量与循环运行" }, false);
       const report = await simulation.actions.runBlueprint(candidate.execution, task.abort.signal);
       if (task.abort.signal.aborted) return;
       if (report.status === "timeout") throw new PlanningBudgetExhausted("产量验证超时，检查点已保留");
@@ -358,7 +412,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       portfolio.remember(candidate.seed);
       shard.portfolio = portfolio.snapshot();
       shard.validatedCandidates++;
-      publish(task, { validatedCandidateCount: task.file.progress.validatedCandidateCount + 1, phase: "optimization" });
+      publish(task, { validatedCandidateCount: task.file.progress.validatedCandidateCount + 1, phase: "optimization" }, false);
       const oldArea = point.best?.candidate.metrics.area ?? null;
       if (point.best === null || comparePlannerRanks({ area: candidate.metrics.area,
         outputStashCount: candidate.search.quality?.outputStashCount,
@@ -380,89 +434,52 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       }
       persist(task);
     };
-    // 2026-10-06：验证改为有界并行池。原实现把每条验证串成单链，8 核机器上只有 2 个核在算，
-    // 是大规模任务 CPU 占用上不去的直接原因；每通道各自起独立仿真 Worker，天然可并行。
-    //
-    // AI-REMOVED 2026-10-06:
-    // Reason: 串行验证链把验证绑成单通道，搜索通道随后全部空等仿真，是大规模任务占用上不去的直接原因。
-    // Trigger: 评审 P2 —— 默认验证并发固定为 1，"并行验证"名存实亡；待验证数到 2 就暂停搜索。
-    // Evidence: 上游 queueVerification 以 verificationTail.then(...) 串成单链，末尾 await verificationTail。
-    // Replacement: 下方 verificationQueue / startVerifications 有界并行池；并行度见 verificationParallelism。
-    // 订正 2026-10-07：并行度不再是固定值 verificationParallelism，改为按实测容量的动态分配
-    // （verificationCeiling + planVerificationParallelism），见下方 2026-10-07 的订正说明。
-    // Risk: 取消与暂停必须同时结算验证与搜索。Human Review: Required
-    //
-    // Original code:
-    // let verificationTail: Promise<void> = Promise.resolve();
-    // const pending = verificationTail.then(() => verify(shard, portfolio)).catch(error => {
-    //   if (interruption === null) interruption = error;
-    //   task.abort.abort();
-    // }).finally(() => { pendingVerifications--; verifying.delete(shard.index); wake?.(); });
-    // verificationTail = pending.catch(() => undefined);
-    // return pending;
-    //   ...
-    // await Promise.allSettled(active.values());
-    // await verificationTail;
-    //
-    // 订正 2026-10-06（评审 P2）：并行度此前既没有测量、也没有运行时自适应，而"任务内记录优先"
-    // 所依赖的 calibratedVerifiers 全仓库无人写入，实际恒为 1。容量结论只能来自本机标定，
-    // 任务文件是可移植产物、不应携带机型容量；这里由实测布局并发给出上限。
-    const capacityHints = options.resourceHints ?? browserPlannerResources();
-    const storedCapacity = loadPlannerCapacity();
-    const calibratedCapacity = storedCapacity !== null
-      && storedCapacity.signature === plannerCapacitySignature(capacityHints.hardwareConcurrency, capacityHints.deviceMemory)
-      ? storedCapacity.report : null;
-    // 订正 2026-10-07：验证通道数不再是一个固定配额，而是"搜索没在用、但机器有的算力"。
-    // 旧实现把上限固定成"实测容量的一半、且不超过 8"，于是搜索等验证时空出来的二十来个核
-    // 无人使用；实测 28 核机器占用掉到 4%~8% 并停摆 20 秒以上。
-    // 上限取实测布局容量：验证 Worker 与搜索 Worker 一样是独立线程、各载入同一份 Registry，
-    // 同一份容量结论可以复用；运行期再按 planVerificationParallelism 与搜索分成。
-    // AI-REMOVED 2026-10-06:
-    // Reason: 验证并发上限再取 Math.min(..., 64)，是与机型无关的写死常量。
-    //         上一轮订正声称"边界只来自显式并发数与标定测量值"，但此处仍留了 64：
-    //         >64 核机器标定出的平台会被削到 64，标定结果再次形同作废。
-    // Trigger: 代码检查发现"算力封顶未闭环"（同类问题已先在 plannerProbeCeiling 的 32 上修掉）。
-    // Evidence: 旧式已受 options.verificationConcurrency 与 calibratedCapacity.concurrentWorkers 约束，
-    //         追加的常量既没有测量依据，也与订正后的口径冲突。
-    // Replacement: 直接取 options.verificationConcurrency ?? 标定值 ?? 安全阀，不再设常量。
-    // Risk: Low - 上限仍受实测容量与 planVerificationParallelism 的动态分配约束。
-    // Human Review: Required
-    //
-    // Original code:
-    // const verificationCeiling = Math.max(1, Math.min(options.verificationConcurrency
-    //   ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints), 64));
-    const verificationCeiling = Math.max(1, options.verificationConcurrency
-      ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints));
-    const verificationQueue: Array<() => Promise<void>> = [];
-    let verificationRunning = 0;
-    let verificationDrained: (() => void) | null = null;
-    const verificationIdle = () => {
-      if (verificationRunning === 0 && verificationQueue.length === 0) { verificationDrained?.(); verificationDrained = null; }
-    };
-    const startVerifications = () => {
-      // 每次启动都重新分配：搜索通道一让出算力，验证就能立刻吃掉，反之亦然。
-      while (verificationRunning < planVerificationParallelism(verificationCeiling, active.size)
-        && verificationQueue.length > 0) {
-        const run = verificationQueue.shift()!;
-        verificationRunning++;
-        void run().finally(() => { verificationRunning--; startVerifications(); verificationIdle(); });
-      }
-      verificationIdle();
-    };
-    const settleVerifications = async (): Promise<void> => {
-      if (verificationRunning === 0 && verificationQueue.length === 0) return;
-      await new Promise<void>(resolve => { verificationDrained = resolve; startVerifications(); });
-    };
-    /** 入队即在途；调用方不需要单独等待，统一由 settleVerifications 排空。 */
+// AI-REMOVED 2026-10-06:
+// Reason: 候选验证需要有界并行，且与搜索共用 CPU 额度。
+// Trigger: 用户要求吸收 CPU 并发优化。
+// Evidence: 原搜索与串行验证独立占用资源，验证积压无法并行消化。
+// Replacement: queueVerification / startVerifications / settleVerifications
+// Risk: 取消时必须保留未验证候选并等待全部在途操作。
+// Human Review: Required
+// Original code:
+//     const queueVerification = (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
+//       pendingVerifications++;
+//       verifying.add(shard.index);
+//       const pending = verificationTail.then(() => verify(shard, portfolio)).catch(error => {
+//         if (interruption === null) interruption = error;
+//         task.abort.abort();
+//       }).finally(() => { pendingVerifications--; verifying.delete(shard.index); wake?.(); });
+//       verificationTail = pending.catch(() => undefined);
+//       return pending;
+//     };
     const queueVerification = (shard: PlannerShardCheckpoint, portfolio: PlannerSearchPortfolio) => {
       pendingVerifications++;
       verifying.add(shard.index);
-      verificationQueue.push(async () => {
-        try { await verify(shard, portfolio); }
-        catch (error) { if (interruption === null) interruption = error; task.abort.abort(); }
-        finally { pendingVerifications--; verifying.delete(shard.index); wake?.(); }
-      });
-      startVerifications();
+      verificationQueue.push({ shard, portfolio });
+    };
+    const startVerifications = () => {
+      // 验证先领取已释放的 CPU 额度；搜索和验证的在途数量之和不超过同一个上限。
+      while (!task.abort.signal.aborted && verificationQueue.length > 0
+        && verificationActive.size < verificationTarget && active.size + verificationActive.size < maximum) {
+        const { shard, portfolio } = verificationQueue.shift()!;
+        const started = performance.now();
+        const running = verify(shard, portfolio).then(() => {
+          if (!task.abort.signal.aborted) completedVerifications++;
+        }).catch(error => {
+          if (interruption === null) interruption = error;
+          task.abort.abort();
+        }).finally(() => {
+          verificationBusyMs += performance.now() - started;
+          verificationActive.delete(running);
+          pendingVerifications--; verifying.delete(shard.index); wake?.();
+        });
+        verificationActive.set(running, started);
+      }
+    };
+    const settleVerifications = async () => {
+      // 未开始的验证保留 shard.pendingCandidate，继续任务时重新领取；绝不在取消后继续启动 Worker。
+      for (const { shard } of verificationQueue.splice(0)) { pendingVerifications--; verifying.delete(shard.index); }
+      await Promise.all(verificationActive.keys());
     };
     const owned = parallel.ownedShards;
     // AI-REMOVED 2026-10-02:
@@ -630,22 +647,26 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     };
     try {
       const concurrency = task.file.request.options.concurrency ?? 1;
-      // 未标定时只给"允许试探到多高"的安全阀，容量结论只来自本机标定；显式并发数优先。
-      const probeCeiling = plannerProbeCeiling(capacityHints);
-      const maximum = Math.min(owned.length, concurrency === "auto" ? probeCeiling : concurrency);
-      // 2026-10-06：显式并发数即用户目标；否则采用本机基准测试标定出的上限。
-      // 标定结果按硬件签名隔离：签名不符（换机器）时整份报告作废，容量与 GPU 交叉点一起回退到保守缺省。
-      const calibratedWorkers = calibratedCapacity?.concurrentWorkers;
-      const controller = new PlannerAutomaticConcurrency(maximum, performance.now(), point.evaluations,
-        { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, target: concurrency === "auto" ? "auto" : concurrency,
-          calibratedWorkers });
-      let target = controller.target;
+      maximum = Math.min(owned.length, concurrency === "auto"
+        ? plannerConcurrencyLimit(options.resourceHints ?? browserPlannerResources()) : concurrency);
+      const capacityKey = `${maximum}/${plannerRequestKey(task.file.request)}`;
+      const started = performance.now();
+      const controller = concurrency === "auto" ? new PlannerAutomaticConcurrency(maximum, started, point.evaluations,
+        concurrencyMemory.read(`search/${capacityKey}`, started)) : null;
+      // verificationConcurrency 是本地为无头入口保留的显式上限（见 headless.ts 的实测说明），
+      // 现在按上游结构落在验证控制器自身的 maximum 上，而不是另立一套分配规则。
+      const verificationMaximum = Math.max(1, Math.min(maximum, options.verificationConcurrency ?? maximum));
+      const verificationController = concurrency === "auto" ? new PlannerAutomaticConcurrency(verificationMaximum, started, 0,
+        concurrencyMemory.read(`verification/${capacityKey}`, started)) : null;
+      target = controller?.target ?? maximum;
+      verificationTarget = verificationController?.target ?? verificationMaximum;
       // AI-REMOVED 2026-10-03: wake 移至验证队列同级，允许验证完成唤醒派发。
       // Trigger: 验证与搜索解耦。Evidence: queueVerification.finally。Replacement: run 局部 wake。
       // Risk: Low。Human Review: Required
       // let wake: (() => void) | null = null;
       const retire = () => {
-        for (const [index, current] of workers) if (index >= target && !active.has(index)) {
+        for (const [index, current] of workers) if (index > 0 && !active.has(index)
+          && (index >= target || workers.size + verificationActive.size > maximum)) {
           current.dispose(); workers.delete(index);
         }
       };
@@ -663,28 +684,19 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           const lagMs = uiHost ? Math.max(0, at - expected) : 0;
           expected = at + 1000;
           target = controller.observe({ at, lagMs, pressure, pendingVerifications, activeWorkers: task.activeShards.size,
-            evaluations: point.evaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0) });
-          retire();
-          // 2026-10-07：容量每秒重算一次，验证池必须跟着重算——否则搜索缩容后
-          // 让出来的算力要等到下一次验证完成才会被用上。
-          startVerifications();
-          wake?.();
+            evaluations: point.evaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0),
+            busyMs: searchBusyMs + [...searchStarted.values()].reduce((sum, value) => sum + at - value, 0) });
+          verificationTarget = verificationController!.observe({ at, lagMs, pressure, pendingVerifications,
+            activeWorkers: verificationActive.size, evaluations: completedVerifications,
+            busyMs: verificationBusyMs + [...verificationActive.values()].reduce((sum, value) => sum + at - value, 0) });
+          retire(); wake?.();
         }, 1000);
         stopMonitoring = () => { clearInterval(timer); stopPressure(); };
       }
       const claim = () => {
-        // AI-REMOVED 2026-10-07:
-        // Reason: 用"待验证数达到上限"来给整轮搜索加全局闸门，会让 CPU 在最需要算力的时候整轮空转。
-        // Trigger: 用户要求完全释放 CPU 性能极限。Evidence: 28 核机器（标定平台 27 通道）实测，
-        //         验证队列一满，所有搜索通道立刻停止领批，占用从 94% 掉到 4%，提案吞吐归零 20 秒以上，
-        //         全程平均占用只有 42%（复现日志见 PR 说明）。
-        // Replacement: 队列长度本身受分片数约束（每个分片最多挂 1 个待验证候选，总分片 ≤ 32），
-        //         不需要全局闸门；领批只跳过正在验证的分片，其余分片照常搜索。
-        // Risk: 待验证候选峰值从"验证并行度×2"上升到分片数，内存占用随之上升（上限为 32 个候选）。
-        // Human Review: Required
-        //
-        // Original code:
-        // if (pendingVerifications >= Math.max(2, Math.min(target, verificationParallelism * 2))) return null;
+        // 队列有界，背压只暂停新批次；不把串行验收误报为整机 CPU 满载。
+        // 订正 2026-10-06：验证已可并行；高水位跟随共享上限，两个阶段分别测量吞吐。
+        if (pendingVerifications >= Math.max(2, maximum)) return null;
         for (let step = 0; step < parallel.count; step++) {
           const index = (parallel.nextShard + step) % parallel.count;
           if (!owned.includes(index) || leased.has(index) || verifying.has(index)) continue;
@@ -700,10 +712,13 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       };
       // 同一批预算、分片租约与验证队列由主线程统一管理；缩容只阻止后续领批。
       while (!task.abort.signal.aborted) {
+        startVerifications(); retire();
         for (let index = 0; index < target; index++) {
+          if (active.size + verificationActive.size >= maximum) break;
           if (active.has(index)) continue;
           const job = claim();
           if (job === null) break;
+          searchStarted.set(index, performance.now());
           const running = lane(job.shard, job.quota, workerFor(index)).then(used => {
             // 2026-10-02：await 期间其他 Worker 会领取额度；必须在 await 返回后读取最新 available。
             available += job.quota - used;
@@ -711,6 +726,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             if (interruption === null) interruption = error;
             task.abort.abort();
           }).finally(() => {
+            searchBusyMs += performance.now() - searchStarted.get(index)!;
+            searchStarted.delete(index);
             leased.delete(job.shard.index); active.delete(index); retire(); wake?.();
           });
           active.set(index, running);
@@ -721,6 +738,10 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       }
       await Promise.allSettled(active.values());
       await settleVerifications();
+      if (controller && verificationController) {
+        concurrencyMemory.remember(`search/${capacityKey}`, controller.confirmedTarget, performance.now());
+        concurrencyMemory.remember(`verification/${capacityKey}`, verificationController.confirmedTarget, performance.now());
+      }
       target = 1; retire();
       // AI-REMOVED 2026-10-03:
       // Reason: 固定 Promise 池无法在本轮运行中增减执行容量，也不能重新唤醒提前退出的空闲通道。
@@ -761,7 +782,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
     } finally {
       stopMonitoring();
-      if (active.size > 0) { task.abort.abort(); await Promise.allSettled(active.values()); }
+      if (active.size > 0 || pendingVerifications > 0) task.abort.abort();
+      await Promise.allSettled(active.values());
       await settleVerifications();
       for (const [index, current] of workers) if (index > 0) { current.dispose(); workers.delete(index); }
       await settle(task);
@@ -1122,6 +1144,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     },
     dispose() {
       disposed = true;
+      if (notificationTimer !== null) { clearTimeout(notificationTimer); notificationTimer = null; }
       restorationAbort.abort();
       for (const task of tasks.values()) { task.abort.abort(); persist(task); }
       for (const current of new Set([worker, ...workers.values()])) current.dispose();

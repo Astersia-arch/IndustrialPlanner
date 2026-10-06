@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
-import { calibratePlannerCapacity, planVerificationParallelism } from "@/blueprint-planner/capacity-calibration";
+import { calibratePlannerCapacity } from "@/blueprint-planner/capacity-calibration";
 
 const request = { plan: {}, options: {} } as unknown as BlueprintPlannerRequest;
 const confirm = async () => true;
@@ -25,13 +25,23 @@ it("档位数受 maxLevels 截断，平台点落在实测档位并给出验证�
   expect(report.verificationWorkers).toBe(3);
 });
 
-it("验证并行度按搜索占用动态分配：搜索占满时留 1 路，搜索空闲时吃满上限", () => {
-  // 搜索与验证共用同一台机器的算力：总和不超过实测容量，谁有活谁用。
-  expect(planVerificationParallelism(8, 8)).toBe(1);
-  expect(planVerificationParallelism(8, 5)).toBe(3);
-  expect(planVerificationParallelism(8, 0)).toBe(8);
-  // 搜索超过上限（缩容尚未生效）时仍必须保留 1 路验证，否则候选永远解锁不了。
-  expect(planVerificationParallelism(8, 30)).toBe(1);
-  expect(planVerificationParallelism(1, 1)).toBe(1);
-  expect(planVerificationParallelism(0, 0)).toBe(1);
-});
+// AI-REMOVED 2026-10-07（合并上游 0cca0f89）:
+// Reason: 本条用例断言的是本地"搜索未占用的算力全部交给验证"的分配函数 planVerificationParallelism；
+//         上游本次提交改用共享额度 + 独立验证控制器，该函数已随之作废（见 capacity-calibration.ts）。
+// Trigger: 用户确认并发与验证调度以官方结构为准。
+// Evidence: 合并后 planVerificationParallelism 全仓仅剩本条用例引用；上游新增
+//           src/tests/blueprint-planner/cpu-scheduling.test.ts 已覆盖"搜索与验证共用并发上限"。
+// Replacement: src/tests/blueprint-planner/cpu-scheduling.test.ts。
+// Risk: Low。Human Review: Required
+//
+// Original code:
+// it("验证并行度按搜索占用动态分配：搜索占满时留 1 路，搜索空闲时吃满上限", () => {
+//   // 搜索与验证共用同一台机器的算力：总和不超过实测容量，谁有活谁用。
+//   expect(planVerificationParallelism(8, 8)).toBe(1);
+//   expect(planVerificationParallelism(8, 5)).toBe(3);
+//   expect(planVerificationParallelism(8, 0)).toBe(8);
+//   // 搜索超过上限（缩容尚未生效）时仍必须保留 1 路验证，否则候选永远解锁不了。
+//   expect(planVerificationParallelism(8, 30)).toBe(1);
+//   expect(planVerificationParallelism(1, 1)).toBe(1);
+//   expect(planVerificationParallelism(0, 0)).toBe(1);
+// });

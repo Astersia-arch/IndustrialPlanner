@@ -1,7 +1,7 @@
 import type { BlueprintPlannerRequest, PlannerCapacityPoint, PlannerCapacityReport,
   PlannerResourceHints } from "@/domain/blueprint-planner";
 import type { SimulationEngineKind } from "@/domain/simulation";
-import { DEFAULT_PLANNER_CONCURRENCY_POLICY, plannerProbeCeiling, PLANNER_SAFETY_CEILING } from "@/blueprint-planner/automatic-concurrency";
+import { plannerConcurrencyLimit } from "@/blueprint-planner/automatic-concurrency";
 import { pickPlateau, stepUpThroughput } from "./capacity-growth";
 import type { PlannerGpuCrossoverReport } from "./gpu-crossover";
 
@@ -51,6 +51,13 @@ export interface PlannerCapacityCalibrationOptions {
 const DEFAULT_WINDOW_MS = 4_000;
 const DEFAULT_EVALUATIONS_PER_WINDOW = 20_000;
 const DEFAULT_MAX_LEVELS = 6;
+/**
+ * 拿不到逻辑核数时的上探兜底：本模块自己的策略上限，不代表任何机型的容量结论。
+ * 真实调用方（浏览器 Host 与无头脚本）都会传入 hardwareConcurrency，此兜底只覆盖
+ * 显式构造 hint 的调用；若直接沿用 plannerConcurrencyLimit 的空提示结果（1），
+ * 探测循环会在第一档就结束，标定退化成没有意义的结果。
+ */
+const PROBE_CEILING_FALLBACK = 32;
 /** 吞吐增益低于该值即认为已到膝盖点，再增加并发不划算。 */
 const KNEE_GAIN = 1.1;
 /**
@@ -79,19 +86,30 @@ const KNEE_GAIN = 1.1;
 //   return Math.max(1, Math.min(VERIFICATION_PARALLELISM_CAP, Math.floor(measured / 2)));
 // }
 
-/**
- * 运行期验证并行度：搜索与验证共用同一台机器的算力，总和不超过实测容量。
- *
- * 2026-10-07：容量是"同时在跑的 CPU 线程数"，不是一个固定给某一阶段的配额。
- * 搜索通道占满时验证只保留 1 路（保证候选仍能被验证、分片能解锁）；
- * 搜索因为分片都在验证而领不到活时，空出来的算力全部交给验证，
- * 于是"搜索→验证→解锁搜索"这条流水线不会留下整机空转的窗口。
- */
-export function planVerificationParallelism(ceiling: number, activeSearchWorkers: number): number {
-  const limit = Number.isSafeInteger(ceiling) && ceiling >= 1 ? ceiling : 1;
-  const busy = Number.isSafeInteger(activeSearchWorkers) && activeSearchWorkers > 0 ? activeSearchWorkers : 0;
-  return Math.max(1, Math.min(limit, limit - busy));
-}
+// AI-REMOVED 2026-10-07（合并上游 0cca0f89）:
+// Reason: 上游本次提交的验证调度改为"共享额度"模型——搜索与验证的在途数量之和不超过同一个
+//         maximum，验证自身另有 PlannerAutomaticConcurrency 控制器决定并行度。本函数实现的
+//         "搜索未占用的算力全部交给验证"分配规则随之作废，保留会形成第二套并行分配口径。
+// Trigger: 用户确认并发与验证调度以官方结构为准，不把本地分配规则重做进上游结构。
+// Evidence: 合并后本函数全仓仅剩自身测试引用，宿主已改用 verificationTarget + maximum。
+// Replacement: blueprint-planner-host.ts 的 verificationTarget / verificationMaximum。
+// Risk: Low —— 验证并行度改由上游控制器在线测量，不再由本地公式静态推导。
+// Human Review: Required
+//
+// Original code:
+// /**
+//  * 运行期验证并行度：搜索与验证共用同一台机器的算力，总和不超过实测容量。
+//  *
+//  * 2026-10-07：容量是"同时在跑的 CPU 线程数"，不是一个固定给某一阶段的配额。
+//  * 搜索通道占满时验证只保留 1 路（保证候选仍能被验证、分片能解锁）；
+//  * 搜索因为分片都在验证而领不到活时，空出来的算力全部交给验证，
+//  * 于是"搜索→验证→解锁搜索"这条流水线不会留下整机空转的窗口。
+//  */
+// export function planVerificationParallelism(ceiling: number, activeSearchWorkers: number): number {
+//   const limit = Number.isSafeInteger(ceiling) && ceiling >= 1 ? ceiling : 1;
+//   const busy = Number.isSafeInteger(activeSearchWorkers) && activeSearchWorkers > 0 ? activeSearchWorkers : 0;
+//   return Math.max(1, Math.min(limit, limit - busy));
+// }
 
 /**
  * 2026-10-06：浏览器不暴露 CPU/GPU 占用百分比，无法直接闭环控制占用率。
@@ -101,7 +119,14 @@ export function planVerificationParallelism(ceiling: number, activeSearchWorkers
 export async function calibratePlannerCapacity(probe: (options: PlannerCapacityProbeOptions) => Promise<PlannerCapacityProbe>,
   options: PlannerCapacityCalibrationOptions): Promise<PlannerCapacityReport> {
   const hints = options.resourceHints ?? {};
-  const conservativeLimit = plannerProbeCeiling(hints);
+  const conservativeLimit = plannerConcurrencyLimit(hints);
+  // 订正 2026-10-07（合并上游 0cca0f89）：上探上限改为机器物理上界（逻辑核数）。
+  // 原实现取 plannerProbeCeiling 的保守结果，而保守结果本身受常量 32 与
+  // Chromium 的 deviceMemory ≤ 8 限制；标定的职责是量出本机平台，用"预先判断出来的容量"
+  // 当探测边界会让结论自我实现。注意：该上限只用于本模块自身的探测循环，
+  // 不参与上游并发调度的 maximum（按用户确认，实测容量不再回灌上游结构）。
+  const coreCeiling = Number.isSafeInteger(hints.hardwareConcurrency) && hints.hardwareConcurrency! > 0
+    ? hints.hardwareConcurrency! : PROBE_CEILING_FALLBACK;
   const windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
   const evaluationsPerWindow = options.evaluationsPerWindow ?? DEFAULT_EVALUATIONS_PER_WINDOW;
   const notes: string[] = [];
@@ -120,7 +145,7 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
     points.push({ workers, evaluations: sample.evaluations, windowMs: sample.windowMs, evaluationsPerSecond,
       gain: 1, lagMs: sample.lagMs });
     return { throughput: evaluationsPerSecond };
-  }, { start: 1, ceiling: Math.max(1, conservativeLimit > 1 ? conservativeLimit : PLANNER_SAFETY_CEILING),
+  }, { start: 1, ceiling: Math.max(1, coreCeiling),
     minGain: KNEE_GAIN, maxLevels: options.maxLevels ?? DEFAULT_MAX_LEVELS, signal: options.signal, onProgress: options.onProgress });
   // 增益按最终序列回填，保持报告自洽。
   for (let index = 0; index < points.length; index++) {
@@ -141,8 +166,12 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
   if (concurrentWorkers !== growth.best) notes.push(`平台档位 ${growth.best} 没有有效吞吐样本，改用实测最高的 ${concurrentWorkers} 档。`);
   // 订正 2026-10-06：这条提示此前用写死的 100ms 判据。而"占满 CPU 必然让主线程延迟超过 100ms"
   // 已在前一条订正中确认，于是标定几乎必然给出一句误导性的"需关注交互流畅度"。
-  // 新行为：与调度策略共用同一个交互保护门槛（标定不持有 policy，这里取其默认值）。
-  const over = points.find(point => point.lagMs >= DEFAULT_PLANNER_CONCURRENCY_POLICY.uiGuardMs);
+  // 新行为：与调度策略共用同一个交互保护门槛。
+  // 订正 2026-10-07（合并上游 0cca0f89）：DEFAULT_PLANNER_CONCURRENCY_POLICY 已随上游重写取消，
+  // 门槛改取上游控制器判定"持续卡顿"的同一阈值（PlannerAutomaticConcurrency.observe 的 500ms），
+  // 避免这里再维护第二份交互保护数字。
+  const UI_GUARD_MS = 500;
+  const over = points.find(point => point.lagMs >= UI_GUARD_MS);
   if (over) notes.push(`${over.workers} 通道时主线程延迟 ${Math.round(over.lagMs)}ms，达到交互保护门槛。`);
   // 2026-10-06：布局并发测完之后再测 GPU 布线交叉点。GPU 只在准入规模之内参与，
   // 因此它的交叉规模必须独立测量，不能由"GPU 已经跑过的那些大图"反推。

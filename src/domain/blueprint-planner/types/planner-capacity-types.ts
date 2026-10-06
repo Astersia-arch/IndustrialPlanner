@@ -20,7 +20,18 @@ export interface PlannerResourceHints {
    * 2026-10-06：此前这里用「核数×0.8-1」「核数-1」「内存/2GB」这类公式直接当上限，
    * 等价于写死常量，不同配置的机器会被误伤或浪费；现在容量一律由标定测量得出。
    */
-  readonly safetyCeiling?: number;
+  // 订正 2026-10-07（合并上游 0cca0f89）：上面这条注释所描述的字段已被删除，
+  // 其唯一消费者 plannerProbeCeiling 随上游重写自动并发模块一并取消。
+  // AI-REMOVED 2026-10-07:
+  // Reason: 上游重写 automatic-concurrency 后不再存在 plannerProbeCeiling / PLANNER_SAFETY_CEILING，
+  //         本字段既无生产者也无消费者，保留会形成第二条容量口径。
+  // Trigger: 合并上游 0cca0f89 的并发调度重构（用户确认"以官方结构为准"）。
+  // Evidence: 全仓检索 safetyCeiling 仅剩本文件定义处，无任何读写方。
+  // Replacement: 上限由 plannerConcurrencyCeiling(hints, 实测容量) 给出，见 blueprint-planner/automatic-concurrency.ts。
+  // Risk: Low（字段此前已无生产者）。Human Review: Required
+  //
+  // Original code:
+  // readonly safetyCeiling?: number;
 }
 
 /** 单个并发档位的实测吞吐；lagMs 是主线程事件循环延迟，用于识别"已到算力天花板"。 */
@@ -55,6 +66,9 @@ export interface PlannerCapacityReport {
    * 实测证明该常量会让搜索等验证时空出来的 20 多个核无人使用，整机占用掉到 4%~8%；
    * 现在上限就是实测容量本身，实际并发由 planVerificationParallelism 与搜索动态分配。
    */
+  // 订正 2026-10-07（合并上游 0cca0f89）：上面这条注释末句描述的 planVerificationParallelism
+  // 已随上游的共享额度验证调度作废，运行期不再按本字段分配验证并发；本字段保留为标定报告的一部分，
+  // 仅用于展示与人工核对，不再是运行期输入。
   readonly verificationWorkers?: number;
   /** 标定得到的 GPU 布线交叉点（路由边界格数）；未测得时为 undefined。 */
   readonly gpuCrossoverCells?: number;
