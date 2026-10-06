@@ -79,6 +79,8 @@ const UI: Record<string, string> = {
     "canvas.regionalDarkPipeSaveFailed": "The conduit link was not saved. Select the endpoint again.",
     "eda.warehouseBus": "Depot bus layout",
     "eda.straight": "Straight bus",
+    "eda.corner": "Right-angle bus",
+    "eda.uShaped": "U-shaped bus",
     "eda.free": "Free layout",
     "eda.solidOutput": "Solid product destination",
     "eda.warehouseOutput": "Depot loaders",

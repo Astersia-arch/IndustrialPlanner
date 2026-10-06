@@ -4,7 +4,16 @@ import { expect, it } from "vitest";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import { createWorkspaceState } from "@/domain/document/workspace-state";
-import { createWorldDocument } from "@/domain/document/world-document";
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: @/scripts/eda/placement-scene
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+// import { createWorldDocument } from "@/domain/document/world-document";
+import { createPlannerPlacementScene } from "@/scripts/eda/placement-scene";
 import { createRegistryContract } from "@/registry";
 import { createSimulationHost } from "@/simulation/simulation-host";
 import { resolvePlacementValidations } from "@/editor/placement-validation";
@@ -42,11 +51,30 @@ it.each([
     const actualWidth = Math.max(...rects.map(rect => rect.x + rect.width)) - Math.min(...rects.map(rect => rect.x));
     const actualHeight = Math.max(...rects.map(rect => rect.y + rect.height)) - Math.min(...rects.map(rect => rect.y));
     expect((actualWidth <= width && actualHeight <= height) || (actualWidth <= height && actualHeight <= width)).toBe(true);
-    expect([candidate.metrics.width, candidate.metrics.height]).toEqual([actualWidth, actualHeight]);
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 下方断言：面积为先选定且通过边界验收的盒子，不再事后裁剪。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     expect([candidate.metrics.width, candidate.metrics.height]).toEqual([actualWidth, actualHeight]);
+    expect([candidate.metrics.width, candidate.metrics.height]).toEqual([width, height]);
+    expect(candidate.metrics.area).toBe(width * height);
     registry.baseDefinitions = [...registry.baseDefinitions, { id: "compact-validation-land", name: "空地", tag: "武陵", tags: ["武陵"],
       placeableArea: { width: 1000, height: 1000 }, outerRing: { top: 0, right: 0, bottom: 0, left: 0 }, builtinEntities: [] }];
-    const document = createWorldDocument({ baseId: "compact-validation-land" });
-    Object.assign(document, { entities: blueprint.entities, entityOrder: blueprint.entityOrder, slotLinks: blueprint.slotLinks });
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: @/scripts/eda/placement-scene
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     const document = createWorldDocument({ baseId: "compact-validation-land" });
+//     Object.assign(document, { entities: blueprint.entities, entityOrder: blueprint.entityOrder, slotLinks: blueprint.slotLinks });
+    const document = createPlannerPlacementScene(registry, candidate.execution, "compact-validation-land");
     const validations = resolvePlacementValidations({ document, workspace, state: createEditorStateReadWrite() });
     expect(Object.entries(validations).filter(([, result]) => !result.canPlace)).toEqual([]);
     expect(report.status).toBe("completed");

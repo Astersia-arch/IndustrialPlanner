@@ -196,8 +196,8 @@ export async function placePower(registry: RegistryContract, network: PlannerNet
   const ports = wires.flatMap(wire => [wire.source.outside, wire.target.outside]);
   const pending = network.nodes.filter(node => node.definition.requiresPower).map(node => resolveEntityGridRect({ entity: node.entity, definition: node.definition }));
   const result: PlannerNode[] = [];
-  const minimumX = network.nodes.some(node => node.purpose === "bus") ? 4 : 0;
-  const minimumY = minimumX > 0 && network.request.options.warehouseBus === "free" ? 4 : 0;
+  const minimumX = 0;
+  const minimumY = 0;
   while (pending.length) {
     checkBudget();
     await new Promise<void>(resolve => setTimeout(resolve, 0));

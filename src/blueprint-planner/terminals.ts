@@ -2,7 +2,16 @@ import { PlannerItemRules } from "@/shared/planner-item-policy";
 import type { BlueprintPlannerFlow } from "@/domain/blueprint-planner";
 import type { RegistryContract } from "@/domain/registry/registry-contract";
 import { LOGISTICS_KIND } from "@/domain/shared/logistics";
-import { resolveEntityGridRect } from "@/shared/geometry/power-range";
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+// import { resolveEntityGridRect } from "@/shared/geometry/power-range";
+
 import { CONSUMPTION_RECIPE_TAG } from "@/shared/consumption-channel";
 import { isRecipeAvailableByActivity } from "@/shared/registry/activity-availability";
 import { getPlannerPorts, itemLogisticsKind, transportCapacity } from "./geometry";
@@ -54,8 +63,26 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
       sources.push({ itemId, perMinute: -rate });
     } else if (rate > 1e-6) outputs.set(itemId, (outputs.get(itemId) ?? 0) + rate);
   }
-  const dockNodes: PlannerNode[] = network.nodes.filter((node) => node.purpose === "startup" && node.definition.id === "unloader_1");
-  const externalSources: PlannerNode[] = [];
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts::PlannerBoundary
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   const dockNodes: PlannerNode[] = network.nodes.filter((node) => node.purpose === "startup" && node.definition.id === "unloader_1");
+
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts::PlannerBoundary
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   const externalSources: PlannerNode[] = [];
+
   for (const flow of sources) {
     const kind = itemLogisticsKind(registry, flow.itemId);
     const mode = itemRules.supply(flow.itemId);
@@ -106,16 +133,24 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
         : { ...base, supplyTarget: { entityId: delivery.consumer.entity.id, storageGroupIds: delivery.storageGroupIds } };
       node.outputs.push({ itemId: flow.itemId, perMinute: rate });
       network.nodes.push(node);
-      if (mode === "external") externalSources.push(node);
-      else if (mode === "warehouse") {
+      if (mode === "warehouse") {
         const group = node.definition.storageSlotGroups[0]!;
         const slot = group.slots[0]!;
         configureSource(node, flow.itemId, true);
         const link = registry.queries.buildWarehouseSlotLinkForEntity({ entityId: node.entity.id, storageSlotGroupId: group.id, slotId: slot.id, itemId: flow.itemId });
         network.slotLinks.push({ ...link, id: `eda-warehouse-${network.slotLinks.length}` });
         network.initialSlots.push({ entityId: node.entity.id, storageGroupId: group.id, slotId: slot.id, itemType: flow.itemId, count: slot.capacity, ignoreStock: true });
-        dockNodes.push(node);
-      } else {
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts::PlannerBoundary
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//         dockNodes.push(node);
+
+      } else if (mode !== "external") {
         // AI-REMOVED 2026-10-03:
         // Reason: 暗管外供必须通过仓库物品链接无限取货，不能预填本地无限库存。
         // Trigger: 用户要求生成蓝图对应“仓库物品链接 → 无限”的设置方式。
@@ -222,21 +257,29 @@ export function addTerminals(registry: RegistryContract, network: PlannerNetwork
         }
       }
       network.nodes.push(node);
-      if (definitionId === "loader_1") dockNodes.push(node);
-      else placement.placeAnywhere(node, 0, delivery.producer?.entity.position
+      if (definitionId !== "loader_1") placement.placeAnywhere(node, 0, delivery.producer?.entity.position
         ?? terminalGroupCenter(delivery.targets?.map(target => network.nodes.find(peer => peer.entity.id === target.entityId)!) ?? []));
     }
   }
-  addWarehouseBus(registry, network, dockNodes);
-  // 所有外接输入位于同一最右边界，外侧一格仅供验证夹具使用。
-  const bounds = placement.bounds();
-  const boundaryX = Math.max(...network.nodes.filter((node) => !node.external).map((node) => { const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition }); return rect.x + rect.width; }), bounds.x + bounds.width, placement.minimumX + placement.rowWidth +
-    Math.max(...network.nodes.map((node) => Math.max(node.definition.footprint.width, node.definition.footprint.height)), 1)) + 8;
-  if (externalSources.length) placement.maximumX = boundaryX + 1;
-  for (let index = 0; index < externalSources.length; index++) {
-    const node = externalSources[index]!;
-    placement.place(node, { x: boundaryX, y: placement.minimumY + index * 3 }, 180);
-  }
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: candidate.ts::PlannerBoundary.arrange
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   addWarehouseBus(registry, network, dockNodes);
+//   // 所有外接输入位于同一最右边界，外侧一格仅供验证夹具使用。
+//   const bounds = placement.bounds();
+//   const boundaryX = Math.max(...network.nodes.filter((node) => !node.external).map((node) => { const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition }); return rect.x + rect.width; }), bounds.x + bounds.width, placement.minimumX + placement.rowWidth +
+//     Math.max(...network.nodes.map((node) => Math.max(node.definition.footprint.width, node.definition.footprint.height)), 1)) + 8;
+//   if (externalSources.length) placement.maximumX = boundaryX + 1;
+//   for (let index = 0; index < externalSources.length; index++) {
+//     const node = externalSources[index]!;
+//     placement.place(node, { x: boundaryX, y: placement.minimumY + index * 3 }, 180);
+//   }
+
 }
 
 /** 验收排空与布局预留共用，按接收速率开启足量独立出口，不能靠箱内库存掩盖瓶颈。 */
@@ -286,41 +329,49 @@ export function configureSource(node: PlannerNode, itemId: string, infinite: boo
   node.entity.config[`${prefix}.ignoreStock`] = infinite;
 }
 
-function addWarehouseBus(registry: RegistryContract, network: PlannerNetwork, docks: readonly PlannerNode[]): void {
-  if (!docks.length) return;
-  const source = createPlainNode(registry, "log_hongs_bus_source", "eda-bus-source", "bus");
-  const segment = registry.queries.findEntityDefinition("log_hongs_bus")!;
-  const width = source.definition.footprint.width;
-  source.entity.position = { x: 0, y: 0 };
-  network.nodes.push(source);
-  if (network.request.options.warehouseBus === "free") {
-    const sides = [docks.filter((_, index) => index % 2 === 0), docks.filter((_, index) => index % 2 === 1)];
-    sides.forEach((side, sideIndex) => {
-      let offset = width * 2;
-      for (const dock of side) {
-        dock.entity.position = sideIndex === 0 ? { x: width, y: offset } : { x: offset, y: source.definition.footprint.height };
-        const supplies = dock.purpose === "supply" || dock.purpose === "startup";
-        dock.entity.rotation = sideIndex === 0 ? (supplies ? 270 : 90) : (supplies ? 0 : 180);
-        offset += dock.definition.footprint.width + 1;
-      }
-      for (let start = width; side.length > 0 && start < offset; start += segment.footprint.height) {
-        const node = createPlainNode(registry, segment.id, `eda-bus-${sideIndex}-${start}`, "bus");
-        node.entity.position = sideIndex === 0 ? { x: 0, y: start } : { x: start, y: 0 };
-        node.entity.rotation = sideIndex === 0 ? 0 : 90;
-        network.nodes.push(node);
-      }
-    });
-    return;
-  }
-  let y = 0;
-  for (const dock of docks) {
-    dock.entity.position = { x: width, y };
-    dock.entity.rotation = dock.purpose === "supply" || dock.purpose === "startup" ? 270 : 90;
-    y += dock.definition.footprint.width;
-  }
-  for (let offset = source.definition.footprint.height; offset < y; offset += segment.footprint.height) {
-    const node = createPlainNode(registry, segment.id, `eda-bus-${offset}`, "bus");
-    node.entity.position = { x: 0, y: offset };
-    network.nodes.push(node);
-  }
-}
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts::PlannerBoundary
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+// function addWarehouseBus(registry: RegistryContract, network: PlannerNetwork, docks: readonly PlannerNode[]): void {
+//   if (!docks.length) return;
+//   const source = createPlainNode(registry, "log_hongs_bus_source", "eda-bus-source", "bus");
+//   const segment = registry.queries.findEntityDefinition("log_hongs_bus")!;
+//   const width = source.definition.footprint.width;
+//   source.entity.position = { x: 0, y: 0 };
+//   network.nodes.push(source);
+//   if (network.request.options.warehouseBus === "free") {
+//     const sides = [docks.filter((_, index) => index % 2 === 0), docks.filter((_, index) => index % 2 === 1)];
+//     sides.forEach((side, sideIndex) => {
+//       let offset = width * 2;
+//       for (const dock of side) {
+//         dock.entity.position = sideIndex === 0 ? { x: width, y: offset } : { x: offset, y: source.definition.footprint.height };
+//         const supplies = dock.purpose === "supply" || dock.purpose === "startup";
+//         dock.entity.rotation = sideIndex === 0 ? (supplies ? 270 : 90) : (supplies ? 0 : 180);
+//         offset += dock.definition.footprint.width + 1;
+//       }
+//       for (let start = width; side.length > 0 && start < offset; start += segment.footprint.height) {
+//         const node = createPlainNode(registry, segment.id, `eda-bus-${sideIndex}-${start}`, "bus");
+//         node.entity.position = sideIndex === 0 ? { x: 0, y: start } : { x: start, y: 0 };
+//         node.entity.rotation = sideIndex === 0 ? 0 : 90;
+//         network.nodes.push(node);
+//       }
+//     });
+//     return;
+//   }
+//   let y = 0;
+//   for (const dock of docks) {
+//     dock.entity.position = { x: width, y };
+//     dock.entity.rotation = dock.purpose === "supply" || dock.purpose === "startup" ? 270 : 90;
+//     y += dock.definition.footprint.width;
+//   }
+//   for (let offset = source.definition.footprint.height; offset < y; offset += segment.footprint.height) {
+//     const node = createPlainNode(registry, segment.id, `eda-bus-${offset}`, "bus");
+//     node.entity.position = { x: 0, y: offset };
+//     network.nodes.push(node);
+//   }
+// }

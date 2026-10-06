@@ -96,6 +96,7 @@ export function createRecipeNode(
 export function validatePlannerRequest(registry: RegistryContract, request: BlueprintPlannerRequest): void {
   const { plan, options } = request;
   new PlannerItemRules(registry, options);
+  if (!["straight", "corner", "u-shaped"].includes(options.warehouseBus)) throw new Error("未知存取线形态。");
   if (!["warehouse", "stash", "auto"].includes(options.solidOutput)) throw new Error("未知固体输出方式。");
   if (plan.containsModules) throw new Error("包含模块的规划不能自动规划产线。");
   if (!Number.isFinite(plan.unresolvedPerMinute) || plan.unresolvedPerMinute < 0 || plan.unresolvedPerMinute > EPSILON) throw new Error("产线规划仍有未满足需求，请先补齐生产方案。");

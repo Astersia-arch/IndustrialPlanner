@@ -14,7 +14,7 @@ export interface PlannerNode {
   readonly entity: WorldEntity;
   readonly definition: EntityDefinition;
   readonly recipe: RecipeDefinition | null;
-  readonly purpose: "production" | "environment" | "auxiliary" | "supply" | "product" | "byproduct" | "startup" | "logistics" | "power" | "bus";
+  readonly purpose: "production" | "environment" | "auxiliary" | "supply" | "product" | "byproduct" | "startup" | "logistics" | "power";
   readonly inputs: MaterialDemand[];
   readonly outputs: MaterialDemand[];
   readonly external?: boolean;

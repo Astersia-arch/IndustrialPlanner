@@ -5,7 +5,16 @@ import type { RegistryContract } from "@/domain/registry/registry-contract";
 import { ItemDomainFlag } from "@/domain/shared/item-domain-flags";
 import type { SimulationBlueprintRunRequest } from "@/domain/simulation";
 import { lookupText } from "@/shared/i18n";
-import { resolveEntityGridRect } from "@/shared/geometry/power-range";
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 候选面积固定使用 outline，无需按实体重算尺寸。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+// import { resolveEntityGridRect } from "@/shared/geometry/power-range";
+
 import { createProductionNetwork, supplyAuxiliaryDemand } from "./production-network";
 import { createPlainNode, PlannerPlacement, placeProduction, redundantEnvironmentStations } from "./placement";
 import { addTerminals, configureSource, getPlannerStashDrainPorts, materialBalance } from "./terminals";
@@ -25,6 +34,7 @@ import { constructCompactLayout } from "./constructive-layout";
 import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "./search-seed";
 import { resolvePlannerAttempt } from "./search-portfolio";
 import { continuationOutline, fixedOutlineMinimum } from "./search-outline";
+import { PlannerBoundary } from "./boundary";
 
 export interface PlannerCandidate {
   readonly seed?: PlannerSearchSeed;
@@ -230,7 +240,7 @@ async function createPlannerAttempt(
   };
   if (!Number.isInteger(statistics.evaluationLimit) || statistics.evaluationLimit <= 0 || !Number.isInteger(outline.width) || !Number.isInteger(outline.height)
     || outline.width <= 0 || outline.height <= 0) throw new Error("布局搜索预算和边界必须是正整数。");
-  const placement = new PlannerPlacement(registry, Math.max(16, outline.width - 8), 7, request.options.warehouseBus === "free" ? 8 : 2, profile.initialClearance, 1);
+  const placement = new PlannerPlacement(registry, Math.max(1, outline.width - 2), 1, 1, profile.initialClearance, 1);
   placement.maximumX = outline.width;
   let startups: ReturnType<typeof preparePlantStartups> = [];
   update("layout", "正在安排设备与环境设施");
@@ -266,6 +276,13 @@ async function createPlannerAttempt(
   prepareConverterStartups(registry, network, placement);
   addTerminals(registry, network, placement, profile.separateOperatingSupply === 1, profile.fluidGroupSize, strategy === "compact", options.stashPackingVariant);
   }
+  const boundary = new PlannerBoundary(registry, network, outline);
+  if (!restored) boundary.arrange(variant);
+  else for (const entry of boundary.entries) {
+    const node = network.nodes[entry.index]!, pose = { ...node.entity.position, rotation: node.entity.rotation };
+    boundary.snap(entry.index, pose);
+    node.entity.position = { x: pose.x, y: pose.y }; node.entity.rotation = pose.rotation;
+  }
   checkBudget();
   // AI-REMOVED 2026-10-02:
   // Reason: 共享准入口可能使当前有限布局预算无法布通；既有 baseline 重排应探索逐消费者限速拓扑。
@@ -287,12 +304,20 @@ async function createPlannerAttempt(
   // Risk: Low。Human Review: Required。
   // Original code: await placePower(registry, network, placement, checkBudget);
   // AI-CORRECTION 2026-10-02: 显式调度盒子也是硬约束，不得由固定设施自动扩宽。
-  if (options.outline === undefined && !options.seed && !options.targetOutline) for (const node of network.nodes.filter(node => node.purpose === "bus" || node.external
-    || node.definition.id === "unloader_1" || node.definition.id === "loader_1")) {
-    const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
-    outline.width = Math.max(outline.width, rect.x + rect.width); outline.height = Math.max(outline.height, rect.y + rect.height);
-  }
-  // 2026-09-30：新增固定存取口后可能撑大初始盒子；按实际固定边界重新选形状，不能突破全局面积上限。
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: boundary.ts；本次候选始终使用预先选定的包围盒。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   if (options.outline === undefined && !options.seed && !options.targetOutline) for (const node of network.nodes.filter(node => node.purpose === "bus" || node.external
+//     || node.definition.id === "unloader_1" || node.definition.id === "loader_1")) {
+//     const rect = resolveEntityGridRect({ entity: node.entity, definition: node.definition });
+//     outline.width = Math.max(outline.width, rect.x + rect.width); outline.height = Math.max(outline.height, rect.y + rect.height);
+//   }
+//   // 2026-09-30：新增固定存取口后可能撑大初始盒子；按实际固定边界重新选形状，不能突破全局面积上限。
   const currentFixedMinimum = fixedOutlineMinimum(registry, network.nodes);
   if (options.targetOutline && (outline.width < currentFixedMinimum.width || outline.height < currentFixedMinimum.height
     || (options.maximumArea !== undefined && outline.width * outline.height > options.maximumArea))) {
@@ -448,8 +473,8 @@ async function createPlannerAttempt(
       enterPhase("routing");
       const candidateRouter = new PlannerRouter(registry, [...network.nodes.map(node => node.entity), ...fixtures],
         wires.flatMap(wire => [wire.source, wire.target]), {
-          minimumX: network.nodes.some(node => node.purpose === "bus") ? 4 : 0,
-          minimumY: network.nodes.some(node => node.purpose === "bus") && request.options.warehouseBus === "free" ? 4 : 0,
+          minimumX: 0,
+          minimumY: 0,
           maximumX: outline.width - 1, maximumY: outline.height - 1, escapeLength: 0, history,
         }, routing);
       if (retry === 0 && experiments.includes("constrained-routing")) {
@@ -547,12 +572,26 @@ async function createPlannerAttempt(
   const entities = [...network.nodes.map((node) => node.entity), ...router.entities];
   configureConverterStartupInventory(network, id => arrival[graph.groupIndexByNodeId.get(id)!]!);
   const scheduledSlots = scheduleConverterStartups(registry, network, id => arrival[graph.groupIndexByNodeId.get(id)!]!);
-  const rects = entities.map((entity) => resolveEntityGridRect({ entity, definition: registry.queries.findEntityDefinition(entity.definitionId)! }));
-  const left = Math.min(...rects.map((rect) => rect.x)), top = Math.min(...rects.map((rect) => rect.y));
-  const width = Math.max(...rects.map((rect) => rect.x + rect.width)) - left;
-  const height = Math.max(...rects.map((rect) => rect.y + rect.height)) - top;
-  const seed = capturePlannerSeed(request, network, wires, router.routes, width, height, { x: left, y: top });
-  for (const entity of [...entities, ...fixtures]) entity.position = { x: entity.position.x - left, y: entity.position.y - top };
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 当前候选 outline；只允许换盒重新布局，不再按实体裁剪边界。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   const rects = entities.map((entity) => resolveEntityGridRect({ entity, definition: registry.queries.findEntityDefinition(entity.definitionId)! }));
+//   const left = Math.min(...rects.map((rect) => rect.x)), top = Math.min(...rects.map((rect) => rect.y));
+//   const width = Math.max(...rects.map((rect) => rect.x + rect.width)) - left;
+//   const height = Math.max(...rects.map((rect) => rect.y + rect.height)) - top;
+//   const seed = capturePlannerSeed(request, network, wires, router.routes, width, height, { x: left, y: top });
+//   for (const entity of [...entities, ...fixtures]) entity.position = { x: entity.position.x - left, y: entity.position.y - top };
+  const { width, height } = outline;
+  const finalBoundary = new PlannerBoundary(registry, network, outline);
+  const boundaryResult = finalBoundary.resolve(network.nodes.map(node => ({ ...node.entity.position, rotation: node.entity.rotation })));
+  if (boundaryResult.violations || boundaryResult.busMask === null) throw new PlannerCandidateError("最终布局违反边界接入约束。", statistics);
+  fixtures.push(...finalBoundary.fixtures(boundaryResult.busMask));
+  const seed = capturePlannerSeed(request, network, wires, router.routes, width, height);
   const connections: BlueprintPlannerConnection[] = [];
   for (const source of external) {
     const flow = source.outputs[0]!;
@@ -583,11 +622,12 @@ async function createPlannerAttempt(
     gasDiffuserCount: gasCount, additionalGasDiffuserCount: additionalGasCount,
     score: boundedPlannerScore(width * height, statistics.quality.secondary),
   };
+  const busSides = ["上", "右", "下", "左"].filter((_, side) => boundaryResult.busMask! & (1 << side));
   const blueprint = createBlueprintDocument({
     name: request.plan.name.trim() || targetDescription, baseId: request.plan.sourceBaseId,
     initialGridPoint: { x: 0, y: 0 }, entityOrder: entities.map((entity) => entity.id),
     entities: Object.fromEntries(entities.map((entity) => [entity.id, entity])), slotLinks: network.slotLinks,
-    description: `自动规划产线（EDA）\n目标：${targetDescription}\n范围：${width} × ${height}\n供电：外部供电，已布置供电桩${network.nodes.some((node) => node.definition.id === "seedcol_1") ? `\n植物循环启动：${request.options.plantStartup === "preload" ? "采种机预置 50 个物品" : "仓库通过准入口提供 29 个物品"}` : ""}`,
+    description: `自动规划产线（EDA）\n目标：${targetDescription}\n范围：${width} × ${height}\n存取线：${({ straight: "直线", corner: "直角", "u-shaped": "U型" })[request.options.warehouseBus]}；${busSides.length ? `请在包围盒外${busSides.join("、")}侧自行放置` : "无需接入"}\n供电：外部供电，已布置供电桩${network.nodes.some((node) => node.definition.id === "seedcol_1") ? `\n植物循环启动：${request.options.plantStartup === "preload" ? "采种机预置 50 个物品" : "仓库通过准入口提供 29 个物品"}` : ""}`,
   });
   const result: PlannerCandidate = {
     metrics, connections, search: statistics, supplyAudit, seed,

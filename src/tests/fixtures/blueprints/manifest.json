@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
-  "fixtureRevision": 10,
-  "updatedAt": "2026-10-04",
+  "fixtureRevision": 11,
+  "updatedAt": "2026-10-05",
   "entries": [
     {
       "file": "src/tests/fixtures/blueprints/collections/app/app-host/scene-01-variant-1.schema6.json",
@@ -3376,6 +3376,20 @@
     },
     {
       "file": "src/tests/fixtures/blueprints/simulation/converger-mixed-input/two-items.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/e2e/clipboard-selection.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/e2e/copy-selection.schema6.json",
       "role": "test-scene",
       "schemaVersion": 6,
       "version": "fixture-v1",

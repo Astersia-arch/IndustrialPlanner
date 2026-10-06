@@ -1,4 +1,4 @@
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
 
 test("collects main and Dedicated Worker logs and keeps them across refresh", async ({
   page,

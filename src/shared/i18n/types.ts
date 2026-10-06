@@ -80,6 +80,8 @@ export type UiKey =
   | "eda.conduitSupply"
   | "eda.warehouseBus"
   | "eda.straight"
+  | "eda.corner"
+  | "eda.uShaped"
   | "eda.free"
   | "eda.solidOutput"
   | "eda.warehouseOutput"

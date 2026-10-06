@@ -16,6 +16,7 @@ export function readPlanningInput(registry: RegistryContract, value: unknown): B
     };
     return { ...request, options: {
       ...request.options,
+      warehouseBus: (request.options.warehouseBus as string) === "free" ? "corner" : request.options.warehouseBus ?? "straight",
       evaluationsPerRound: request.options.evaluationsPerRound ?? 50_000,
     } as BlueprintPlannerOptions };
   }
@@ -33,6 +34,7 @@ export function readPlanningInput(registry: RegistryContract, value: unknown): B
     byproducts: "output", plantStartup: "preload", evaluationsPerRound: 50_000,
     ...(typeof input.options === "object" && input.options !== null ? input.options : {}),
   };
+  if ((options.warehouseBus as string) === "free") Object.assign(options, { warehouseBus: "corner" });
   return { options, plan: createBlueprintPlannerPlan({ result, targets: state.targets, supplies: state.supplies,
     infiniteItemIds, activeActivityIds, sourceBaseId: typeof input.sourceBaseId === "string" ? input.sourceBaseId : "wuling_protocol_core",
     name: typeof input.name === "string" ? input.name : "EDA 批量规划",

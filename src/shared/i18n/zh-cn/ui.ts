@@ -79,6 +79,8 @@ const UI: Record<string, string> = {
     "canvas.regionalDarkPipeSaveFailed": "暗管链接未保存。请重新选择端点。",
     "eda.warehouseBus": "存取线形态",
     "eda.straight": "直线存取线",
+    "eda.corner": "直角存取线",
+    "eda.uShaped": "U型存取线",
     "eda.free": "自由布局",
     "eda.solidOutput": "固体成品去向",
     "eda.warehouseOutput": "仓库存货口",

@@ -1,43 +1,70 @@
-import { expect, test } from "playwright/test";
+import { SCREEN_PROFILES } from "./harness/profiles";
+import { expect, test } from "./harness/fixture";
 
-const SCREEN_PROFILES = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125, deviceClass: "mobile", screenShape: "landscape" },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125, deviceClass: "tablet", screenShape: "square" },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1, deviceClass: "desktop", screenShape: "landscape" },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125, deviceClass: "mobile", screenShape: "landscape" },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125, deviceClass: "tablet", screenShape: "square" },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1, deviceClass: "desktop", screenShape: "landscape" },
+// ] as const;
 
-test.describe.configure({ mode: "serial" });
+// AI-REMOVED 2026-10-05:
+// Reason: 独立屏幕或主题用例不应因前项失败而跳过。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: playwright.config.ts 的 workers: 1
+// Risk: Low。Human Review: Required
+// Original code:
+// test.describe.configure({ mode: "serial" });
 
 for (const profile of SCREEN_PROFILES) {
-  test(`Inspector 长配方进度连续前进 [${profile.name}]`, async ({ browser }, testInfo) => {
+  test(`Inspector 长配方进度连续前进 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
     test.setTimeout(90_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr,
-      hasTouch: true,
-      isMobile: profile.name !== "desktop",
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr,
+    //       hasTouch: true,
+    //       isMobile: profile.name !== "desktop",
+    //     });
+    const context = await browser.profile(profile);
 
     try {
-      if (profile.name === "desktop") {
-        await context.addInitScript(() => {
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = ((query) => (
-            query === "(pointer: coarse)" || query === "(hover: none)"
-              ? {
-                  matches: false,
-                  media: query,
-                  onchange: null,
-                  addListener() {},
-                  removeListener() {},
-                  addEventListener() {},
-                  removeEventListener() {},
-                  dispatchEvent() { return false; },
-                }
-              : nativeMatchMedia(query)
-          )) as typeof window.matchMedia;
-        });
-      }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 桌面触控与主指针设置只保留一个实现。
+      // Trigger: E2E 基座迁移。Evidence: ManagedBrowser.profile 已安装统一 Screen Profile。
+      // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+      // Original code:
+      // if (profile.name === "desktop") {
+      //   await context.addInitScript(() => {
+      //     const nativeMatchMedia = window.matchMedia.bind(window);
+      //     window.matchMedia = ((query) => (
+      //       query === "(pointer: coarse)" || query === "(hover: none)"
+      //         ? {
+      //             matches: false,
+      //             media: query,
+      //             onchange: null,
+      //             addListener() {},
+      //             removeListener() {},
+      //             addEventListener() {},
+      //             removeEventListener() {},
+      //             dispatchEvent() { return false; },
+      //           }
+      //         : nativeMatchMedia(query)
+      //     )) as typeof window.matchMedia;
+      //   });
+      // }
 
       const page = await context.newPage();
       await page.goto("http://127.0.0.1:4174/");
@@ -47,8 +74,8 @@ for (const profile of SCREEN_PROFILES) {
         viewportWidth: profile.width,
         viewportHeight: profile.height,
         devicePixelRatio: profile.dpr,
-        deviceClass: profile.deviceClass,
-        screenShape: profile.screenShape,
+        deviceClass: profile.name,
+        screenShape: profile.shape,
         hasTouch: true,
       });
 
@@ -129,7 +156,7 @@ for (const profile of SCREEN_PROFILES) {
         contentType: "text/yaml",
       });
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
   });
 }

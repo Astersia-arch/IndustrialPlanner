@@ -50,10 +50,22 @@ it("无法容纳设备的重建仍记入共享提案数，不绕过批次和全�
 
 it("重建跨小批次继续同一个枚举，不重复扣账，也不提交未完成位置", async () => {
   const registry = createRegistryContract();
-  const fixed = { ...createPlainNode(registry, "storager_1", "fixed", "auxiliary"), external: true };
-  const moving = createPlainNode(registry, "belt_straight_1x1", "moving", "logistics");
+// AI-REMOVED 2026-10-05:
+// Reason: external 不再代表永久固定设备，旧场景把储存箱误作外接入口。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 下方 5 个本体、4 格的最小重建场景。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   const fixed = { ...createPlainNode(registry, "storager_1", "fixed", "auxiliary"), external: true };
+//   const moving = createPlainNode(registry, "belt_straight_1x1", "moving", "logistics");
+//   const network: PlannerNetwork = { request: structuredClone(yazhen.request) as BlueprintPlannerRequest,
+//     nodes: [fixed, moving], slotLinks: [], initialSlots: [], preferredGasCount: 0 };
+  // 2026-10-05：external 现为可换边的外接入口；用五个独立本体争用四格，保留几何无解及跨批枚举条件。
+  const nodes = Array.from({ length: 5 }, (_, index) => createPlainNode(registry, "belt_straight_1x1", `moving-${index}`, "logistics"));
   const network: PlannerNetwork = { request: structuredClone(yazhen.request) as BlueprintPlannerRequest,
-    nodes: [fixed, moving], slotLinks: [], initialSlots: [], preferredGasCount: 0 };
+    nodes, slotLinks: [], initialSlots: [], preferredGasCount: 0 };
   const before = JSON.stringify(network);
   const statistics: PlannerSearchStatistics = { seed: 0, strategy: "compact", maximumArea: 4, experiments: ["partial-rebuild"],
     evaluationLimit: 1510, evaluations: 0, acceptedMoves: 0, routingAttempts: 0,

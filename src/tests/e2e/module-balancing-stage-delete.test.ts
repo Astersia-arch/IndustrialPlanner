@@ -1,41 +1,49 @@
+import { SCREEN_PROFILES } from "./harness/profiles";
 import type { Locator } from "playwright/test";
 
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
 
 const APP_URL = "http://127.0.0.1:4174/";
 
-const SCREEN_PROFILES = [
-  {
-    name: "mobile-landscape",
-    viewport: { width: 764, height: 345 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    coarsePointer: true,
-    isMobile: true,
-    deviceClass: "mobile",
-    screenShape: "landscape",
-  },
-  {
-    name: "tablet-square",
-    viewport: { width: 711, height: 665 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    coarsePointer: true,
-    isMobile: true,
-    deviceClass: "tablet",
-    screenShape: "square",
-  },
-  {
-    name: "desktop-landscape",
-    viewport: { width: 2552, height: 1315 },
-    deviceScaleFactor: 1,
-    hasTouch: true,
-    coarsePointer: false,
-    isMobile: false,
-    deviceClass: "desktop",
-    screenShape: "landscape",
-  },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 统一三屏配置。
+// Trigger: 用户授权基座与用例迁移。
+// Evidence: 旧用例重复配置与管理浏览器资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   {
+//     name: "mobile-landscape",
+//     viewport: { width: 764, height: 345 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     coarsePointer: true,
+//     isMobile: true,
+//     deviceClass: "mobile",
+//     screenShape: "landscape",
+//   },
+//   {
+//     name: "tablet-square",
+//     viewport: { width: 711, height: 665 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     coarsePointer: true,
+//     isMobile: true,
+//     deviceClass: "tablet",
+//     screenShape: "square",
+//   },
+//   {
+//     name: "desktop-landscape",
+//     viewport: { width: 2552, height: 1315 },
+//     deviceScaleFactor: 1,
+//     hasTouch: true,
+//     coarsePointer: false,
+//     isMobile: false,
+//     deviceClass: "desktop",
+//     screenShape: "landscape",
+//   },
+// ] as const;
 
 // AI-REMOVED 2026-08-30:
 // Reason: 单个 Playwright 用例串行执行三种 Screen Profile，共享 90 秒总超时，导致前两种配置完成后第三种配置被提前终止。
@@ -51,42 +59,54 @@ const SCREEN_PROFILES = [
 //
 //   for (const profile of SCREEN_PROFILES) {
 for (const profile of SCREEN_PROFILES) {
-  test(`stage action clears content before exposing the red delete action [${profile.name}]`, async ({ browser }) => {
+  test(`stage action clears content before exposing the red delete action [${profile.name}]`, async ({ browserSession: browser }) => {
     test.setTimeout(90_000);
 
-    const context = await browser.newContext({
-      deviceScaleFactor: profile.deviceScaleFactor,
-      hasTouch: profile.coarsePointer,
-      isMobile: profile.isMobile,
-      viewport: profile.viewport,
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与精细主指针模拟由公共 profile 管理。
+    // Trigger: 用户授权基座与用例迁移。
+    // Evidence: 旧用例重复配置与管理浏览器资源。
+    // Replacement: ManagedBrowser.profile
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       deviceScaleFactor: profile.deviceScaleFactor,
+    //       hasTouch: profile.coarsePointer,
+    //       isMobile: profile.isMobile,
+    //       viewport: profile.viewport,
+    //     });
+    const context = await browser.profile(profile);
     const page = await context.newPage();
 
     try {
-      if (profile.hasTouch && !profile.coarsePointer) {
-        await page.addInitScript(() => {
-          Object.defineProperty(navigator, "maxTouchPoints", {
-            configurable: true,
-            get: () => 1,
-          });
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = (query) => {
-            const result = nativeMatchMedia(query);
-            if (query !== "(pointer: coarse)" && query !== "(hover: none)") {
-              return result;
-            }
-            return new Proxy(result, {
-              get(target, property) {
-                if (property === "matches") {
-                  return false;
-                }
-                const value = Reflect.get(target, property, target) as unknown;
-                return typeof value === "function" ? value.bind(target) : value;
-              },
-            });
-          };
-        });
-      }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 统一指针配置。Trigger: 基座迁移。Evidence: ManagedBrowser.profile 已安装。
+      // Replacement: harness/profiles.ts。Risk: Low。Human Review: Required
+      // Original code:
+      //       if (true && !profile.isMobile) {
+      //         await page.addInitScript(() => {
+      //           Object.defineProperty(navigator, "maxTouchPoints", {
+      //             configurable: true,
+      //             get: () => 1,
+      //           });
+      //           const nativeMatchMedia = window.matchMedia.bind(window);
+      //           window.matchMedia = (query) => {
+      //             const result = nativeMatchMedia(query);
+      //             if (query !== "(pointer: coarse)" && query !== "(hover: none)") {
+      //               return result;
+      //             }
+      //             return new Proxy(result, {
+      //               get(target, property) {
+      //                 if (property === "matches") {
+      //                   return false;
+      //                 }
+      //                 const value = Reflect.get(target, property, target) as unknown;
+      //                 return typeof value === "function" ? value.bind(target) : value;
+      //               },
+      //             });
+      //           };
+      //         });
+      //       }
 
       await page.goto(APP_URL);
       await expect.poll(() => page.evaluate(() => window.__industrialPlannerAppHost !== undefined)).toBe(true);
@@ -154,19 +174,19 @@ for (const profile of SCREEN_PROFILES) {
         window.__industrialPlannerAppHost?.state.screenProfile,
       );
       expect(actualProfile, profile.name).toMatchObject({
-        viewportWidth: profile.viewport.width,
-        viewportHeight: profile.viewport.height,
-        devicePixelRatio: profile.deviceScaleFactor,
-        deviceClass: profile.deviceClass,
-        screenShape: profile.screenShape,
-        hasTouch: profile.hasTouch,
+        viewportWidth: profile.width,
+        viewportHeight: profile.height,
+        devicePixelRatio: profile.dpr,
+        deviceClass: profile.name,
+        screenShape: profile.shape,
+        hasTouch: true,
       });
 
       const wizard = page.getByRole("navigation", { name: "模块配平" });
       await expect(wizard, profile.name).toBeVisible();
       await press(
         wizard.getByRole("button", { name: initialStage.name, exact: true }),
-        profile.coarsePointer,
+        profile.isMobile,
       );
 
       const clearButton = page.getByRole("button", { name: "清空阶段", exact: true });
@@ -178,32 +198,32 @@ for (const profile of SCREEN_PROFILES) {
       if (!await libraryHeading.isVisible()) {
         await press(
           wizard.getByRole("button", { name: "模块库", exact: true }),
-          profile.coarsePointer,
+          profile.isMobile,
         );
       }
       await expect(libraryHeading, profile.name).toBeVisible();
       const libraryPanel = libraryHeading.locator("..").locator("..");
       const firstModuleCard = libraryPanel.locator('[role="button"][draggable]').first();
       await expect(firstModuleCard, profile.name).toBeVisible();
-      await press(firstModuleCard, profile.coarsePointer);
+      await press(firstModuleCard, profile.isMobile);
       await expect(page.getByRole("heading", { name: "添加到阶段", exact: true }), profile.name)
         .toBeVisible();
       await press(
         page.getByRole("button", { name: "确认添加", exact: true }),
-        profile.coarsePointer,
+        profile.isMobile,
       );
 
       const drawerCloseButton = libraryHeading.locator("..")
         .getByRole("button", { name: "关闭", exact: true });
       if (await drawerCloseButton.isVisible()) {
-        await press(drawerCloseButton, profile.coarsePointer);
+        await press(drawerCloseButton, profile.isMobile);
       }
       await expect(clearButton, profile.name).toBeVisible();
       await expect(deleteButton, profile.name).toBeHidden();
 
       await press(
         wizard.getByRole("button", { name: "新建阶段", exact: true }),
-        profile.coarsePointer,
+        profile.isMobile,
       );
       const stagesBeforeClear = await page.evaluate(() =>
         window.__industrialPlannerAppHost?.internalState.workbench.toolbox.moduleBalancing
@@ -217,14 +237,14 @@ for (const profile of SCREEN_PROFILES) {
       }
       await press(
         wizard.getByRole("button", { name: initialStage.name, exact: true }),
-        profile.coarsePointer,
+        profile.isMobile,
       );
       await test.info().attach(`${profile.name}-before-clear.yaml`, {
         body: await wizard.ariaSnapshot(),
         contentType: "text/yaml",
       });
 
-      await press(clearButton, profile.coarsePointer);
+      await press(clearButton, profile.isMobile);
       await expect(clearButton, profile.name).toBeHidden();
       await expect(deleteButton, profile.name).toBeVisible();
       await expect.poll(() => page.evaluate((stageId) =>
@@ -246,7 +266,7 @@ for (const profile of SCREEN_PROFILES) {
       });
       expect(deleteColor.actual, profile.name).toBe(deleteColor.danger);
 
-      await press(deleteButton, profile.coarsePointer);
+      await press(deleteButton, profile.isMobile);
       await expect.poll(() => page.evaluate(() =>
         window.__industrialPlannerAppHost?.internalState.workbench.toolbox.moduleBalancing
           .canvases[0]?.stages.map((stage) => stage.id),
@@ -254,7 +274,7 @@ for (const profile of SCREEN_PROFILES) {
       await expect(wizard.getByRole("button", { name: adjacentStage.name, exact: true }), profile.name)
         .toHaveClass(/is-active/);
 
-      await press(page.getByRole("button", { name: "删除阶段", exact: true }), profile.coarsePointer);
+      await press(page.getByRole("button", { name: "删除阶段", exact: true }), profile.isMobile);
       await expect.poll(() => page.evaluate(() =>
         window.__industrialPlannerAppHost?.internalState.workbench.toolbox.moduleBalancing
           .canvases[0]?.stages.length,
@@ -266,7 +286,7 @@ for (const profile of SCREEN_PROFILES) {
         contentType: "text/yaml",
       });
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
     // AI-REMOVED 2026-08-30:
     // Reason: 原结束符关闭单个测试内的 profile 循环与外层测试；拆分后结束符改为关闭当前 profile 测试与注册循环。

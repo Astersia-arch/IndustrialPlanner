@@ -39,7 +39,7 @@ export interface PlannerSearchOptions {
 export interface PlannerLayoutIssue {
   readonly kind: "minimum-coordinate" | "body-overlap" | "body-boundary" | "same-device-distance"
     | "environment-coverage" | "fixture-blocked" | "port-minimum-coordinate" | "port-blocked"
-    | "port-competition" | "port-boundary" | "disconnected";
+    | "port-competition" | "port-boundary" | "disconnected" | "boundary-access";
   readonly amount: number;
   readonly entityIds: readonly string[];
   readonly position?: { readonly x: number; readonly y: number };

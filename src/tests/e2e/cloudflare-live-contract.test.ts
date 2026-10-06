@@ -1,4 +1,4 @@
-import { test } from "./canvas-lock-audit";
+import { test } from "./harness/fixture";
 import { verifyCloudflareRoundTrip } from "../helpers/cloudflare-contract";
 
 // 唯一保留真实远端的 Cloudflare 契约用例：正常上传、下载、无变化检查和删除。

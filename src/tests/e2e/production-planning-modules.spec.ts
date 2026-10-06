@@ -1,43 +1,67 @@
+import { SCREEN_PROFILES } from "./harness/profiles";
 import type { Locator } from "playwright/test";
 
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
 
 const APP_URL = "http://127.0.0.1:4174/";
 
-const SCREEN_PROFILES = [
-  {
-    name: "mobile-landscape",
-    viewport: { width: 764, height: 345 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    isMobile: true,
-  },
-  {
-    name: "tablet-square",
-    viewport: { width: 711, height: 665 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    isMobile: true,
-  },
-  {
-    name: "desktop-landscape",
-    viewport: { width: 2552, height: 1315 },
-    deviceScaleFactor: 1,
-    hasTouch: true,
-    isMobile: false,
-  },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 统一三屏配置。
+// Trigger: 用户授权基座与用例迁移。
+// Evidence: 旧用例重复配置与管理浏览器资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   {
+//     name: "mobile-landscape",
+//     viewport: { width: 764, height: 345 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     isMobile: true,
+//   },
+//   {
+//     name: "tablet-square",
+//     viewport: { width: 711, height: 665 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     isMobile: true,
+//   },
+//   {
+//     name: "desktop-landscape",
+//     viewport: { width: 2552, height: 1315 },
+//     deviceScaleFactor: 1,
+//     hasTouch: true,
+//     isMobile: false,
+//   },
+// ] as const;
 
-test("production planning opens the generated module editor before persisting the module", async ({ browser }) => {
+for (const profile of SCREEN_PROFILES) {
+  test(`production planning opens the generated module editor before persisting the module [${profile.name}]`, async ({ browserSession: browser }) => {
   test.setTimeout(180_000);
 
-  for (const profile of SCREEN_PROFILES) {
-    const context = await browser.newContext({
-      deviceScaleFactor: profile.deviceScaleFactor,
-      hasTouch: profile.hasTouch,
-      isMobile: profile.isMobile,
-      viewport: profile.viewport,
-    });
+  // AI-REMOVED 2026-10-05:
+  // Reason: 屏幕独立注册，确保逐屏清理。
+  // Trigger: 用户授权基座与用例迁移。
+  // Evidence: 旧用例重复配置与管理浏览器资源。
+  // Replacement: 外层参数化 test
+  // Risk: Low。Human Review: Required
+  // Original code:
+  // for (const profile of SCREEN_PROFILES) {
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与精细主指针模拟由公共 profile 管理。
+    // Trigger: 用户授权基座与用例迁移。
+    // Evidence: 旧用例重复配置与管理浏览器资源。
+    // Replacement: ManagedBrowser.profile
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       deviceScaleFactor: profile.deviceScaleFactor,
+    //       hasTouch: profile.hasTouch,
+    //       isMobile: profile.isMobile,
+    //       viewport: profile.viewport,
+    //     });
+    const context = await browser.profile(profile);
     const page = await context.newPage();
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -151,10 +175,10 @@ test("production planning opens the generated module editor before persisting th
 
       expect(pageErrors, profile.name).toEqual([]);
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
-  }
-});
+  });
+}
 
 async function press(target: Locator, useTap: boolean): Promise<void> {
   if (useTap) {

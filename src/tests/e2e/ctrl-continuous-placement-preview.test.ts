@@ -1,28 +1,49 @@
-import { expect, test } from "playwright/test";
+import { SCREEN_PROFILES } from "./harness/profiles";
+import { expect, test } from "./harness/fixture";
 
-const SCREEN_PROFILES = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125, isMobile: true },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125, isMobile: true },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1, isMobile: false },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125, isMobile: true },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125, isMobile: true },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1, isMobile: false },
+// ] as const;
 
 for (const profile of SCREEN_PROFILES) {
-  test(`Ctrl 连续放置后，新预览与刚放下的设备位置和方向一致 [${profile.name}]`, async ({ browser }, testInfo) => {
+  test(`Ctrl 连续放置后，新预览与刚放下的设备位置和方向一致 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
     test.setTimeout(90_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr,
-      hasTouch: true,
-      isMobile: profile.isMobile,
-      locale: "zh-CN",
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr,
+    //       hasTouch: true,
+    //       isMobile: profile.isMobile,
+    //       locale: "zh-CN",
+    //     });
+    const context = await browser.profile(profile);
 
     try {
-      if (!profile.isMobile) {
-        await context.addInitScript(() => {
-          Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, get: () => 1 });
-        });
-      }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 配置与主指针模拟收敛到公共入口。
+      // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+      // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // if (!profile.isMobile) {
+      //         await context.addInitScript(() => {
+      //           Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, get: () => 1 });
+      //         });
+      //       }
       const page = await context.newPage();
       await page.goto("http://127.0.0.1:4174/");
       await expect(page.locator("canvas").first()).toBeVisible();
@@ -149,7 +170,7 @@ for (const profile of SCREEN_PROFILES) {
       //   (window as unknown as { __ctrlPlacementCreatedPose?: unknown }).__ctrlPlacementCreatedPose,
       // )).toEqual({ position: placed.position, rotation: placed.rotation });
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
   });
 }

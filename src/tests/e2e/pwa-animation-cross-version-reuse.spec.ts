@@ -5,13 +5,20 @@ import { extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  chromium,
+  // AI-CORRECTION 2026-10-05: chromium 生命周期已移至 ManagedBrowser。
   expect,
   test,
-  type Browser,
+  // AI-CORRECTION 2026-10-05: 不再需要用例持有 Browser。
   type BrowserContext,
   type Page,
-} from "playwright/test";
+} from "./harness/fixture";
+// AI-REMOVED 2026-10-05:
+// Reason: 用例不再直接启动或持有原生 Browser。
+// Trigger: E2E 基座迁移。Evidence: launch/newContext 已交给 browserSession。
+// Replacement: harness/fixture.ts ManagedBrowser。Risk: Low。Human Review: Required
+// Original code:
+// chromium,
+// type Browser,
 import { build, type Plugin } from "vite";
 
 const PROJECT_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -65,7 +72,9 @@ interface ViteBuildResult {
   }[];
 }
 
-test("PWA 动画包更新只下载新增与变化文件，并复用其他完整文件", async () => {
+test.use({ appServer: false });
+
+test("PWA 动画包更新只下载新增与变化文件，并复用其他完整文件", async ({ browserSession, round }) => {
   test.setTimeout(120_000);
 
   const baselineEntries = await createAnimationEntries(BASELINE_ANIMATION_DIRECTORY);
@@ -103,14 +112,32 @@ test("PWA 动画包更新只下载新增与变化文件，并复用其他完整�
     versionBResponseGate,
   };
   const server = createDeltaServer(serverState);
-  let browser: Browser | null = null;
+  // AI-REMOVED 2026-10-05:
+  // Reason: 浏览器所有权交给 fixture。
+  // Trigger: 用户授权 E2E 基座与案例调整。
+  // Evidence: 当前产品使用逐物品选项，资源归属由 fixture 管理。
+  // AI-CORRECTION 2026-10-05: 本例与逐物品选项无关；定位依据是原有 chromium.launch/newContext 和 finally 清理路径。
+  // Replacement: browserSession
+  // Risk: Low。Human Review: Required
+  // Original code:
+  // let browser: Browser | null = null;
   let context: BrowserContext | null = null;
   let page: Page | null = null;
 
   try {
     const origin = await listenOnEphemeralPort(server);
-    browser = await chromium.launch();
-    context = await browser.newContext();
+    // AI-REMOVED 2026-10-05:
+    // Reason: 浏览器统一启动、取证与清理。
+    // Trigger: 用户授权 E2E 基座与案例调整。
+    // Evidence: 当前产品使用逐物品选项，资源归属由 fixture 管理。
+  // AI-CORRECTION 2026-10-05: 本例与逐物品选项无关；定位依据是原有 chromium.launch/newContext 和 finally 清理路径。
+    // Replacement: browserSession
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // browser = await chromium.launch();
+    // context = await browser.newContext();
+    round.ports.add(Number(new URL(origin).port));
+    context = await browserSession.newContext();
     const ownedPage = await context.newPage();
     page = ownedPage;
     await ownedPage.goto(`${origin}/__pwa_animation_delta_test__.html`);
@@ -200,8 +227,17 @@ test("PWA 动画包更新只下载新增与变化文件，并复用其他完整�
     if (page !== null) {
       await cleanupOwnedBrowserState(page).catch(() => undefined);
     }
-    await context?.close().catch(() => undefined);
-    await browser?.close().catch(() => undefined);
+    // AI-REMOVED 2026-10-05:
+    // Reason: 清理异常必须影响测试结果，不能吞掉。
+    // Trigger: 用户授权 E2E 基座与案例调整。
+    // Evidence: 当前产品使用逐物品选项，资源归属由 fixture 管理。
+  // AI-CORRECTION 2026-10-05: 本例与逐物品选项无关；定位依据是原有 chromium.launch/newContext 和 finally 清理路径。
+    // Replacement: fixture 的清理汇总
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // await context?.close().catch(() => undefined);
+    // await browser?.close().catch(() => undefined);
+    if (context) await browserSession.closeContext(context);
     await closeServer(server);
   }
 });

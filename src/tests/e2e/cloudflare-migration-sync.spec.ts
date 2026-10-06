@@ -10,7 +10,7 @@ import {
   test,
   type APIRequestContext,
   type Page,
-} from "./canvas-lock-audit";
+} from "./harness/fixture";
 
 import { BLUEPRINT_SCHEMA_VERSION } from "../../domain/document/blueprint-document";
 import { WORLD_DOCUMENT_SCHEMA_VERSION } from "../../domain/document/world-document";

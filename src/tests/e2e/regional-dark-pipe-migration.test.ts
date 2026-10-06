@@ -1,4 +1,4 @@
-import { expect, test } from "playwright/test";
+import { expect, test } from "./harness/fixture";
 import { normalizeBlueprintDocument } from "@/shared/blueprints/blueprint-document-codec";
 import fixtureJson from "../fixtures/blueprints/editor-regional-dark-pipe/scene.schema6.json" with { type: "json" };
 

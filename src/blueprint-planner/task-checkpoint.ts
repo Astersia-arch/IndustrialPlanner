@@ -17,7 +17,7 @@ import { restorePlannerSeed } from "./search-seed";
 // Replacement: compact-breadth-1 与 restorePlannerTaskFile 迁移；Risk: 旧任务无历史尺寸访问记录；Human Review: Required。
 // Original code:
 // export const PLANNER_ALGORITHM_VERSION = "compact-portfolio-2";
-export const PLANNER_ALGORITHM_VERSION = "compact-breadth-1";
+export const PLANNER_ALGORITHM_VERSION = "external-boundary-1";
 
 export interface PlannerShardCheckpoint {
   index: number;
@@ -61,19 +61,38 @@ export function emptyPlannerCheckpoint(): PlannerCheckpoint {
 
 /** 2026-09-30：仅明确支持的旧算法允许保留输入、重置搜索；不猜测未知版本顺序。 */
 export function restorePlannerTaskFile(value: BlueprintPlannerTaskFile, registry: RegistryContract): BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint } {
-  if (value?.formatVersion === 1 && value.algorithmVersion === "compact-portfolio-2") {
-    const file = structuredClone(value) as BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
-    if (file.checkpoint?.parallel) file.checkpoint.parallel = { ...file.checkpoint.parallel, nextShard: 0,
-      shards: file.checkpoint.parallel.shards.map(shard => ({ ...shard, shapeVisits: {} })) };
-    return parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION }, registry);
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: restorePlannerTaskFile：保留输入、重置旧面积与口位状态。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   if (value?.formatVersion === 1 && value.algorithmVersion === "compact-portfolio-2") {
+//     const file = structuredClone(value) as BlueprintPlannerTaskFile & { checkpoint: PlannerCheckpoint };
+//     if (file.checkpoint?.parallel) file.checkpoint.parallel = { ...file.checkpoint.parallel, nextShard: 0,
+//       shards: file.checkpoint.parallel.shards.map(shard => ({ ...shard, shapeVisits: {} })) };
+//     return parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION }, registry);
+//   }
+//   if (value?.formatVersion !== 1 || value.algorithmVersion !== "compact-portfolio-1") return parsePlannerTaskFile(value, registry);
+//   validateTaskRequest(registry, value.request);
+//   return parsePlannerTaskFile({ ...value, algorithmVersion: PLANNER_ALGORITHM_VERSION,
+//     checkpoint: emptyPlannerCheckpoint(), progress: { taskId: value.taskId, status: "waiting", phase: "preparing",
+//       startedAt: value.progress?.startedAt, elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
+//       evaluatedProposals: 0, roundEvaluatedProposals: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [],
+//       message: "算法已更新，旧计算进度已重置，请重新开始计算。" } }, registry);
+  if (value?.formatVersion !== 1 || !["compact-portfolio-1", "compact-portfolio-2", "compact-breadth-1"].includes(value.algorithmVersion)) {
+    return parsePlannerTaskFile(value, registry);
   }
-  if (value?.formatVersion !== 1 || value.algorithmVersion !== "compact-portfolio-1") return parsePlannerTaskFile(value, registry);
-  validateTaskRequest(registry, value.request);
-  return parsePlannerTaskFile({ ...value, algorithmVersion: PLANNER_ALGORITHM_VERSION,
-    checkpoint: emptyPlannerCheckpoint(), progress: { taskId: value.taskId, status: "waiting", phase: "preparing",
-      startedAt: value.progress?.startedAt, elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
+  const file = structuredClone(value);
+  if ((file.request.options.warehouseBus as string) === "free") Object.assign(file.request.options, { warehouseBus: "corner" });
+  validateTaskRequest(registry, file.request);
+  return parsePlannerTaskFile({ ...file, algorithmVersion: PLANNER_ALGORITHM_VERSION,
+    checkpoint: emptyPlannerCheckpoint(), progress: { taskId: file.taskId, status: "waiting", phase: "preparing",
+      startedAt: file.progress?.startedAt, elapsedMs: 0, estimatedProgress: null, candidateCount: 0,
       evaluatedProposals: 0, roundEvaluatedProposals: 0, validatedCandidateCount: 0, bestArea: null, areaHistory: [],
-      message: "算法已更新，旧计算进度已重置，请重新开始计算。" } }, registry);
+      message: "存取线已改为包围盒外接入，面积规则已更新；旧计算进度已重置，请重新开始计算。" } }, registry);
 }
 
 /** JSON 边界验证失败时拒绝导入，不能悄悄丢弃检查点后从头计算。 */
@@ -196,7 +215,7 @@ export function validateTaskRequest(registry: RegistryContract, request: Bluepri
     || options.concurrency < 1 || options.concurrency > 32)) throw new Error("并发计算数必须介于 1 到 32。");
   if (typeof plan.name !== "string" || typeof plan.sourceBaseId !== "string" || typeof plan.containsModules !== "boolean") throw new Error("产线信息无效。");
   for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
-    const choices = { solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "free"],
+    const choices = { solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "corner", "u-shaped"],
       solidOutput: ["auto", "warehouse", "stash"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"] };
     if (!choices[key].includes(options[key])) throw new Error(`无效的规划选项：${key}`);
   }

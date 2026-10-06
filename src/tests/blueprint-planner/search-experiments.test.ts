@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import { createRegistryContract } from "@/registry";
 import { CompactLayoutSearch } from "@/blueprint-planner/compact-layout";
+import { PlannerBoundary } from "@/blueprint-planner/boundary";
 import { createPlainNode } from "@/blueprint-planner/placement";
 import { PlannerCandidateError, type PlannerNetwork } from "@/blueprint-planner/model";
 import { PlannerRouter } from "@/blueprint-planner/router";
@@ -14,9 +15,9 @@ import { NodePlannerClient } from "@/scripts/eda/node-planner-client";
 import nugget from "./fixtures/pyrrolite-nugget.json";
 import powerNoSpace from "./fixtures/power-no-space.json";
 
-it("约束修复遵守总提案预算与固定存取线，最终几何仍由共同评分核验", async () => {
+it("约束修复遵守总提案预算与边界接入，最终几何仍由共同评分核验", async () => {
   const registry = createRegistryContract();
-  const fixed = createPlainNode(registry, "belt_straight_1x1", "fixed", "bus");
+  const fixed = createPlainNode(registry, "unloader_1", "warehouse-port", "supply");
   const moving = createPlainNode(registry, "belt_straight_1x1", "moving", "logistics");
   moving.entity.position = { x: -1, y: -1 };
   const network: PlannerNetwork = { request: structuredClone(nugget.request) as BlueprintPlannerRequest,
@@ -28,8 +29,19 @@ it("约束修复遵守总提案预算与固定存取线，最终几何仍由共�
   expect(await search.advance(128, () => {})).toBe(true);
   search.applyBest();
   expect(statistics.evaluations).toBe(64);
-  expect(fixed.entity.position).toEqual({ x: 0, y: 0 });
-  expect(moving.entity.position.x).toBeGreaterThanOrEqual(5);
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 下方边界约束验证；仓库口可移动，盒内不再预留存取线条带。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   expect(fixed.entity.position).toEqual({ x: 0, y: 0 });
+//   expect(moving.entity.position.x).toBeGreaterThanOrEqual(5);
+  const boundary = new PlannerBoundary(registry, network, statistics.outline);
+  expect(boundary.resolve(network.nodes.map(node => ({ ...node.entity.position, rotation: node.entity.rotation }))).violations).toBe(0);
+  expect(moving.entity.position.x).toBeGreaterThanOrEqual(0);
   expect(moving.entity.position.y).toBeGreaterThanOrEqual(0);
   expect(statistics.remainingConflicts).toEqual({ geometry: 0, power: 0, boundary: 0, connections: 0 });
 });

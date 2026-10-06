@@ -29,7 +29,7 @@ const OPTION_FIELDS: readonly { key: "warehouseBus" | "plantStartup"; label: UiK
   // Risk: Low；旧字段保留任务缺省值。Human Review: Required
   // Original code:
   //   { key: "fluidSupply", label: "eda.fluidSupply", choices: [["external", "eda.externalPipe"], ["conduit", "eda.conduitSupply"]] },
-  { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["free", "eda.free"]] },
+  { key: "warehouseBus", label: "eda.warehouseBus", choices: [["straight", "eda.straight"], ["corner", "eda.corner"], ["u-shaped", "eda.uShaped"]] },
   // AI-REMOVED 2026-10-03:
   // Reason: 四类意图改为逐物品编辑。Trigger: 用户要求精确选择。
   // Evidence: BlueprintPlannerItemPolicies 展示任务边界。Replacement: BlueprintPlannerItemPolicies。

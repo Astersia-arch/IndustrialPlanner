@@ -11,6 +11,7 @@ import { compactSequencePair } from "./sequence-pair";
 import { restrictPort } from "./wiring";
 import { compactLayoutProposals, type PlannerPose } from "./constructive-layout";
 import { getPlannerStashDrainPorts } from "./terminals";
+import { PlannerBoundary } from "./boundary";
 
 interface Pose { x: number; y: number; rotation: GridRotation; }
 interface Geometry { width: number; height: number; ports: Map<string, PlannerPort>; }
@@ -27,7 +28,17 @@ export class CompactLayoutSearch {
   private readonly junctionPorts: Array<{ node: number; source: boolean; edges: number[]; keys: string[] }>;
   private readonly movable: number[];
   private readonly poses: Pose[];
-  private readonly fixed: Set<number>;
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: PlannerBoundary；不再存在永久固定的布局节点。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//   private readonly fixed: Set<number>;
+
+  private readonly boundary: PlannerBoundary;
   private readonly neighbors: number[][];
   private readonly environmentPairs: Array<{ device: number; environment: number }>;
   private readonly localTerminals: Array<{ parent: number; terminal: number }>;
@@ -115,9 +126,28 @@ export class CompactLayoutSearch {
       const parent = indices.get(node.supplyTarget?.entityId ?? node.outputSource?.entityId ?? "");
       return parent === undefined ? [] : [{ parent, terminal }];
     });
-    this.fixed = new Set(network.nodes.flatMap((node, index) => node.purpose === "bus" || node.external
-      || node.definition.id === "unloader_1" || node.definition.id === "loader_1" ? [index] : []));
-    this.movable = network.nodes.flatMap((_, index) => this.fixed.has(index) ? [] : [index]);
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: PlannerBoundary；仓库口和外接入口参与移动。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     this.fixed = new Set(network.nodes.flatMap((node, index) => node.purpose === "bus" || node.external
+//       || node.definition.id === "unloader_1" || node.definition.id === "loader_1" ? [index] : []));
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 全部节点可移动，边界节点受 PlannerBoundary 限制。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     this.fixed = new Set<number>();
+
+    this.boundary = new PlannerBoundary(registry, network, statistics.outline);
+    this.movable = network.nodes.map((_, index) => index);
     this.neighbors = network.nodes.map((_, index) => this.edges.flatMap(edge => edge.source === index ? [edge.target] : edge.target === index ? [edge.source] : []));
     this.environmentPairs = network.nodes.flatMap((node, device) => {
       if (!node.recipe?.requiredGasDiffusion) return [];
@@ -199,6 +229,12 @@ export class CompactLayoutSearch {
         child.y = after.y + (turn === 90 ? x : turn === 180 ? oldParentSize.height - y - oldSize.height : turn === 270 ? oldParentSize.width - x - oldSize.width : y);
         child.rotation = ((oldChild.rotation + turn) % 360) as GridRotation;
       }
+      for (const entry of this.boundary.entries) this.boundary.snap(entry.index, this.poses[entry.index]!);
+      if (this.boundary.resolve(this.poses).violations) {
+        this.restore(previous);
+        if (this.statistics.evaluations % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+        continue;
+      }
       const candidate = this.evaluate();
       // 2026-09-30：可交付候选的保留独立于退火接受，避免合法但代理分较高的布局被遗漏。
       if ((candidate.feasible && !this.bestEvaluation.feasible) || (candidate.feasible === this.bestEvaluation.feasible && candidate.cost < this.bestEvaluation.cost)) {
@@ -244,7 +280,7 @@ export class CompactLayoutSearch {
       for (const pair of [...this.environmentPairs.map(pair => [pair.device, pair.environment] as const),
         ...this.localTerminals.map(pair => [pair.parent, pair.terminal] as const)]) {
         if (pair.some(index => group.includes(index))) for (const index of pair) {
-          if (!this.fixed.has(index) && !group.includes(index)) group.push(index);
+          if (!group.includes(index)) group.push(index);
         }
       }
       const wires = this.wires.map((wire, index) => ({ ...wire,
@@ -342,13 +378,13 @@ export class CompactLayoutSearch {
   /** 只产生一个待评价提案；接受、回退及计数仍由 advance 的共同路径负责。 */
   private proposeRepair(issue: PlannerLayoutIssue): boolean {
     const indices = issue.entityIds.map(id => this.network.nodes.findIndex(node => node.entity.id === id)).filter(index => index >= 0);
-    const movable = indices.filter(index => !this.fixed.has(index));
+    const movable = indices;
     if (!movable.length) return false;
     const index = movable[Math.floor(this.random() * movable.length)]!, pose = this.poses[index]!, size = this.dimensions(index);
     let dx = 0, dy = 0;
     if (["minimum-coordinate", "body-boundary", "port-minimum-coordinate", "port-boundary"].includes(issue.kind)) {
-      const minX = this.network.nodes.some(node => node.purpose === "bus") ? 5 : 0;
-      const minY = minX && this.network.request.options.warehouseBus === "free" ? 5 : 0;
+      const minX = 0;
+      const minY = 0;
       let left = pose.x - minX, top = pose.y - minY;
       let right = pose.x + size.width - this.statistics.outline.width, bottom = pose.y + size.height - this.statistics.outline.height;
       for (const edge of this.edges) {
@@ -388,13 +424,26 @@ export class CompactLayoutSearch {
   private propose(index: number, progress: number): void {
     const pose = this.poses[index]!, mode = this.random();
     const origin = { ...pose };
+    if (this.boundary.has(index)) {
+      if (mode < 0.35) {
+        const choices = this.boundary.proposals(index);
+        const next = choices[Math.floor(this.random() * choices.length)];
+        if (next) Object.assign(pose, next);
+      } else {
+        const step = this.random() < progress ? 1 : 3;
+        pose.x += this.random() < 0.5 ? step : -step;
+        pose.y += this.random() < 0.5 ? step : -step;
+        this.boundary.snap(index, pose);
+      }
+      return;
+    }
     if (this.statistics.strategy === "compact" && this.random() < 0.18) {
       // 每次重新从连接邻域取组，允许拆分与重新组合，不把初始聚类变成永久宏块。
       const group = [index];
       const limit = 2 + Math.floor(this.random() * 4);
       for (let cursor = 0; cursor < group.length && group.length < limit; cursor++) {
         for (const neighbor of this.neighbors[group[cursor]!]!) {
-          if (!this.fixed.has(neighbor) && !group.includes(neighbor) && this.random() < 0.65) group.push(neighbor);
+          if (!group.includes(neighbor) && this.random() < 0.65) group.push(neighbor);
           if (group.length >= limit) break;
         }
       }
@@ -414,11 +463,13 @@ export class CompactLayoutSearch {
     }
     if (this.statistics.strategy === "compact" && this.random() < 0.06) {
       // 存取线的几何槽位固定，同尺寸取货口可交换槽位，供料配对随布局变化。
-      const docks = [...this.fixed].filter(member => this.network.nodes[member]!.definition.id === "unloader_1");
+      // AI-CORRECTION 2026-10-05：槽位改为四边约束下可移动，交换位置时同时交换朝向。
+      const docks = this.boundary.entries.map(entry => entry.index).filter(member => this.network.nodes[member]!.definition.id === "unloader_1");
       if (docks.length > 1) {
         const a = docks[Math.floor(this.random() * docks.length)]!, b = docks[Math.floor(this.random() * docks.length)]!;
         [this.poses[a]!.x, this.poses[b]!.x] = [this.poses[b]!.x, this.poses[a]!.x];
         [this.poses[a]!.y, this.poses[b]!.y] = [this.poses[b]!.y, this.poses[a]!.y];
+        [this.poses[a]!.rotation, this.poses[b]!.rotation] = [this.poses[b]!.rotation, this.poses[a]!.rotation];
         return;
       }
     }
@@ -463,16 +514,17 @@ export class CompactLayoutSearch {
         return;
       }
       // 局部压紧：整组按当前相对次序沿一轴平移，保留固定存取线。
+      // AI-CORRECTION 2026-10-05：存取线已移至盒外，压紧后统一重新锚定边界口位。
       const horizontal = this.random() < 0.5;
       const axis = horizontal ? "x" : "y";
       const dimension = horizontal ? "width" : "height";
       const cross = horizontal ? "y" : "x";
       const crossDimension = horizontal ? "height" : "width";
       const ordered = [...this.movable].sort((a, b) => this.poses[a]![axis] - this.poses[b]![axis]);
-      const settled = [...this.fixed];
+      const settled: number[] = [];
       for (const current of ordered) {
         const position = this.poses[current]!, size = this.dimensions(current);
-        let lower = horizontal && this.network.nodes.some(node => node.purpose === "bus") ? 5 : 0;
+        let lower = 0;
         for (const other of settled) {
           const previous = this.poses[other]!, previousSize = this.dimensions(other);
           if (position[cross] < previous[cross] + previousSize[crossDimension] && previous[cross] < position[cross] + size[crossDimension]) {
@@ -549,7 +601,9 @@ export class CompactLayoutSearch {
         }
       }
     }
-    let violations = 0;
+    const access = this.boundary.resolve(this.poses);
+    let violations = access.violations;
+    if (violations) record?.("boundary-access", violations, this.boundary.entries.map(entry => entry.index));
     const rects = this.poses.map((pose, index) => ({ x: pose.x, y: pose.y, ...this.dimensions(index) }));
     // 分/汇流端口来自同一库存组，可交换出口/入口和未启用口；每次确定性枚举至多 3! 种分配。
     // 订正 2026-09-30：compact 还处理普通设备的等价端口组，最多六个候选口；保持同组库存与物品接受规则。
@@ -579,14 +633,14 @@ export class CompactLayoutSearch {
         else this.edges[index]!.targetKey = bestKeys[offset]!;
       });
     }
-    const minX = this.network.nodes.some(node => node.purpose === "bus") ? 5 : 0;
-    const minY = minX > 0 && this.network.request.options.warehouseBus === "free" ? 5 : 0;
+    const minX = 0;
+    const minY = 0;
     const { width, height } = this.statistics.outline;
     let overflow = 0, maxX = 0, maxY = 0;
     for (let i = 0; i < rects.length; i++) {
       const rect = rects[i]!;
-      if (!this.fixed.has(i)) violations += Math.max(0, minX - rect.x) + Math.max(0, minY - rect.y);
-      if (!this.fixed.has(i)) record?.("minimum-coordinate", Math.max(0, minX - rect.x) + Math.max(0, minY - rect.y), [i], rect);
+      violations += Math.max(0, minX - rect.x) + Math.max(0, minY - rect.y);
+      record?.("minimum-coordinate", Math.max(0, minX - rect.x) + Math.max(0, minY - rect.y), [i], rect);
       for (let j = 0; j < i; j++) {
         const other = rects[j]!;
         if (allowsPlannerOverlap(this.registry, this.network.nodes[i]!.definition, this.network.nodes[j]!.definition)) continue;

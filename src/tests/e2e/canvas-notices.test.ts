@@ -1,46 +1,73 @@
-import { expect, test, type Page } from "playwright/test";
+import { SCREEN_PROFILES as profiles } from "./harness/profiles";
+import { expect, test, type Page } from "./harness/fixture";
 
-const profiles = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125, isMobile: true },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125, isMobile: true },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1, isMobile: false },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const profiles = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125, isMobile: true },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125, isMobile: true },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1, isMobile: false },
+// ] as const;
 
-test.describe.configure({ mode: "serial" });
+// AI-REMOVED 2026-10-05:
+// Reason: 独立屏幕或主题用例不应因前项失败而跳过。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: playwright.config.ts 的 workers: 1
+// Risk: Low。Human Review: Required
+// Original code:
+// test.describe.configure({ mode: "serial" });
 
 for (const profile of profiles) {
-  test(`物流提示：事件续时、模式状态与空地设置 [${profile.name}]`, async ({ browser }, testInfo) => {
+  test(`物流提示：事件续时、模式状态与空地设置 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
     test.setTimeout(90_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr,
-      isMobile: profile.isMobile,
-      hasTouch: true,
-      locale: "zh-CN",
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr,
+    //       isMobile: profile.isMobile,
+    //       hasTouch: true,
+    //       locale: "zh-CN",
+    //     });
+    const context = await browser.profile(profile);
     try {
-      await context.addInitScript((desktop) => {
+      await context.addInitScript(() => {
         localStorage.setItem("v3-app-settings", JSON.stringify({
           locale: "zh-CN",
           hypergryphAllowEmptyLogisticsEndpoints: false,
           gamePlayDeviceAudio: false,
         }));
         // 桌面支持触控，但主指针仍是鼠标；不把 coarse 模拟误认成平板。
-        if (desktop) {
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = (query) => {
-            const result = nativeMatchMedia(query);
-            if (query !== "(pointer: coarse)" && query !== "(hover: none)") return result;
-            return new Proxy(result, {
-              get(target, property) {
-                if (property === "matches") return false;
-                const value = Reflect.get(target, property, target) as unknown;
-                return typeof value === "function" ? value.bind(target) : value;
-              },
-            });
-          };
-        }
-      }, !profile.isMobile);
+        // AI-REMOVED 2026-10-05:
+        // Reason: 桌面触控与主指针设置只保留一个实现。
+        // Trigger: E2E 基座迁移。Evidence: ManagedBrowser.profile 已安装统一 Screen Profile。
+        // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+        // Original code:
+        // if (desktop) {
+        //   const nativeMatchMedia = window.matchMedia.bind(window);
+        //   window.matchMedia = (query) => {
+        //     const result = nativeMatchMedia(query);
+        //     if (query !== "(pointer: coarse)" && query !== "(hover: none)") return result;
+        //     return new Proxy(result, {
+        //       get(target, property) {
+        //         if (property === "matches") return false;
+        //         const value = Reflect.get(target, property, target) as unknown;
+        //         return typeof value === "function" ? value.bind(target) : value;
+        //       },
+        //     });
+        //   };
+        // }
+      });
       const page = await context.newPage();
       const pageErrors: string[] = [];
       page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -117,7 +144,7 @@ for (const profile of profiles) {
       expect(await readNotices(page)).toMatchObject({ toast: null, alert: null });
       expect(pageErrors).toEqual([]);
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
   });
 }

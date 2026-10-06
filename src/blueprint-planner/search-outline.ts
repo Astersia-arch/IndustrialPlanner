@@ -6,16 +6,27 @@ import { resolveEntityGridRect } from "@/shared/geometry/power-range";
 export interface PlannerOutline { readonly width: number; readonly height: number; }
 
 /** 搜索盒子必须容纳固定设施，也至少容纳任一单体设备。 */
+// AI-CORRECTION 2026-10-05：设施均可移动或换边；最小宽高仅取可旋转单体的必要下界，实际长边在布局验证。
 export function fixedOutlineMinimum(registry: RegistryContract,
   nodes: readonly { readonly entity: WorldEntity; readonly purpose: string; readonly external?: boolean }[]): PlannerOutline {
   return nodes.reduce((bounds, node) => {
     const definition = registry.queries.findEntityDefinition(node.entity.definitionId);
     if (!definition) throw new Error(`续搜布局引用了不存在的设备：${node.entity.definitionId}`);
     const rect = resolveEntityGridRect({ entity: node.entity, definition });
-    const fixed = node.purpose === "bus" || node.external || node.entity.definitionId === "unloader_1"
-      || node.entity.definitionId === "loader_1";
-    return { width: Math.max(bounds.width, rect.width, fixed ? rect.x + rect.width : 1),
-      height: Math.max(bounds.height, rect.height, fixed ? rect.y + rect.height : 1) };
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: fixedOutlineMinimum；边界口位在每个候选盒子重新安排。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     const fixed = node.purpose === "bus" || node.external || node.entity.definitionId === "unloader_1"
+//       || node.entity.definitionId === "loader_1";
+//     return { width: Math.max(bounds.width, rect.width, fixed ? rect.x + rect.width : 1),
+//       height: Math.max(bounds.height, rect.height, fixed ? rect.y + rect.height : 1) };
+    const smaller = Math.min(rect.width, rect.height);
+    return { width: Math.max(bounds.width, smaller), height: Math.max(bounds.height, smaller) };
   }, { width: 1, height: 1 });
 }
 

@@ -1,4 +1,4 @@
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
 
 test("fixed infinite resources remain visible outside the editable regional list", async ({ page }) => {
   await page.goto("/");
@@ -141,10 +141,13 @@ test("legacy keeps regional multi-base disabled and explains the limitation", as
 }) => {
   test.setTimeout(60_000);
   await page.addInitScript(() => {
+    // 2026-10-05：Legacy 需要同时开启 App 调试模式和旧版求解器偏好。
+    localStorage.setItem("v3-app-settings", JSON.stringify({ debugMode: true }));
     localStorage.setItem("v3-user-settings-dialog", JSON.stringify({
       selectedGroupId: "experimental",
       values: {
         "other-experimental-features": true,
+        "debug-legacy-simulation-engine": true,
       },
     }));
     localStorage.setItem("v3-experimental-regional-multi-base", "true");

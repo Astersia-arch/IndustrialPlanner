@@ -1,53 +1,156 @@
-import { execFile } from "node:child_process";
+import { SCREEN_PROFILES as profiles } from "./harness/profiles";
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// import { execFile } from "node:child_process";
+
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
-import { chromium, expect, test } from "playwright/test";
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// import { promisify } from "node:util";
+
+import { expect, test } from "./harness/fixture";
 import plant from "../blueprint-planner/fixtures/plant-preload.json" with { type: "json" };
 
-const execute = promisify(execFile);
-const profiles = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125 },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125 },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1 },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// const execute = promisify(execFile);
+
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const profiles = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125 },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125 },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1 },
+// ] as const;
 
 // 开发验证后独立编写：任务文件导入不得覆盖原蓝图，删除任务不得删除已保存蓝图。
 // CLI 独占会话；正式 E2E 的专用服务器由运行器管理，不能与其他 Playwright 任务并行。
-test.describe.configure({ mode: "serial" });
+// AI-REMOVED 2026-10-05:
+// Reason: 独立屏幕或主题用例不应因前项失败而跳过。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: playwright.config.ts 的 workers: 1
+// Risk: Low。Human Review: Required
+// Original code:
+// test.describe.configure({ mode: "serial" });
 for (const profile of profiles) {
-  test(`EDA 任务持久化、预览与蓝图库隔离 [${profile.name}]`, async ({ baseURL }, testInfo) => {
+  test(`EDA 任务持久化、预览与蓝图库隔离 [${profile.name}]`, async ({ baseURL, browserSession }, _testInfo) => {
     test.setTimeout(180_000);
-    const session = `eda-history-${process.pid}-${profile.name}`;
-    const output = resolve(testInfo.outputPath("cli"));
-    await mkdir(output, { recursive: true });
-    const invoke = async (args: string[], log: string) => {
-      const result = await execute("playwright-cli", args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
-      await writeFile(resolve(output, log), result.stdout + result.stderr);
-      if (result.stdout.includes("### Error")) throw new Error(result.stdout);
-      return result.stdout;
-    };
-    expect(await invoke(["list"], "sessions-before.log")).toContain("(no browsers)");
-    const config = resolve(output, "config.json");
-    await writeFile(config, JSON.stringify({ outputDir: output, outputMode: "stdout", browser: {
-      launchOptions: { executablePath: chromium.executablePath(), headless: true },
-      contextOptions: { viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.dpr,
-        hasTouch: true, locale: "zh-CN" },
-    } }));
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const session = `eda-history-${process.pid}-${profile.name}`;
+    const cli = await browserSession.openCli(profile);
+    const output = cli.directory;
+    const session = cli.session;
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const output = resolve(testInfo.outputPath("cli"));
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // await mkdir(output, { recursive: true });
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const invoke = async (args: string[], log: string) => {
+    //       const result = await execute("playwright-cli", args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
+    //       await writeFile(resolve(output, log), result.stdout + result.stderr);
+    //       if (result.stdout.includes("### Error")) throw new Error(result.stdout);
+    //       return result.stdout;
+    //     };
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // expect(await invoke(["list"], "sessions-before.log")).toContain("(no browsers)");
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const config = resolve(output, "config.json");
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // await writeFile(config, JSON.stringify({ outputDir: output, outputMode: "stdout", browser: {
+    //       launchOptions: { executablePath: chromium.executablePath(), headless: true },
+    //       contextOptions: { viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.dpr,
+    //         hasTouch: true, locale: "zh-CN" },
+    //     } }));
+
     const scenario = `async page => {
       const assert = (condition, message) => { if (!condition) throw Error(message); };
-      if (${JSON.stringify(profile.name)} === 'desktop') await page.addInitScript(() => {
-        const nativeMatchMedia = window.matchMedia.bind(window);
-        window.matchMedia = query => {
-          const result = nativeMatchMedia(query);
-          if (query !== '(pointer: coarse)' && query !== '(hover: none)') return result;
-          return new Proxy(result, {get(target, property) {
-            if (property === 'matches') return false;
-            const value = Reflect.get(target, property, target);
-            return typeof value === 'function' ? value.bind(target) : value;
-          }});
-        };
-      });
+      // AI-REMOVED 2026-10-05:
+      // Reason: 桌面触控与主指针设置只保留一个实现。
+      // Trigger: E2E 基座迁移。Evidence: ManagedCli.open 已安装统一 Screen Profile。
+      // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+      // Original code:
+      // if (${JSON.stringify(profile.name)} === 'desktop') await page.addInitScript(() => {
+      //   const nativeMatchMedia = window.matchMedia.bind(window);
+      //   window.matchMedia = query => {
+      //     const result = nativeMatchMedia(query);
+      //     if (query !== '(pointer: coarse)' && query !== '(hover: none)') return result;
+      //     return new Proxy(result, {get(target, property) {
+      //       if (property === 'matches') return false;
+      //       const value = Reflect.get(target, property, target);
+      //       return typeof value === 'function' ? value.bind(target) : value;
+      //     }});
+      //   };
+      // });
       await page.goto(${JSON.stringify(baseURL ?? "http://127.0.0.1:4174")});
       await page.waitForFunction(() => window.__industrialPlannerAppHost?.workspace.blueprintPlanner != null);
       await page.evaluate(() => {
@@ -93,9 +196,33 @@ for (const profile of profiles) {
         '关闭并行固定单 Worker');
       await parallel.check();
       assert(await dialog.getByRole('spinbutton').count() === 1, '任务参数只允许手填提案预算');
-      for (const [label, value] of [['固体外部供给','warehouse'],['流体外部供给','conduit'],
-        ['存取线形态','straight'],['固体成品去向','auto'],['副产物处理','destroy'],['植物循环启动','preload']]) {
-        assert(await dialog.getByRole('combobox',{name:label}).inputValue() === value, '默认选项 '+label);
+      // AI-REMOVED 2026-10-05:
+      // Reason: 全局供给与成品下拉框已由逐物品策略替代。
+      // Trigger: 用户授权 E2E 基座与案例调整。
+      // Evidence: 当前产品使用逐物品选项，资源归属由 fixture 管理。
+      // Replacement: 逐物品外部接入、产物去向和副产物处理断言
+      // Risk: Low。Human Review: Required
+      // Original code:
+      //       for (const [label, value] of [['固体外部供给','warehouse'],['流体外部供给','conduit'],
+      //         ['存取线形态','straight'],['固体成品去向','auto'],['副产物处理','destroy'],['植物循环启动','preload']]) {
+      //         assert(await dialog.getByRole('combobox',{name:label}).inputValue() === value, '默认选项 '+label);
+      //       }
+      for (const [label, value] of [['存取线形态','straight'],['植物循环启动','preload']]) {
+        assert(await dialog.getByRole('combobox',{name:label,exact:true}).inputValue() === value, '默认选项 '+label);
+      }
+      const supplies = dialog.getByRole('combobox',{name:/ · 外部接入$/});
+      // AI-CORRECTION 2026-10-05: plant-preload 是无外部输入的闭环计划，输入策略数必须为零。
+      // 原迁移断言 assert(await supplies.count() > 0, '必须展示输入物品策略'); 已删除；当前 plan.externalSupplies 为空。
+      assert(await supplies.count() === 0, '闭环计划不能增加外部输入策略');
+      for (const supply of await supplies.all()) {
+        const expected = await supply.locator('option[value="warehouse"]').count() ? 'warehouse' : 'conduit';
+        assert(await supply.inputValue() === expected, '各物品使用默认外部接入');
+      }
+      const outputs = dialog.getByRole('combobox',{name:/ · 产物去向$/});
+      assert(await outputs.count() > 0, '必须展示成品去向');
+      for (const output of await outputs.all()) assert(await output.inputValue() === 'auto', '成品默认自动去向');
+      for (const byproduct of await dialog.getByRole('combobox',{name:/ · 副产物处理$/}).all()) {
+        assert(await byproduct.inputValue() === 'destroy', '副产物默认销毁');
       }
       await proposals.fill('0');
       assert(await dialog.getByRole('button',{name:'开始规划',exact:true}).isDisabled(), '不能低于一万次');
@@ -106,9 +233,17 @@ for (const profile of profiles) {
       // Risk: Low。Human Review: Required
       // Original code:
       // await dialog.getByRole('spinbutton',{name:'并发计算数'}).fill('2');
-      await dialog.getByRole('combobox',{name:'固体外部供给'}).selectOption('warehouse');
-      await dialog.getByRole('combobox',{name:'流体外部供给'}).selectOption('conduit');
-      await dialog.getByRole('combobox',{name:'固体成品去向'}).selectOption('stash');
+      // AI-REMOVED 2026-10-05:
+      // Reason: 全局控件已由逐物品策略替代。
+      // Trigger: 用户授权 E2E 基座与案例调整。
+      // Evidence: 当前产品使用逐物品选项，资源归属由 fixture 管理。
+      // Replacement: 各成品真实选择 stash
+      // Risk: Low。Human Review: Required
+      // Original code:
+      //       await dialog.getByRole('combobox',{name:'固体外部供给'}).selectOption('warehouse');
+      //       await dialog.getByRole('combobox',{name:'流体外部供给'}).selectOption('conduit');
+      //       await dialog.getByRole('combobox',{name:'固体成品去向'}).selectOption('stash');
+      for (const output of await outputs.all()) await output.selectOption('stash');
       // AI-REMOVED 2026-09-30: 用户删除时间预算，Evidence: Options 接口已移除 budgetMs。
       // Replacement: 提案次数输入。Risk: Low。Human Review: Required
       // Original code:
@@ -223,10 +358,19 @@ for (const profile of profiles) {
       await page.screenshot({path:${JSON.stringify(resolve(output, "history.png"))}});
       return {passed:true, savedBlueprintId:before.blueprint.blueprintId, screen, snapshot:await page.locator('body').ariaSnapshot()};
     }`;
-    try {
-      await invoke([`-s=${session}`, "open", "about:blank", `--config=${config}`], "open.log");
-      const result = await invoke([`-s=${session}`, "run-code", scenario], "workflow.log");
-      expect(result).toMatch(/"passed":\s*true/);
+    /* AI-CORRECTION 2026-10-05: 会话由 fixture 收尾，原 finally 原文保留在块后。 */
+    {
+      // AI-REMOVED 2026-10-05:
+      // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+      // Trigger: 用户授权统一 E2E 基座。
+      // Evidence: 六个用例复制同一套启动与收尾逻辑。
+      // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // await invoke([`-s=${session}`, "open", "about:blank", `--config=${config}`], "open.log");
+
+      const result = await cli.runJson(scenario, "workflow.log");
+      expect(result).toMatchObject({ passed: true });
       const task = JSON.parse(await readFile(resolve(output, "task.json"), "utf8"));
       const success = resolve(".temp/eda/success", `${session}-${Date.now()}`);
       await mkdir(success, { recursive: true });
@@ -237,9 +381,9 @@ for (const profile of profiles) {
         writeFile(resolve(success, "report.json"), JSON.stringify({ progress: task.progress,
           report: task.checkpoint.best.report, metrics: task.checkpoint.result.metrics, ticksPerSecond: 2 })),
       ]);
-      await invoke([`-s=${session}`, "run-code", "async page => { await page.getByRole('button',{name:'删除任务',exact:true}).click(); }"], "delete.log");
-      await invoke([`-s=${session}`, "dialog-accept"], "confirm.log");
-      const deleted = await invoke([`-s=${session}`, "run-code", `async page => {
+      await cli.runCode("async page => { await page.getByRole('button',{name:'删除任务',exact:true}).click(); }", "delete.log");
+      await cli.invoke(["dialog-accept"], "confirm.log");
+      const deleted = await cli.runJson(`async page => {
         await page.waitForFunction(() => window.__industrialPlannerAppHost.workspace.blueprintPlanner.queries.listTasks().length === 1);
         const count = await page.evaluate(async () => {
           const {listBlueprintDirectory} = await import('/src/shared/storage/blueprint-storage.ts');
@@ -251,11 +395,20 @@ for (const profile of profiles) {
         });
         if (count !== 1) throw Error('删除任务影响了蓝图库');
         return {passed:true};
-      }`], "deleted.log");
-      expect(deleted).toMatch(/"passed":\s*true/);
-    } finally {
-      try { await invoke([`-s=${session}`, "close"], "close.log"); }
-      finally { expect(await invoke(["list"], "sessions-after.log")).not.toContain(session); }
+      }`, "deleted.log");
+      expect(deleted).toMatchObject({ passed: true });
     }
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// finally {
+//       try { await invoke([`-s=${session}`, "close"], "close.log"); }
+//       finally { expect(await invoke(["list"], "sessions-after.log")).not.toContain(session); }
+//     }
+
   });
 }

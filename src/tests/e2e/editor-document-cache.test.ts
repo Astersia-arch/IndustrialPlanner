@@ -1,12 +1,20 @@
-import { expect, test, type Page } from "playwright/test";
+import { SCREEN_PROFILES } from "./harness/profiles";
+import { expect, test, type Page } from "./harness/fixture";
 import type { EditorHost } from "@/editor/editor-host";
 import type { EditorDocumentRepositoryOptions } from "@/editor/document-repository";
 
-const SCREEN_PROFILES = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125, shape: "landscape" },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125, shape: "square" },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1, shape: "landscape" },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125, shape: "landscape" },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125, shape: "square" },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1, shape: "landscape" },
+// ] as const;
 
 declare global {
   interface Window {
@@ -19,14 +27,21 @@ declare global {
 }
 
 for (const profile of SCREEN_PROFILES) {
-  test(`区域缓存保留未落盘编辑，关闭多基地后刷新恢复 [${profile.name}]`, async ({ browser }, testInfo) => {
+  test(`区域缓存保留未落盘编辑，关闭多基地后刷新恢复 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
     test.setTimeout(90_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr,
-      hasTouch: true,
-      isMobile: profile.name === "mobile",
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr,
+    //       hasTouch: true,
+    //       isMobile: profile.name === "mobile",
+    //     });
+    const context = await browser.profile(profile);
     try {
       await context.addInitScript(() => {
         localStorage.setItem("v3-user-settings-dialog", JSON.stringify({ values: {
@@ -44,19 +59,24 @@ for (const profile of SCREEN_PROFILES) {
         } }));
         localStorage.setItem("v3-experimental-regional-multi-base", "true");
       });
-      if (profile.name === "desktop") {
-        await context.addInitScript(() => {
-          // 支持触控的桌面仍使用精细主指针，避免被环境检测归为平板。
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = (query) => query === "(pointer: coarse)" || query === "(hover: none)"
-            ? {
-                matches: false, media: query, onchange: null,
-                addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
-                dispatchEvent() { return false; },
-              }
-            : nativeMatchMedia(query);
-        });
-      }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 桌面触控与主指针设置只保留一个实现。
+      // Trigger: E2E 基座迁移。Evidence: ManagedBrowser.profile 已安装统一 Screen Profile。
+      // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+      // Original code:
+      // if (profile.name === "desktop") {
+      //   await context.addInitScript(() => {
+      //     // 支持触控的桌面仍使用精细主指针，避免被环境检测归为平板。
+      //     const nativeMatchMedia = window.matchMedia.bind(window);
+      //     window.matchMedia = (query) => query === "(pointer: coarse)" || query === "(hover: none)"
+      //       ? {
+      //           matches: false, media: query, onchange: null,
+      //           addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
+      //           dispatchEvent() { return false; },
+      //         }
+      //       : nativeMatchMedia(query);
+      //   });
+      // }
       const page = await context.newPage();
       await page.goto("http://127.0.0.1:4174/");
       await expect.poll(() => page.evaluate(() => {
@@ -133,7 +153,7 @@ for (const profile of SCREEN_PROFILES) {
       await testInfo.attach("after.yaml", { body: await page.locator("body").ariaSnapshot(), contentType: "text/yaml" });
       await page.screenshot({ path: testInfo.outputPath("cache-restored.png") });
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
   });
 }

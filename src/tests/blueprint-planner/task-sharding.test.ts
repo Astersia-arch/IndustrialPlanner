@@ -152,8 +152,19 @@ it("暂停后调整提案预算与并发数，保留检查点且不重复搜索�
     Reflect.deleteProperty(legacy.checkpoint.parallel!, "nextShard");
     for (const shard of legacy.checkpoint.parallel!.shards) Reflect.deleteProperty(shard, "shapeVisits");
     const migrated = restorePlannerTaskFile(legacy, session.workspace.registry);
-    expect(migrated.checkpoint.evaluations).toBe(first.checkpoint.evaluations);
-    expect(migrated.checkpoint.parallel?.shards.every(shard => Object.keys(shard.shapeVisits).length === 0)).toBe(true);
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: 下方断言：旧面积口径下的分片必须重置。
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//     expect(migrated.checkpoint.evaluations).toBe(first.checkpoint.evaluations);
+//     expect(migrated.checkpoint.parallel?.shards.every(shard => Object.keys(shard.shapeVisits).length === 0)).toBe(true);
+    expect(migrated.checkpoint.evaluations).toBe(0);
+    expect(migrated.checkpoint.parallel).toBeUndefined();
+    expect(migrated.progress.bestArea).toBeNull();
 
     const decreased = await run(200_000, 1);
     expect(maximumActive).toBe(1);

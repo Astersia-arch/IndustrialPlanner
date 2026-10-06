@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
 import { createWorkspaceState } from "@/domain/document/workspace-state";
-import { createWorldDocument } from "@/domain/document/world-document";
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: @/scripts/eda/placement-scene
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+// import { createWorldDocument } from "@/domain/document/world-document";
+import { createPlannerPlacementScene } from "@/scripts/eda/placement-scene";
 import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import { createRegistryContract } from "@/registry";
 import { createSimulationHost } from "@/simulation/simulation-host";
@@ -54,10 +63,23 @@ describe("EDA 固定生产方案", () => {
         id: "eda-validation-land", name: "空地校验", tag: "武陵", tags: ["武陵"],
         placeableArea: { width: 1000, height: 1000 }, outerRing: { top: 0, right: 0, bottom: 0, left: 0 }, builtinEntities: [],
       }];
-      const document = createWorldDocument({ baseId: "eda-validation-land" });
-      document.entities = candidate.execution.blueprint.entities;
-      document.entityOrder = candidate.execution.blueprint.entityOrder;
-      document.slotLinks = candidate.execution.blueprint.slotLinks;
+// AI-REMOVED 2026-10-05:
+// Reason: 存取线改为盒外边界，统一仓库口与外接入口布局。
+// Trigger: 用户确认外部存取线、最多连续面数及外接传送带互斥规则。
+// Evidence: 旧实现固定设施撑大包围盒并进入面积与导出。
+// Replacement: @/scripts/eda/placement-scene
+// Risk: 旧搜索种子失效，按算法版本重置。
+// Human Review: Required
+// Original code:
+//       const document = createWorldDocument({ baseId: "eda-validation-land" });
+//       document.entities = candidate.execution.blueprint.entities;
+//       document.entityOrder = candidate.execution.blueprint.entityOrder;
+//       document.slotLinks = candidate.execution.blueprint.slotLinks;
+//       // 2026-10-05：交付蓝图不含存取线，施工检查按用户补齐外部存取线后的场景进行。
+//       const buses = candidate.execution.scene.externalEntities.filter(entity => entity.definitionId === "log_hongs_bus" || entity.definitionId === "log_hongs_bus_source");
+//       document.entities = { ...document.entities, ...Object.fromEntries(buses.map(entity => [entity.id, entity])) };
+//       document.entityOrder = [...document.entityOrder, ...buses.map(entity => entity.id)];
+      const document = createPlannerPlacementScene(workspace.registry, candidate.execution, "eda-validation-land");
       const placement = resolvePlacementValidations({ document, workspace, state: createEditorStateReadWrite() });
       expect(Object.entries(placement).filter(([, result]) => !result.canPlace)).toEqual([]);
       // 取货口必须只凭交付蓝图配置持续供料，不能依赖验证场景覆盖库存来掩盖导出缺失。

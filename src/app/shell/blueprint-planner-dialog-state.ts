@@ -25,10 +25,11 @@ export class BlueprintPlannerDialogController {
       }
       for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
         const choices = {
-          solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "free"],
+          solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "corner", "u-shaped"],
           solidOutput: ["warehouse", "stash", "auto"], byproducts: ["destroy", "output"], plantStartup: ["preload", "warehouse"],
         };
-        if (saved[key] !== undefined && choices[key].includes(saved[key]!)) this.options = { ...this.options, [key]: saved[key] };
+        const value = key === "warehouseBus" && (saved[key] as string) === "free" ? "corner" : saved[key];
+        if (value !== undefined && choices[key].includes(value)) this.options = { ...this.options, [key]: value };
       }
       // AI-REMOVED 2026-09-30:
       // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。

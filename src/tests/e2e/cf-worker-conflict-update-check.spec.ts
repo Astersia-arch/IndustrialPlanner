@@ -16,7 +16,7 @@ import {
   test,
   type APIRequestContext,
   type Page,
-} from "./canvas-lock-audit";
+} from "./harness/fixture";
 
 import {
   CF_SYNC_V2_PROTOCOL,

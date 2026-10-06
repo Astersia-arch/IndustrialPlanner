@@ -1,29 +1,57 @@
-import { expect, test } from "./canvas-lock-audit";
+import { SCREEN_PROFILES } from "./harness/profiles";
+import { expect, test } from "./harness/fixture";
 
-const SCREEN_PROFILES = [
-  { deviceClass: "mobile", width: 764, height: 345, dpr: 3.125, screenShape: "landscape" },
-  { deviceClass: "tablet", width: 711, height: 665, dpr: 3.125, screenShape: "square" },
-  { deviceClass: "desktop", width: 2552, height: 1315, dpr: 1, screenShape: "landscape" },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   { deviceClass: "mobile", width: 764, height: 345, dpr: 3.125, screenShape: "landscape" },
+//   { deviceClass: "tablet", width: 711, height: 665, dpr: 3.125, screenShape: "square" },
+//   { deviceClass: "desktop", width: 2552, height: 1315, dpr: 1, screenShape: "landscape" },
+// ] as const;
 
 // 开发期 playwright-cli 验证完成后独立编写；由单 worker 的正式 E2E 入口串行执行。
-test.describe.configure({ mode: "serial" });
+// AI-REMOVED 2026-10-05:
+// Reason: 独立屏幕或主题用例不应因前项失败而跳过。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: playwright.config.ts 的 workers: 1
+// Risk: Low。Human Review: Required
+// Original code:
+// test.describe.configure({ mode: "serial" });
 
 for (const profile of SCREEN_PROFILES) {
-  test(`历史关闭设置不再禁用当前操作 [${profile.deviceClass}]`, async ({ browser }, testInfo) => {
+  test(`历史关闭设置不再禁用当前操作 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
     test.setTimeout(90_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr,
-      hasTouch: profile.deviceClass !== "desktop",
-      isMobile: profile.deviceClass !== "desktop",
-    });
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr,
+    //       hasTouch: profile.name !== "desktop",
+    //       isMobile: profile.name !== "desktop",
+    //     });
+    const context = await browser.profile(profile);
     try {
-      await context.addInitScript((desktop) => {
+      await context.addInitScript((_desktop) => {
         // 桌面配置具有触控能力，但保留鼠标细指针；避免被识别成平板。
-        if (desktop) {
-          Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, get: () => 1 });
-        }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 配置与主指针模拟收敛到公共入口。
+      // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+      // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // if (desktop) {
+      //           Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, get: () => 1 });
+      //         }
         if (localStorage.getItem("v3-app-settings") === null) {
           localStorage.setItem("v3-app-settings", JSON.stringify({
             locale: "zh-CN",
@@ -33,7 +61,7 @@ for (const profile of SCREEN_PROFILES) {
             hypergryphImmediateMarquee: false,
           }));
         }
-      }, profile.deviceClass === "desktop");
+      }, profile.name === "desktop");
       const page = await context.newPage();
       await page.goto("http://127.0.0.1:4174/");
       await expect.poll(() => page.evaluate(() => (
@@ -42,12 +70,12 @@ for (const profile of SCREEN_PROFILES) {
       ))).toBe(true);
       await expect(page.locator("canvas").first()).toBeVisible();
       expect(await page.evaluate(() => window.__industrialPlannerAppHost?.state.screenProfile)).toMatchObject({
-        deviceClass: profile.deviceClass,
+        deviceClass: profile.name,
         viewportWidth: profile.width,
         viewportHeight: profile.height,
         devicePixelRatio: profile.dpr,
         hasTouch: true,
-        screenShape: profile.screenShape,
+        screenShape: profile.shape,
       });
       const settings = await page.evaluate(() => ({ ...window.__industrialPlannerAppHost?.state.settings }));
       expect(settings).not.toHaveProperty("hypergryphOperationMode");
@@ -101,7 +129,8 @@ for (const profile of SCREEN_PROFILES) {
     } finally {
       // 包括断言失败与超时路径，关闭本用例全部页面、上下文和浏览器进程。
       // AI-CORRECTION 2026-09-10: browser 是 Playwright worker 级 fixture；本用例只关闭自行创建的 context，browser 由 runner 统一关闭。
-      await context.close();
+      // AI-CORRECTION 2026-10-05: browser 现为用例级 ManagedBrowser；context 和 browser 均由本轮基座取证与清理。
+      await browser.closeContext(context);
 
       // AI-REMOVED 2026-09-10:
       // Reason: 测试不得关闭 Playwright runner 管理的 worker 级 browser fixture。

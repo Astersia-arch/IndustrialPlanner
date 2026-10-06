@@ -1,4 +1,4 @@
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
 
 import {
   type BrowserTestWindow,
@@ -27,7 +27,7 @@ test.afterEach(async ({ request }) => {
 });
 
 test("WebDAV 初始同步：连接测试成功并上传当前基地", async ({
-  browser,
+  browserSession: browser,
   page,
 }) => {
   await page.goto("/");
@@ -48,7 +48,7 @@ test("WebDAV 初始同步：连接测试成功并上传当前基地", async ({
 });
 
 test("WebDAV 远端更新自动下载：无本地改动时直接使用远端内容", async ({
-  browser,
+  browserSession: browser,
   page,
 }) => {
   test.setTimeout(300_000);
@@ -130,7 +130,7 @@ test("WebDAV 远端更新自动下载：无本地改动时直接使用远端内�
 
 for (const resolution of ["use-remote", "use-local"] as const) {
   test(`WebDAV 冲突：${resolution === "use-remote" ? "使用远端" : "使用我的"}`, async ({
-    browser,
+    browserSession: browser,
     page,
   }) => {
     await page.goto("/");

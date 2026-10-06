@@ -1,23 +1,41 @@
-import { expect, test, type Page } from "playwright/test";
+import { SCREEN_PROFILES as profiles } from "./harness/profiles";
+import { expect, test, type Page } from "./harness/fixture";
+import { clickEntity as clickCanvasEntity, waitForAppReady } from "./harness/workbench";
 import { normalizeBlueprintDocument } from "@/shared/blueprints/blueprint-document-codec";
 import fixtureJson from "../fixtures/blueprints/editor-regional-dark-pipe/scene.schema6.json" with { type: "json" };
 
 const fixture = normalizeBlueprintDocument(fixtureJson)!;
-const profiles = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125, shape: "landscape" },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125, shape: "square" },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1, shape: "landscape" },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const profiles = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125, shape: "landscape" },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125, shape: "square" },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1, shape: "landscape" },
+// ] as const;
 
 for (const profile of profiles) {
-  test(`文档暗管关系、入口断开、出口撤销与关闭模式覆盖 [${profile.name}]`, async ({ browser }, testInfo) => {
-    test.setTimeout(180_000);
-    const context = await browser.newContext({
-      viewport: { width: profile.width, height: profile.height },
-      deviceScaleFactor: profile.dpr, hasTouch: true, isMobile: profile.name === "mobile",
-    });
+  test(`文档暗管关系、入口断开、出口撤销与关闭模式覆盖 [${profile.name}]`, async ({ browserSession: browser }, testInfo) => {
+    // 桌面还验证插槽覆盖、仓库覆盖和删除端点；取证下公共链路约 90–120 秒，180 秒会截断附加分支。
+    // 总预算按实际步骤规模设置；每次建链仍受 waitForDarkPipeSave 的独立事务预算约束。
+    test.setTimeout(profile.name === "desktop" ? 300_000 : 180_000);
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与主指针模拟收敛到公共入口。
+    // Trigger: E2E 基座迁移。Evidence: 每个用例曾重复配置同一 Screen Profile。
+    // Replacement: ManagedBrowser.profile 与 harness/profiles.ts。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       viewport: { width: profile.width, height: profile.height },
+    //       deviceScaleFactor: profile.dpr, hasTouch: true, isMobile: profile.name === "mobile",
+    //     });
+    const context = await browser.profile(profile);
     try {
-      await context.addInitScript(profileName => {
+      await context.addInitScript(() => {
         localStorage.setItem("v3-user-settings-dialog", JSON.stringify({ values: {
           "other-experimental-features": true,
           // AI-REMOVED 2026-09-26:
@@ -32,13 +50,18 @@ for (const profile of profiles) {
           "debug-legacy-simulation-engine": false,
         } }));
         localStorage.setItem("v3-experimental-regional-multi-base", "true");
-        if (profileName !== "desktop") return;
-        const matchMedia = window.matchMedia.bind(window);
-        window.matchMedia = query => query === "(pointer: coarse)" || query === "(hover: none)"
-          ? { matches: false, media: query, onchange: null, addListener() {}, removeListener() {},
-              addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } }
-          : matchMedia(query);
-      }, profile.name);
+        // AI-REMOVED 2026-10-05:
+        // Reason: 桌面触控与主指针设置只保留一个实现。
+        // Trigger: E2E 基座迁移。Evidence: ManagedBrowser.profile 已安装统一 Screen Profile。
+        // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+        // Original code:
+        // if (profileName !== "desktop") return;
+        // const matchMedia = window.matchMedia.bind(window);
+        // window.matchMedia = query => query === "(pointer: coarse)" || query === "(hover: none)"
+        //   ? { matches: false, media: query, onchange: null, addListener() {}, removeListener() {},
+        //       addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } }
+        //   : matchMedia(query);
+      });
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", error => errors.push(String(error)));
@@ -48,8 +71,14 @@ for (const profile of profiles) {
         }
       });
       await page.goto("/");
-      await page.waitForFunction(() => window.__industrialPlannerAppHost?.workspace.simulation !== null
-        && window.__industrialPlannerAppHost?.workspace.simulation !== undefined);
+      // AI-REMOVED 2026-10-05:
+      // Reason: 主机存在不等于 Canvas 与视口就绪。
+      // Trigger: E2E 基座迁移。Evidence: 场景随后执行原生坐标操作。
+      // Replacement: waitForAppReady。Risk: Low。Human Review: Required
+      // Original code:
+      // await page.waitForFunction(() => window.__industrialPlannerAppHost?.workspace.simulation !== null
+      //   && window.__industrialPlannerAppHost?.workspace.simulation !== undefined);
+      await waitForAppReady(page, profile);
       expect(await page.evaluate(() => window.__industrialPlannerAppHost!.state.screenProfile)).toMatchObject({
         deviceClass: profile.name, screenShape: profile.shape, devicePixelRatio: profile.dpr,
         viewportWidth: profile.width, viewportHeight: profile.height, hasTouch: true,
@@ -93,11 +122,12 @@ for (const profile of profiles) {
       await selectBase(page, bases.inlet);
       await clickEntity(page, "inlet");
       await panel.getByRole("button", { name: "断开链接", exact: true }).click();
+      await waitForDarkPipeSave(page);
       await expect.poll(() => visibleRelationCount(page)).toBe(0);
       await selectBase(page, bases.outlet);
       await focusCanvas(page);
       await page.keyboard.press("Control+z");
-      await expect.poll(() => visibleRelationCount(page)).toBe(1);
+      await expect.poll(() => visibleRelationCount(page), { timeout: 30_000, message: "等待撤销事务恢复跨基地关系" }).toBe(1);
       await selectBase(page, bases.inlet);
       await toggleMultiBase(page);
       expect(await visibleRelationCount(page)).toBe(0);
@@ -114,6 +144,7 @@ for (const profile of profiles) {
       expect(await visibleRelationCount(page)).toBe(0);
       await clickEntity(page, "outlet");
       await panel.getByRole("button", { name: "断开链接", exact: true }).click();
+      await waitForDarkPipeSave(page);
       await expect.poll(async () => (await readLinks(page, [bases.inlet]))[0]!.map(link => link.id)).toEqual(["warehouse-other-outlet"]);
       if (profile.name === "desktop") {
         await connectAcrossBases(page, bases);
@@ -150,7 +181,7 @@ for (const profile of profiles) {
       await testInfo.attach("after.yaml", { body: await page.locator("body").ariaSnapshot(), contentType: "text/yaml" });
       expect(errors).toEqual([]);
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
   });
 }
@@ -191,14 +222,28 @@ async function selectBase(page: Page, baseId: string): Promise<void> {
 async function clickEntity(page: Page, entityId: string): Promise<void> {
   await dismissInspector(page);
   // 定位视口属于测试布景；实体选择和建链由原生点击完成。
-  await page.evaluate(id => window.__industrialPlannerAppHost!.workspace.editor!.actions.focusOnEntity(id, { duration: 100 }), entityId);
-  await page.waitForTimeout(250);
-  const rect = await page.evaluate(id => {
-    const editor = window.__industrialPlannerAppHost!.workspace.editor!;
-    return editor.queries.findClientRectForGridCell(editor.document.getSnapshot().entities[id]!.position);
-  }, entityId);
-  if (rect === null) throw new Error(`Entity ${entityId} has no canvas rectangle.`);
-  await page.mouse.click(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  // AI-REMOVED 2026-10-05:
+  // Reason: 固定休眠不能证明聚焦完成，也不检查 Canvas 遮挡与异步建链事务。
+  // Trigger: 跨基地案例默认 5 秒断言超时。
+  // Evidence: trace 中关系最终为 1，但查询返回超过原断言预算，截图也显示已建链。
+  // Replacement: 公共 clickCanvasEntity 与 waitForDarkPipeSave。
+  // Risk: Low；业务断言保持不变。Human Review: Required
+  // Original code:
+  // await page.evaluate(id => window.__industrialPlannerAppHost!.workspace.editor!.actions.focusOnEntity(id, { duration: 100 }), entityId);
+  // await page.waitForTimeout(250);
+  // const rect = await page.evaluate(id => {
+  //   const editor = window.__industrialPlannerAppHost!.workspace.editor!;
+  //   return editor.queries.findClientRectForGridCell(editor.document.getSnapshot().entities[id]!.position);
+  // }, entityId);
+  // if (rect === null) throw new Error(`Entity ${entityId} has no canvas rectangle.`);
+  // await page.mouse.click(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  await clickCanvasEntity(page, entityId);
+  await waitForDarkPipeSave(page);
+}
+
+async function waitForDarkPipeSave(page: Page): Promise<void> {
+  await page.waitForFunction(() => !window.__industrialPlannerAppHost!.regionalSettings.darkPipeLinkSaving,
+    null, { timeout: 30_000 });
 }
 
 async function focusCanvas(page: Page): Promise<void> {

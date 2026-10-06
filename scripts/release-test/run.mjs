@@ -1,6 +1,7 @@
+import { acquireBrowserLease } from "../browser-test/runtime.mjs";
 import { writeSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile, open, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -50,12 +51,22 @@ async function idle() {
   const processes = await command("ps", ["-eo", "args="]);
   if (processes.split("\n").some(line => /(?:node|npm exec).*playwright(?:\/\S*)?\s+test(?:\s|$)/.test(line))) throw Error("Another Playwright test runner is active");
 }
-const lockPath = resolve(".temp/playwright-test/release.lock");
+// AI-REMOVED 2026-10-05:
+// Reason: 发布版与 E2E 必须互斥，不能分别持有两把锁。
+// Trigger: 共用浏览器资源基座。Evidence: 两入口均使用同一机器 Chromium。
+// Replacement: acquireBrowserLease。Risk: Low。Human Review: Required
+// Original code:
+// const lockPath = resolve(".temp/playwright-test/release.lock");
 let lock;
 const results = [];
 try {
-  lock = await open(lockPath, "wx");
-  await lock.writeFile(JSON.stringify({ pid: process.pid, runId }));
+  // AI-REMOVED 2026-10-05:
+  // Reason: 统一执行锁。Trigger: E2E 基座。Evidence: 原锁只覆盖发布版。
+  // Replacement: acquireBrowserLease。Risk: Low。Human Review: Required
+  // Original code:
+  // lock = await open(lockPath, "wx");
+  // await lock.writeFile(JSON.stringify({ pid: process.pid, runId }));
+  lock = await acquireBrowserLease("release");
   await idle();
   console.log(`发布版测试 RUN_DIR=${output}`);
   for (const label of ["A", "B", "C"]) {
@@ -107,6 +118,12 @@ try {
   await writeFile(resolve(output, "result.json"), JSON.stringify({ passed: false, error: String(error), results }, null, 2));
   process.exitCode = 1;
 } finally {
-  if (lock) { await lock.close(); await unlink(lockPath); }
+  // AI-REMOVED 2026-10-05:
+  // Reason: 执行锁统一核验归属后释放。Trigger: E2E 基座。
+  // Evidence: acquireBrowserLease 返回释放回调。Replacement: 下方 lock()。
+  // Risk: Low。Human Review: Required
+  // Original code:
+  // if (lock) { await lock.close(); await unlink(lockPath); }
+  if (lock) await lock();
   console.log(`发布版测试证据: ${output}`);
 }

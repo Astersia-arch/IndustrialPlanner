@@ -1,58 +1,178 @@
-import { execFile } from "node:child_process";
+import { SCREEN_PROFILES as profiles } from "./harness/profiles";
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// import { execFile } from "node:child_process";
+
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
-import { chromium, expect, test } from "playwright/test";
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// import { promisify } from "node:util";
+
+import { expect, test } from "./harness/fixture";
 import plant from "../blueprint-planner/fixtures/plant-preload.json" with { type: "json" };
 
-const execute = promisify(execFile);
-const profiles = [
-  { name: "mobile", width: 764, height: 345, dpr: 3.125 },
-  { name: "tablet", width: 711, height: 665, dpr: 3.125 },
-  { name: "desktop", width: 2552, height: 1315, dpr: 1 },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// const execute = promisify(execFile);
+
+// AI-REMOVED 2026-10-05:
+// Reason: 屏幕尺寸、DPR 与触控设置收敛到唯一来源。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const profiles = [
+//   { name: "mobile", width: 764, height: 345, dpr: 3.125 },
+//   { name: "tablet", width: 711, height: 665, dpr: 3.125 },
+//   { name: "desktop", width: 2552, height: 1315, dpr: 1 },
+// ] as const;
 
 // 三档开发验证完成后独立编写；用真实任务和原生交互验证锁定、后台提示及解锁。
-test.describe.configure({ mode: "serial" });
+// AI-REMOVED 2026-10-05:
+// Reason: 独立屏幕或主题用例不应因前项失败而跳过。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 当前用例重复管理相同运行资源。
+// Replacement: playwright.config.ts 的 workers: 1
+// Risk: Low。Human Review: Required
+// Original code:
+// test.describe.configure({ mode: "serial" });
 for (const profile of profiles) {
-  test(`EDA 运行期间禁止切换和创建，关闭窗口显示运行提示 [${profile.name}]`, async ({ baseURL }, testInfo) => {
+  test(`EDA 运行期间禁止切换和创建，关闭窗口显示运行提示 [${profile.name}]`, async ({ baseURL, browserSession }, _testInfo) => {
     test.setTimeout(180_000);
-    const output = resolve(testInfo.outputPath("cli"));
-    const session = `eda-lock-${process.pid}-${profile.name}`;
-    await mkdir(output, { recursive: true });
-    const invoke = async (args: string[], log: string) => {
-      const result = await execute("playwright-cli", args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
-      await writeFile(resolve(output, log), result.stdout + result.stderr);
-      if (result.stdout.includes("### Error")) throw new Error(result.stdout);
-      return result.stdout;
-    };
-    expect(await invoke(["list"], "sessions-before.log")).toContain("(no browsers)");
-    const config = resolve(output, "config.json");
-    await writeFile(config, JSON.stringify({ outputDir: output, outputMode: "stdout", browser: {
-      launchOptions: { executablePath: chromium.executablePath(), headless: true },
-      contextOptions: { viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.dpr,
-        hasTouch: true, locale: "zh-CN" },
-    } }));
-    const ownedDaemons = async () => (await execute("ps", ["-eo", "pid,args"])).stdout.split("\n")
-      .filter(line => line.includes("cliDaemon.js") && line.includes(session)).map(line => Number(line.trim().split(/\s+/)[0]));
-    try {
-      await invoke([`-s=${session}`, "open", `--config=${config}`], "open.log");
-      const result = await invoke([`-s=${session}`, "run-code", `async page => {
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const output = resolve(testInfo.outputPath("cli"));
+    const cli = await browserSession.openCli(profile);
+    const output = cli.directory;
+    const session = cli.session;
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const session = `eda-lock-${process.pid}-${profile.name}`;
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // await mkdir(output, { recursive: true });
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const invoke = async (args: string[], log: string) => {
+    //       const result = await execute("playwright-cli", args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
+    //       await writeFile(resolve(output, log), result.stdout + result.stderr);
+    //       if (result.stdout.includes("### Error")) throw new Error(result.stdout);
+    //       return result.stdout;
+    //     };
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // expect(await invoke(["list"], "sessions-before.log")).toContain("(no browsers)");
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const config = resolve(output, "config.json");
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // await writeFile(config, JSON.stringify({ outputDir: output, outputMode: "stdout", browser: {
+    //       launchOptions: { executablePath: chromium.executablePath(), headless: true },
+    //       contextOptions: { viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.dpr,
+    //         hasTouch: true, locale: "zh-CN" },
+    //     } }));
+
+    // AI-REMOVED 2026-10-05:
+    // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+    // Trigger: 用户授权统一 E2E 基座。
+    // Evidence: 六个用例复制同一套启动与收尾逻辑。
+    // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+    // Risk: Low。Human Review: Required
+    // Original code:
+    // const ownedDaemons = async () => (await execute("ps", ["-eo", "pid,args"])).stdout.split("\n")
+    //       .filter(line => line.includes("cliDaemon.js") && line.includes(session)).map(line => Number(line.trim().split(/\s+/)[0]));
+
+    /* AI-CORRECTION 2026-10-05: 会话由 fixture 收尾，原 finally 原文保留在块后。 */
+    {
+      // AI-REMOVED 2026-10-05:
+      // Reason: CLI 配置、进程检查与清理收敛到受管会话。
+      // Trigger: 用户授权统一 E2E 基座。
+      // Evidence: 六个用例复制同一套启动与收尾逻辑。
+      // Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+      // Risk: Low。Human Review: Required
+      // Original code:
+      // await invoke([`-s=${session}`, "open", `--config=${config}`], "open.log");
+
+      const result = await cli.runJson(`async page => {
         const assert = (condition, message) => { if (!condition) throw Error(message); };
-        await page.addInitScript(desktop => {
+        await page.addInitScript(() => {
           localStorage.setItem('v3-user-settings-dialog', JSON.stringify({ values: { 'other-experimental-features': true } }));
-          if (!desktop) return;
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = query => {
-            const media = nativeMatchMedia(query);
-            if (query !== '(pointer: coarse)' && query !== '(hover: none)') return media;
-            return new Proxy(media, { get(target, key) {
-              if (key === 'matches') return false;
-              const value = Reflect.get(target, key, target);
-              return typeof value === 'function' ? value.bind(target) : value;
-            } });
-          };
-        }, ${JSON.stringify(profile.name === "desktop")});
+          // AI-REMOVED 2026-10-05:
+          // Reason: 桌面触控与主指针设置只保留一个实现。
+          // Trigger: E2E 基座迁移。Evidence: ManagedCli.open 已安装统一 Screen Profile。
+          // Replacement: harness/profiles.ts installDesktopPointer。Risk: Low。Human Review: Required
+          // Original code:
+          // if (!desktop) return;
+          // const nativeMatchMedia = window.matchMedia.bind(window);
+          // window.matchMedia = query => {
+          //   const media = nativeMatchMedia(query);
+          //   if (query !== '(pointer: coarse)' && query !== '(hover: none)') return media;
+          //   return new Proxy(media, { get(target, key) {
+          //     if (key === 'matches') return false;
+          //     const value = Reflect.get(target, key, target);
+          //     return typeof value === 'function' ? value.bind(target) : value;
+          //   } });
+          // };
+        });
         const request = ${JSON.stringify(plant.request)};
         await page.goto(${JSON.stringify(baseURL ?? "http://127.0.0.1:4174")});
         await page.waitForFunction(input => {
@@ -118,8 +238,8 @@ for (const profile of profiles) {
         await dialog.getByRole('button', { name: '关闭', exact: true }).click();
         assert(!(await entry.getAttribute('class')).includes('eda-task-indicator'), '暂停后不再显示运行提示');
         return { passed: true };
-      }`], "validation.log");
-      expect(result).toMatch(/"passed":\s*true/);
+      }`, "validation.log");
+      expect(result).toMatchObject({ passed: true });
       const file = JSON.parse(await readFile(resolve(output, "task.json"), "utf8"));
       if (file.checkpoint.result) {
         const success = resolve(".temp/eda/success", session);
@@ -130,16 +250,25 @@ for (const profile of profiles) {
         await writeFile(resolve(success, "verification.json"), JSON.stringify({ verifiedBy: "BlueprintPlannerHost", engineKind: "dense-v2",
           tickRate: 2, elapsedMs: file.progress.elapsedMs, metrics: file.checkpoint.result.metrics }, null, 2));
       }
-    } finally {
-      try { await invoke([`-s=${session}`, "close"], "close.log"); }
-      finally {
-        for (const pid of await ownedDaemons()) {
-          try { process.kill(pid, "SIGTERM"); }
-          catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ESRCH"); }
-        }
-        await expect.poll(ownedDaemons).toEqual([]);
-        expect(await invoke(["list"], "sessions-after.log")).toContain("(no browsers)");
-      }
     }
+// AI-REMOVED 2026-10-05:
+// Reason: CLI 配置、进程检查与清理收敛到受管会话。
+// Trigger: 用户授权统一 E2E 基座。
+// Evidence: 六个用例复制同一套启动与收尾逻辑。
+// Replacement: harness/fixture.ts ManagedCli 与 scripts/browser-test/runtime.mjs。
+// Risk: Low。Human Review: Required
+// Original code:
+// finally {
+//       try { await invoke([`-s=${session}`, "close"], "close.log"); }
+//       finally {
+//         for (const pid of await ownedDaemons()) {
+//           try { process.kill(pid, "SIGTERM"); }
+//           catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ESRCH"); }
+//         }
+//         await expect.poll(ownedDaemons).toEqual([]);
+//         expect(await invoke(["list"], "sessions-after.log")).toContain("(no browsers)");
+//       }
+//     }
+
   });
 }

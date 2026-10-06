@@ -1,4 +1,4 @@
-import { expect, test } from "playwright/test";
+import { expect, test } from "./harness/fixture";
 
 test.beforeEach(async ({ page }) => {
   // 保留真实同源 IndexedDB 与生产存储模块，页面不启动其他业务模块。

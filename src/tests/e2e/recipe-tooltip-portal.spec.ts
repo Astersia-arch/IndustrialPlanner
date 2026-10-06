@@ -1,10 +1,12 @@
-import { expect, test } from "./canvas-lock-audit";
+import { expect, test } from "./harness/fixture";
+import { waitForAppReady } from "./harness/workbench";
 
 test("recipe item tooltip escapes inspector clipping without changing layout", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.goto("/");
+  await waitForAppReady(page);
 
   await page.evaluate(async () => {
     const appHost = window.__industrialPlannerAppHost;

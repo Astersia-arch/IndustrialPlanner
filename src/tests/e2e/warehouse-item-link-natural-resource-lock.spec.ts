@@ -1,95 +1,126 @@
+import { SCREEN_PROFILES } from "./harness/profiles";
 import { readFileSync } from "node:fs";
 import type { BlueprintDocument } from "../../domain/document/blueprint-document";
-import { expect, test, type Page } from "./canvas-lock-audit";
+import { expect, test, type Page } from "./harness/fixture";
+import { waitForAppReady, clickEntity } from "./harness/workbench";
 
 const TOOLTIP_TEXT = "自然资源现在由基地面板的地区资源卡片控制";
 const APP_URL = "http://127.0.0.1:4174/";
 
-const SCREEN_PROFILES = [
-  {
-    name: "mobile-landscape",
-    viewport: { width: 764, height: 345 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    coarsePointer: true,
-    isMobile: true,
-    deviceClass: "mobile",
-    screenShape: "landscape",
-  },
-  {
-    name: "tablet-square",
-    viewport: { width: 711, height: 665 },
-    deviceScaleFactor: 3.125,
-    hasTouch: true,
-    coarsePointer: true,
-    isMobile: true,
-    deviceClass: "tablet",
-    screenShape: "square",
-  },
-  {
-    name: "desktop-landscape",
-    viewport: { width: 2552, height: 1315 },
-    deviceScaleFactor: 1,
-    hasTouch: true,
-    coarsePointer: false,
-    isMobile: false,
-    deviceClass: "desktop",
-    screenShape: "landscape",
-  },
-] as const;
+// AI-REMOVED 2026-10-05:
+// Reason: 统一三屏配置。
+// Trigger: 用户授权基座与用例迁移。
+// Evidence: 旧用例重复配置与管理浏览器资源。
+// Replacement: harness/profiles.ts
+// Risk: Low。Human Review: Required
+// Original code:
+// const SCREEN_PROFILES = [
+//   {
+//     name: "mobile-landscape",
+//     viewport: { width: 764, height: 345 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     coarsePointer: true,
+//     isMobile: true,
+//     deviceClass: "mobile",
+//     screenShape: "landscape",
+//   },
+//   {
+//     name: "tablet-square",
+//     viewport: { width: 711, height: 665 },
+//     deviceScaleFactor: 3.125,
+//     hasTouch: true,
+//     coarsePointer: true,
+//     isMobile: true,
+//     deviceClass: "tablet",
+//     screenShape: "square",
+//   },
+//   {
+//     name: "desktop-landscape",
+//     viewport: { width: 2552, height: 1315 },
+//     deviceScaleFactor: 1,
+//     hasTouch: true,
+//     coarsePointer: false,
+//     isMobile: false,
+//     deviceClass: "desktop",
+//     screenShape: "landscape",
+//   },
+// ] as const;
 
-test("natural-resource warehouse links keep a locked infinity control with hover and click tooltip", async ({
-  browser,
-}) => {
+for (const profile of SCREEN_PROFILES) {
+  test(`natural-resource warehouse links keep a locked infinity control with hover and click tooltip [${profile.name}]`, async ({ browserSession: browser }) => {
   test.setTimeout(90_000);
 
-  for (const profile of SCREEN_PROFILES) {
-    const context = await browser.newContext({
-      deviceScaleFactor: profile.deviceScaleFactor,
-      hasTouch: profile.coarsePointer,
-      isMobile: profile.isMobile,
-      viewport: profile.viewport,
-    });
+  // AI-REMOVED 2026-10-05:
+  // Reason: 屏幕独立注册，确保逐屏清理。
+  // Trigger: 用户授权基座与用例迁移。
+  // Evidence: 旧用例重复配置与管理浏览器资源。
+  // Replacement: 外层参数化 test
+  // Risk: Low。Human Review: Required
+  // Original code:
+  // for (const profile of SCREEN_PROFILES) {
+    // AI-REMOVED 2026-10-05:
+    // Reason: 配置与精细主指针模拟由公共 profile 管理。
+    // Trigger: 用户授权基座与用例迁移。
+    // Evidence: 旧用例重复配置与管理浏览器资源。
+    // Replacement: ManagedBrowser.profile
+    // Risk: Low。Human Review: Required
+    // Original code:
+    //     const context = await browser.newContext({
+    //       deviceScaleFactor: profile.deviceScaleFactor,
+    //       hasTouch: profile.coarsePointer,
+    //       isMobile: profile.isMobile,
+    //       viewport: profile.viewport,
+    //     });
+    const context = await browser.profile(profile);
     const page = await context.newPage();
 
     try {
-      if (profile.hasTouch && !profile.coarsePointer) {
-        await page.addInitScript(() => {
-          Object.defineProperty(navigator, "maxTouchPoints", {
-            configurable: true,
-            get: () => 1,
-          });
-          const nativeMatchMedia = window.matchMedia.bind(window);
-          window.matchMedia = (query) => {
-            const result = nativeMatchMedia(query);
-            if (query !== "(pointer: coarse)" && query !== "(hover: none)") {
-              return result;
-            }
-            return new Proxy(result, {
-              get(target, property) {
-                if (property === "matches") {
-                  return false;
-                }
-                const value = Reflect.get(target, property, target) as unknown;
-                return typeof value === "function" ? value.bind(target) : value;
-              },
-            });
-          };
-        });
-      }
+      // AI-REMOVED 2026-10-05:
+      // Reason: 统一主指针设置。
+      // Trigger: 用户授权基座与用例迁移。
+      // Evidence: 旧用例重复配置与管理浏览器资源。
+      // Replacement: ManagedBrowser.profile
+      // Risk: Low。Human Review: Required
+      // Original code:
+      //       if (true && !profile.isMobile) {
+      //         await page.addInitScript(() => {
+      //           Object.defineProperty(navigator, "maxTouchPoints", {
+      //             configurable: true,
+      //             get: () => 1,
+      //           });
+      //           const nativeMatchMedia = window.matchMedia.bind(window);
+      //           window.matchMedia = (query) => {
+      //             const result = nativeMatchMedia(query);
+      //             if (query !== "(pointer: coarse)" && query !== "(hover: none)") {
+      //               return result;
+      //             }
+      //             return new Proxy(result, {
+      //               get(target, property) {
+      //                 if (property === "matches") {
+      //                   return false;
+      //                 }
+      //                 const value = Reflect.get(target, property, target) as unknown;
+      //                 return typeof value === "function" ? value.bind(target) : value;
+      //               },
+      //             });
+      //           };
+      //         });
+      //       }
       await page.goto(APP_URL);
+      await waitForAppReady(page);
       await installNaturalResourceWarehouseLink(page);
 
       const actualProfile = await page.evaluate(() =>
         window.__industrialPlannerAppHost?.state.screenProfile,
       );
       expect(actualProfile, profile.name).toMatchObject({
-        viewportWidth: profile.viewport.width,
-        viewportHeight: profile.viewport.height,
-        devicePixelRatio: profile.deviceScaleFactor,
-        deviceClass: profile.deviceClass,
-        screenShape: profile.screenShape,
-        hasTouch: profile.hasTouch,
+        viewportWidth: profile.width,
+        viewportHeight: profile.height,
+        devicePixelRatio: profile.dpr,
+        deviceClass: profile.name,
+        screenShape: profile.shape,
+        hasTouch: true,
       });
 
       const lockButton = page.locator("[data-warehouse-link-natural-resource-lock]");
@@ -97,7 +128,7 @@ test("natural-resource warehouse links keep a locked infinity control with hover
       await expect(lockButton, profile.name).toHaveAttribute("aria-disabled", "true");
       await expect(lockButton, profile.name).not.toHaveAttribute("aria-pressed", /.+/);
 
-      if (profile.name === "desktop-landscape") {
+      if (profile.name === "desktop") {
         await lockButton.hover();
         await expect(page.getByRole("tooltip"), profile.name).toHaveText(TOOLTIP_TEXT);
         await page.mouse.move(0, 0);
@@ -105,7 +136,7 @@ test("natural-resource warehouse links keep a locked infinity control with hover
       }
 
       const configBefore = await readNaturalResourceIgnoreStock(page);
-      if (profile.coarsePointer) {
+      if (profile.isMobile) {
         await lockButton.tap({ force: true });
       } else {
         await lockButton.click({ force: true });
@@ -138,10 +169,10 @@ test("natural-resource warehouse links keep a locked infinity control with hover
       await page.keyboard.press("Escape");
       await expect(tooltip, profile.name).toBeHidden();
     } finally {
-      await context.close();
+      await browser.closeContext(context);
     }
-  }
-});
+  });
+}
 
 // AI-REMOVED 2026-09-14:
 // Reason: 场景构造已批量固化为带版本的蓝图文件。
@@ -207,38 +238,46 @@ test("natural-resource warehouse links keep a locked infinity control with hover
 // }
 async function installNaturalResourceWarehouseLink(page: Page): Promise<void> {
   const payload = JSON.parse(readFileSync("src/tests/fixtures/blueprints/e2e/natural-resource-warehouse-link.schema6.json", "utf8")) as BlueprintDocument;
-  await page.evaluate(async (input) => {
-    const codecModuleUrl = "/src/shared/blueprints/blueprint-document-codec.ts";
-    const { normalizeBlueprintDocument } = await import(/* @vite-ignore */ codecModuleUrl);
-    const blueprint = normalizeBlueprintDocument(input) as BlueprintDocument | null;
-    if (blueprint === null) throw new Error("Invalid natural-resource warehouse link fixture");
-    const appHost = window.__industrialPlannerAppHost;
-    const editor = appHost?.workspace.editor;
-    if (appHost === undefined || editor === null || editor === undefined) {
-      throw new Error("AppHost/editor unavailable");
-    }
-    const currentDocument = editor.document.getSnapshot();
-    await editor.actions.applySynchronizedDocument({
-      ...currentDocument,
-      entities: { ...currentDocument.entities, ...blueprint.entities },
-      entityOrder: [
-        ...currentDocument.entityOrder.filter((id) => !blueprint.entityOrder.includes(id)),
-        ...blueprint.entityOrder,
-      ],
-      slotLinks: [
-        ...currentDocument.slotLinks.filter((entry) => !blueprint.entityOrder.includes(entry.source.entityId)),
-        ...blueprint.slotLinks,
-      ],
-    });
-    editor.actions.clearCollection("selection");
-    editor.actions.addToCollection({ collectionType: "selection", entityId: blueprint.entityOrder[0]! });
-  }, payload);
+  // AI-REMOVED 2026-10-05:
+  // Reason: 场景基地与版本化数据由基座统一装载。
+  // Trigger: 用户授权基座与用例迁移。
+  // Evidence: 固定布景必须版本化；测试动作通过真实事件触发。
+  // Replacement: loadBlueprint + clickEntity
+  // Risk: Low。Human Review: Required
+  // Original code:
+  //   await page.evaluate(async (input) => {
+  //     const codecModuleUrl = "/src/shared/blueprints/blueprint-document-codec.ts";
+  //     const { normalizeBlueprintDocument } = await import(/* @vite-ignore */ codecModuleUrl);
+  //     const blueprint = normalizeBlueprintDocument(input) as BlueprintDocument | null;
+  //     if (blueprint === null) throw new Error("Invalid natural-resource warehouse link fixture");
+  //     const appHost = window.__industrialPlannerAppHost;
+  //     const editor = appHost?.workspace.editor;
+  //     if (appHost === undefined || editor === null || editor === undefined) {
+  //       throw new Error("AppHost/editor unavailable");
+  //     }
+  //     const currentDocument = editor.document.getSnapshot();
+  //     await editor.actions.applySynchronizedDocument({
+  //       ...currentDocument,
+  //       entities: { ...currentDocument.entities, ...blueprint.entities },
+  //       entityOrder: [
+  //         ...currentDocument.entityOrder.filter((id) => !blueprint.entityOrder.includes(id)),
+  //         ...blueprint.entityOrder,
+  //       ],
+  //       slotLinks: [
+  //         ...currentDocument.slotLinks.filter((entry) => !blueprint.entityOrder.includes(entry.source.entityId)),
+  //         ...blueprint.slotLinks,
+  //       ],
+  //     });
+  //     editor.actions.clearCollection("selection");
+  //     editor.actions.addToCollection({ collectionType: "selection", entityId: blueprint.entityOrder[0]! });
+  //   }, payload);
+  const loaded = await page.evaluate(input => window.__test__!.loadBlueprint(input), payload);
+  await clickEntity(page, loaded.entityIds[0]!);
 }
 
 async function readNaturalResourceIgnoreStock(page: Page): Promise<unknown> {
   return page.evaluate(() => {
-    const entity = window.__industrialPlannerAppHost?.workspace.editor?.document
-      .getSnapshot().entities["e2e-natural-resource-unloader"];
+    const entity = window.__test__!.entity("e2e-natural-resource-unloader");
     return entity?.config["storageSlotGroups[0].slots[0].ignoreStock"];
   });
 }

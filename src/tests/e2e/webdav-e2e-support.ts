@@ -2,8 +2,8 @@ import {
   expect,
   type APIRequestContext,
   type Page,
-} from "./canvas-lock-audit";
-import type { Browser } from "playwright/test";
+} from "./harness/fixture";
+import type { ManagedBrowser } from "./harness/fixture";
 
 export const WEBDAV_E2E_URL = "http://127.0.0.1:4175";
 export const WEBDAV_E2E_USERNAME = "industrial-planner-e2e";
@@ -343,7 +343,7 @@ export async function syncNow(page: Page): Promise<void> {
 }
 
 export async function writeRemoteAsset(options: {
-  readonly browser: Browser;
+  readonly browser: ManagedBrowser;
   readonly kind: WebDavRemoteAssetKind;
   readonly assetId: string;
   readonly value: unknown;
@@ -456,7 +456,7 @@ export async function writeRemoteAsset(options: {
 }
 
 export async function readRemoteAsset(options: {
-  readonly browser: Browser;
+  readonly browser: ManagedBrowser;
   readonly kind: WebDavRemoteAssetKind;
   readonly assetId: string;
 }): Promise<WebDavRemoteAssetSnapshot | null> {
@@ -543,7 +543,7 @@ function createAuthorizationHeaders(): Record<string, string> {
 }
 
 async function withRemoteControlPage<TResult>(
-  browser: Browser,
+  browser: ManagedBrowser,
   run: (page: Page) => Promise<TResult>,
 ): Promise<TResult> {
   const context = await browser.newContext({
@@ -554,6 +554,6 @@ async function withRemoteControlPage<TResult>(
     await page.goto("/");
     return await run(page);
   } finally {
-    await context.close();
+    await browser.closeContext(context);
   }
 }

@@ -1,4 +1,4 @@
-import { expect, test } from "playwright/test";
+import { expect, test } from "./harness/fixture";
 
 test("调试旧版求解器开关在刷新后切换引擎", async ({ page }) => {
   await page.goto("/");
