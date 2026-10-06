@@ -41,10 +41,16 @@ export function resolvePlannerTheoreticalArea(
     sinkFlows += entry.inputs.length * entry.deviceCount;
     sourceFlows += entry.outputs.length * entry.deviceCount;
   }
+  // 订正 2026-10-06（CI 的 9 项失败暴露）：plan 允许小数 deviceCount（按吞吐折算的台数，
+  // 实测 fixture 里有 0.5 / 0.75），直接累加会得到小数格数。该值乘 PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE
+  // 充当搜索面积上界时，被 continuationOutline 的正整数校验抛错（"面积上限必须是正整数。"），
+  // 整轮规划直接失败——task-sharding 5 项、task-checkpoint 2 项、checkpoint-memory 2 项即此因。
+  // 格数是整数物理量：实际必然放置整数台设备、整数条连接线，故对累加结果向上取整仍然是不超过实际的下界。
+  const resolvedDeviceCells = Math.ceil(deviceCells);
   // 设备之间的一条线同时是上游的输出与下游的输入，所以取两者较大者即可覆盖设备间物流，
   // 不再相加（相加会把同一条线算两次）；再补上对外接口：外部供给每个入口一条、目标产物每个出口一条。
-  const linkCells = Math.max(sinkFlows, sourceFlows) + plan.externalSupplies.length + plan.targets.length;
-  return { deviceCells, linkCells, totalCells: deviceCells + linkCells };
+  const linkCells = Math.ceil(Math.max(sinkFlows, sourceFlows) + plan.externalSupplies.length + plan.targets.length);
+  return { deviceCells: resolvedDeviceCells, linkCells, totalCells: resolvedDeviceCells + linkCells };
 }
 
 /** 默认建议上界的倍数：理论面积的三倍。用户显式指定上界时不使用它。 */
