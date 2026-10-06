@@ -57,15 +57,40 @@ const KNEE_GAIN = 1.1;
  * 验证并行度的资源上限（不是机型容量结论）：每个验证通道都要起一份 dense 仿真，
  * 这里按"单通道内存量级"设政策上限，避免在内存紧张的机器上把仿真堆到换页。
  */
-const VERIFICATION_PARALLELISM_CAP = 8;
+// AI-REMOVED 2026-10-07:
+// 上面这条注释描述的常量已删除，原文保留在下方 Original code 中。
+// Reason: 把验证并行度按"实测布局并发的一半、且不超过 8"截断，是与机型无关的政策常量，
+//         而且正是"CPU 只用到两成"的直接原因之一：搜索等验证时空出来的 20 多个核没人用。
+// Trigger: 用户要求完全释放 CPU 性能极限。Evidence: 28 逻辑核机器标定 27 通道，
+//         运行期只有 8 个验证通道可用，验证队列一深，整机占用掉到 4%~8% 并停摆（复现日志见 PR 说明）。
+// Replacement: 验证上限取实测布局容量本身（验证 Worker 与搜索 Worker 一样是"载入同一份 Registry
+//         的独立线程"，容量结论可复用），运行时按 planVerificationParallelism 与搜索动态分配。
+// Risk: 搜索空闲时验证并发可升到实测容量，内存占用随之上升（上限受同一份容量结论约束）。
+// Human Review: Required
+//
+// Original code:
+// const VERIFICATION_PARALLELISM_CAP = 8;
+// /**
+//  * 由实测布局并发上限派生验证并行度：验证单通道更重，取一半作为起点，至少 1、至多
+//  * VERIFICATION_PARALLELISM_CAP。显式覆盖（任务记录或 Host 选项）优先于本派生的值。
+//  */
+// export function deriveVerificationWorkers(concurrentWorkers: number): number {
+//   const measured = Number.isSafeInteger(concurrentWorkers) && concurrentWorkers >= 1 ? concurrentWorkers : 1;
+//   return Math.max(1, Math.min(VERIFICATION_PARALLELISM_CAP, Math.floor(measured / 2)));
+// }
 
 /**
- * 由实测布局并发上限派生验证并行度：验证单通道更重，取一半作为起点，至少 1、至多
- * VERIFICATION_PARALLELISM_CAP。显式覆盖（任务记录或 Host 选项）优先于本派生的值。
+ * 运行期验证并行度：搜索与验证共用同一台机器的算力，总和不超过实测容量。
+ *
+ * 2026-10-07：容量是"同时在跑的 CPU 线程数"，不是一个固定给某一阶段的配额。
+ * 搜索通道占满时验证只保留 1 路（保证候选仍能被验证、分片能解锁）；
+ * 搜索因为分片都在验证而领不到活时，空出来的算力全部交给验证，
+ * 于是"搜索→验证→解锁搜索"这条流水线不会留下整机空转的窗口。
  */
-export function deriveVerificationWorkers(concurrentWorkers: number): number {
-  const measured = Number.isSafeInteger(concurrentWorkers) && concurrentWorkers >= 1 ? concurrentWorkers : 1;
-  return Math.max(1, Math.min(VERIFICATION_PARALLELISM_CAP, Math.floor(measured / 2)));
+export function planVerificationParallelism(ceiling: number, activeSearchWorkers: number): number {
+  const limit = Number.isSafeInteger(ceiling) && ceiling >= 1 ? ceiling : 1;
+  const busy = Number.isSafeInteger(activeSearchWorkers) && activeSearchWorkers > 0 ? activeSearchWorkers : 0;
+  return Math.max(1, Math.min(limit, limit - busy));
 }
 
 /**
@@ -132,7 +157,9 @@ export async function calibratePlannerCapacity(probe: (options: PlannerCapacityP
     }
   }
   return { measuredAt: Date.now(), hardware: hints, conservativeLimit, points, concurrentWorkers,
-    verificationWorkers: deriveVerificationWorkers(concurrentWorkers),
+    // 2026-10-07：验证并行度的上限就是实测布局容量（见 planVerificationParallelism），
+    // 运行期再按搜索占用动态分配，不再固定成容量的一半。
+    verificationWorkers: concurrentWorkers,
     ...(gpuCrossoverCells === undefined ? {} : { gpuCrossoverCells }),
     ...(reportAdapter === undefined ? {} : { adapter: reportAdapter }), notes };
 }

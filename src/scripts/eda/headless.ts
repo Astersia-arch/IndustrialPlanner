@@ -84,6 +84,11 @@ export async function runHeadlessPlanner(args: readonly string[]): Promise<void>
       };
       const host = createBlueprintPlannerHost(session.workspace, { storage: null, roundLimit: () => remaining,
         worker: makeWorker(), workerFactory: makeWorker, shardSelection: { count, start, end },
+        // 2026-10-07：无头入口的仿真走 workerMode="runtime"，也就是**在调用线程里**跑 dense 仿真。
+        // 实测（28 核、标定平台 27 通道）：允许验证并发跟着空闲算力涨，主线程会被进程内仿真占住，
+        // 派发延迟随之上升，整机占用反而从 78.8% 掉到 51.6%，吞吐也更低。
+        // 浏览器侧每个验证都是独立 Worker，不受这条限制，因此这里显式钉成 1。
+        verificationConcurrency: 1,
       });
       let stopped = false, id: string | null = null, savedBlueprintId: string | null = null;
       const stop = () => { stopped = true; if (id !== null) host.actions.cancel(id); };

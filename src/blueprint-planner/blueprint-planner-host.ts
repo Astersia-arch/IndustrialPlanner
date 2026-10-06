@@ -26,8 +26,8 @@ import { blueprintRecognitionScene } from "./blueprint-scene";
 import { identifyBlueprintNetwork } from "./blueprint-network";
 import { assertBlueprintPreserved } from "./blueprint-constraints";
 import { browserPlannerResources, DEFAULT_PLANNER_CONCURRENCY_POLICY, observePlannerPressure, plannerProbeCeiling,
-  PlannerAutomaticConcurrency, PLANNER_CONSERVATIVE_START, type PlannerConcurrencySample } from "./automatic-concurrency";
-import { calibratePlannerCapacity, deriveVerificationWorkers } from "./capacity-calibration";
+  PlannerAutomaticConcurrency, type PlannerConcurrencySample } from "./automatic-concurrency";
+import { calibratePlannerCapacity, planVerificationParallelism } from "./capacity-calibration";
 import { measureGpuCrossover, DEFAULT_GPU_CROSSOVER_SCALES } from "./gpu-crossover";
 import { probeBrowserPlannerCapacity } from "./browser-capacity-probe";
 import { loadPlannerCapacity, plannerCapacitySignature, savePlannerCapacity } from "@/shared/storage/planner-capacity-storage";
@@ -387,6 +387,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     // Trigger: 评审 P2 —— 默认验证并发固定为 1，"并行验证"名存实亡；待验证数到 2 就暂停搜索。
     // Evidence: 上游 queueVerification 以 verificationTail.then(...) 串成单链，末尾 await verificationTail。
     // Replacement: 下方 verificationQueue / startVerifications 有界并行池；并行度见 verificationParallelism。
+    // 订正 2026-10-07：并行度不再是固定值 verificationParallelism，改为按实测容量的动态分配
+    // （verificationCeiling + planVerificationParallelism），见下方 2026-10-07 的订正说明。
     // Risk: 取消与暂停必须同时结算验证与搜索。Human Review: Required
     //
     // Original code:
@@ -403,15 +405,19 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     //
     // 订正 2026-10-06（评审 P2）：并行度此前既没有测量、也没有运行时自适应，而"任务内记录优先"
     // 所依赖的 calibratedVerifiers 全仓库无人写入，实际恒为 1。容量结论只能来自本机标定，
-    // 任务文件是可移植产物、不应携带机型容量；这里由实测布局并发按 deriveVerificationWorkers 派生。
+    // 任务文件是可移植产物、不应携带机型容量；这里由实测布局并发给出上限。
     const capacityHints = options.resourceHints ?? browserPlannerResources();
     const storedCapacity = loadPlannerCapacity();
     const calibratedCapacity = storedCapacity !== null
       && storedCapacity.signature === plannerCapacitySignature(capacityHints.hardwareConcurrency, capacityHints.deviceMemory)
       ? storedCapacity.report : null;
-    const verificationParallelism = Math.max(1, Math.min(options.verificationConcurrency
-      ?? calibratedCapacity?.verificationWorkers
-      ?? (calibratedCapacity ? deriveVerificationWorkers(calibratedCapacity.concurrentWorkers) : PLANNER_CONSERVATIVE_START), 64));
+    // 订正 2026-10-07：验证通道数不再是一个固定配额，而是"搜索没在用、但机器有的算力"。
+    // 旧实现把上限固定成"实测容量的一半、且不超过 8"，于是搜索等验证时空出来的二十来个核
+    // 无人使用；实测 28 核机器占用掉到 4%~8% 并停摆 20 秒以上。
+    // 上限取实测布局容量：验证 Worker 与搜索 Worker 一样是独立线程、各载入同一份 Registry，
+    // 同一份容量结论可以复用；运行期再按 planVerificationParallelism 与搜索分成。
+    const verificationCeiling = Math.max(1, Math.min(options.verificationConcurrency
+      ?? calibratedCapacity?.concurrentWorkers ?? plannerProbeCeiling(capacityHints), 64));
     const verificationQueue: Array<() => Promise<void>> = [];
     let verificationRunning = 0;
     let verificationDrained: (() => void) | null = null;
@@ -419,7 +425,9 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       if (verificationRunning === 0 && verificationQueue.length === 0) { verificationDrained?.(); verificationDrained = null; }
     };
     const startVerifications = () => {
-      while (verificationRunning < verificationParallelism && verificationQueue.length > 0) {
+      // 每次启动都重新分配：搜索通道一让出算力，验证就能立刻吃掉，反之亦然。
+      while (verificationRunning < planVerificationParallelism(verificationCeiling, active.size)
+        && verificationQueue.length > 0) {
         const run = verificationQueue.shift()!;
         verificationRunning++;
         void run().finally(() => { verificationRunning--; startVerifications(); verificationIdle(); });
@@ -616,18 +624,36 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         const stopPressure = observePlannerPressure(value => { pressure = value; });
         const timer = setInterval(() => {
           const at = performance.now();
-          const lagMs = typeof document !== "undefined" && document.visibilityState !== "visible" ? 0 : Math.max(0, at - expected);
+          // 订正 2026-10-07：交互保护只在真有可见界面的宿主里成立。Node（无头 CLI 与测试）没有界面
+          // 要保护，而进程内仿真会长时间占用同一个线程，把这种延迟当成"用户卡住"只会白白撤掉算力。
+          // 原式只区分标签页是否可见，没有考虑根本不存在的 document：
+          // const lagMs = typeof document !== "undefined" && document.visibilityState !== "visible" ? 0 : Math.max(0, at - expected);
+          const uiHost = typeof document !== "undefined" && document.visibilityState === "visible";
+          const lagMs = uiHost ? Math.max(0, at - expected) : 0;
           expected = at + 1000;
           target = controller.observe({ at, lagMs, pressure, pendingVerifications, activeWorkers: task.activeShards.size,
             evaluations: point.evaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0) });
-          retire(); wake?.();
+          retire();
+          // 2026-10-07：容量每秒重算一次，验证池必须跟着重算——否则搜索缩容后
+          // 让出来的算力要等到下一次验证完成才会被用上。
+          startVerifications();
+          wake?.();
         }, 1000);
         stopMonitoring = () => { clearInterval(timer); stopPressure(); };
       }
       const claim = () => {
-        // 队列有界，背压只暂停新批次；上限跟随验证并行度，避免并行验证时把搜索饿死，
-        // 也避免验证串行时把队列堆到搜索并发那么大（评审 P2：并行度为 1 时阈值退化成 2，搜索通道闲置）。
-        if (pendingVerifications >= Math.max(2, Math.min(target, verificationParallelism * 2))) return null;
+        // AI-REMOVED 2026-10-07:
+        // Reason: 用"待验证数达到上限"来给整轮搜索加全局闸门，会让 CPU 在最需要算力的时候整轮空转。
+        // Trigger: 用户要求完全释放 CPU 性能极限。Evidence: 28 核机器（标定平台 27 通道）实测，
+        //         验证队列一满，所有搜索通道立刻停止领批，占用从 94% 掉到 4%，提案吞吐归零 20 秒以上，
+        //         全程平均占用只有 42%（复现日志见 PR 说明）。
+        // Replacement: 队列长度本身受分片数约束（每个分片最多挂 1 个待验证候选，总分片 ≤ 32），
+        //         不需要全局闸门；领批只跳过正在验证的分片，其余分片照常搜索。
+        // Risk: 待验证候选峰值从"验证并行度×2"上升到分片数，内存占用随之上升（上限为 32 个候选）。
+        // Human Review: Required
+        //
+        // Original code:
+        // if (pendingVerifications >= Math.max(2, Math.min(target, verificationParallelism * 2))) return null;
         for (let step = 0; step < parallel.count; step++) {
           const index = (parallel.nextShard + step) % parallel.count;
           if (!owned.includes(index) || leased.has(index) || verifying.has(index)) continue;

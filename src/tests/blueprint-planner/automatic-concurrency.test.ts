@@ -147,22 +147,41 @@ it("标定值不被与机型无关的常量削顶", () => {
   expect(new PlannerAutomaticConcurrency(40, 0, 0).maximum).toBe(40);
 });
 
-it("压力持续时当前占用降低 20%，偶发一次延迟不收缩", () => {
-  const control = new PlannerAutomaticConcurrency(8, 0, 0);
-  expect(drive(control, 5, 100).at(-1)).toBe(6);
-  // 窗口未满的单次卡顿不收缩。
-  expect(control.observe({ at: 21_000, evaluations: 2_000, activeWorkers: 6, pendingVerifications: 0, lagMs: 200 })).toBe(6);
-  // 窗口跑满且持续卡顿：6 → 4（保留 80%）。
-  expect(control.observe({ at: 24_000, evaluations: 2_100, activeWorkers: 6, pendingVerifications: 0, lagMs: 200 })).toBe(4);
+it("交互保护：普通延迟不再撤掉算力，只有持续极端延迟才退让", () => {
+  // 订正 2026-10-07：旧实现把 lagMs >= 100 当"算力到顶"，于是控制律一边把 CPU 用到 94%，
+  // 一边把自己刚标定出来的平台按每窗 20% 撤掉（28 核机器实测 27 → 21 → 16 → … → 4，
+  // 整机占用从 94% 掉到 20% 以下）。占满 CPU 带来的主线程延迟是结果，不是容量上限。
+  const control = new PlannerAutomaticConcurrency(8, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 6 });
+  expect(control.target).toBe(6);
+  let at = 0, evaluations = 0;
+  for (let window = 0; window < 4; window++) {
+    evaluations += 600;
+    at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
+    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0 })).toBe(6);
+  }
+  for (const lagMs of [120, 250, 400, 500]) {
+    evaluations += 100;
+    at += 1_000;
+    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs })).toBe(6);
+  }
+  // 持续到明显影响交互（>= uiGuardMs）才退让：6 → 4（保留 80%）。
+  evaluations += 100;
+  at += 1_000;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 700 })).toBe(6);
+  evaluations += 100;
+  at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 700 })).toBe(4);
   // 冷却期内不再调整。
-  expect(control.observe({ at: 25_000, evaluations: 2_200, activeWorkers: 4, pendingVerifications: 0, lagMs: 300 })).toBe(4);
+  evaluations += 100;
+  at += 1_000;
+  expect(control.observe({ at, evaluations, activeWorkers: 4, pendingVerifications: 0, lagMs: 900 })).toBe(4);
 });
 
 it("小上限时至少退让一个通道，不会卡死在同一占用", () => {
   const control = new PlannerAutomaticConcurrency(2, 0, 0);
   expect(drive(control, 2, 100).at(-1)).toBe(2);
-  expect(control.observe({ at: 9000, evaluations: 400, activeWorkers: 2, pendingVerifications: 0, lagMs: 150 })).toBe(2);
-  expect(control.observe({ at: 12_000, evaluations: 420, activeWorkers: 2, pendingVerifications: 0, lagMs: 150 })).toBe(1);
+  expect(control.observe({ at: 9000, evaluations: 400, activeWorkers: 2, pendingVerifications: 0, lagMs: 700 })).toBe(2);
+  expect(control.observe({ at: 12_000, evaluations: 420, activeWorkers: 2, pendingVerifications: 0, lagMs: 700 })).toBe(1);
 });
 
 it("退让不会把通道降到 0，否则派发循环会直接结束整轮计算", () => {
@@ -172,30 +191,34 @@ it("退让不会把通道降到 0，否则派发循环会直接结束整轮计�
   // 此时每窗速率恒为 0，控制律也再没有机会爬回来。正式规划正是从 target = 1 起步的。
   const control = new PlannerAutomaticConcurrency(8, 0, 0);
   expect(control.target).toBe(1);
-  expect(control.observe({ at: 1_000, evaluations: 100, activeWorkers: 1, pendingVerifications: 0, lagMs: 200 })).toBe(1);
-  expect(control.observe({ at: 2_000, evaluations: 200, activeWorkers: 1, pendingVerifications: 0, lagMs: 200 })).toBe(1);
+  expect(control.observe({ at: 1_000, evaluations: 100, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
+  expect(control.observe({ at: 2_000, evaluations: 200, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
   // 窗口跑满且持续卡顿：退让后仍保留 1 个通道。
-  expect(control.observe({ at: 4_000, evaluations: 400, activeWorkers: 1, pendingVerifications: 0, lagMs: 200 })).toBe(1);
+  expect(control.observe({ at: 4_000, evaluations: 400, activeWorkers: 1, pendingVerifications: 0, lagMs: 700 })).toBe(1);
   // 压力消失、冷却结束后仍能重新加容，不会永久卡在 1。
   expect(control.observe({ at: 9_000, evaluations: 500, activeWorkers: 1, pendingVerifications: 0, lagMs: 0 })).toBe(2);
 });
 
-it("CPU 压力信号可独立触发收缩，fair 不触发", () => {
+it("系统压力只把交互保护门槛减半，不能单独把算力撤下来", () => {
+  // 订正 2026-10-07：Chrome 的 PressureObserver 在算力被主动占满时会长期报告 critical，
+  // 把它单独当退让理由等于自己撤销自己的容量结论；它现在只把延迟门槛减半。
   const control = new PlannerAutomaticConcurrency(8, 0, 0, { ...DEFAULT_PLANNER_CONCURRENCY_POLICY, calibratedWorkers: 6 });
-  expect(control.maximum).toBe(6);
-  let at = 0, evaluations = 0, target = control.target;
-  for (let index = 0; index < 6; index++) {
-    evaluations += 100 * target;
+  let at = 0, evaluations = 0;
+  for (let window = 0; window < 6; window++) {
+    evaluations += 600;
     at += DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs;
-    target = control.observe({ at, evaluations, activeWorkers: target, pendingVerifications: 0, lagMs: 0 });
+    expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0 })).toBe(6);
   }
-  expect(target).toBe(6);
-  // 窗口未满的单次卡顿不收缩。
-  expect(control.observe({ at: at + 500, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0, pressure: "fair" })).toBe(6);
-  expect(control.observe({ at: at + 1000, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(6);
-  // 窗口跑满且持续压力：6 → 4（保留 80%）。
-  expect(control.observe({ at: at + DEFAULT_PLANNER_CONCURRENCY_POLICY.windowMs, evaluations, activeWorkers: 6,
-    pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(4);
+  evaluations += 100; at += 500;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 0, pressure: "critical" })).toBe(6);
+  // critical 门槛减半（300ms）：200ms 仍不触发。
+  evaluations += 100; at += 500;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 200, pressure: "critical" })).toBe(6);
+  evaluations += 100; at += 1_500;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 400, pressure: "critical" })).toBe(6);
+  // 窗口跑满且持续超过减半门槛：6 → 4（保留 80%）。
+  evaluations += 100; at += 1_500;
+  expect(control.observe({ at, evaluations, activeWorkers: 6, pendingVerifications: 0, lagMs: 400, pressure: "critical" })).toBe(4);
 });
 
 it("没有吞吐收益时退回探测前的并发，不随冷却反复上探", () => {

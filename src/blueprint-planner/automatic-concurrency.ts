@@ -67,6 +67,16 @@ export interface PlannerConcurrencyPolicy {
   readonly cooldownMs: number;
   /** 压力观察的采样间隔。 */
   readonly pressureSampleIntervalMs: number;
+  /**
+   * 交互保护门槛：主线程事件循环延迟达到该值才算"用户已经明显卡住"，才允许退让。
+   *
+   * 订正 2026-10-07：这个门槛以前是写死的 100ms，而且被当成"算力到顶"的判据。实测（28 逻辑核
+   * 机器、标定平台 27 通道）把 CPU 占满本身就会让主线程延迟超过 100ms，于是控制律一边把算力
+   * 用到 94%，一边把自己刚测出来的平台按每窗 20% 撤到 4 通道，整机占用从 94% 掉到 20% 以下，
+   * 验证队列一满还会整轮停摆（复现日志见 PR 说明）。占用算力带来的延迟是**结果**，不是容量
+   * 上限；只有持续到明显影响交互的极端延迟才值得退让，系统压力信号只把这个门槛减半。
+   */
+  readonly uiGuardMs: number;
 }
 
 export const DEFAULT_PLANNER_CONCURRENCY_POLICY: PlannerConcurrencyPolicy = Object.freeze({
@@ -78,6 +88,7 @@ export const DEFAULT_PLANNER_CONCURRENCY_POLICY: PlannerConcurrencyPolicy = Obje
   gainThreshold: 1.05,
   cooldownMs: 4_000,
   pressureSampleIntervalMs: 1_000,
+  uiGuardMs: 600,
 });
 
 /**
@@ -85,6 +96,11 @@ export const DEFAULT_PLANNER_CONCURRENCY_POLICY: PlannerConcurrencyPolicy = Obje
  * 无头客户端实测长期停在 1~2 个 Worker（CPU 占用约 20%）。
  * 现策略按用户确认的算力规则执行：窗口跑满后把「剩余空间 × rampFraction」一次分下去，
  * 压力信号持续时把当前占用相对降低 shedFraction；显式指定并发数时该数值就是目标。
+ *
+ * 订正 2026-10-07（用户要求"完全释放 CPU 性能极限"）：上面"压力信号"的判据不成立——
+ * 主线程延迟 ≥100ms 在 CPU 被占满时是必然结果，用它退让等于自己撤销自己测出来的容量。
+ * 退让判据已改为 uiGuardMs（默认 600ms）的持续极端延迟，详见该字段说明；
+ * 爬升、探测、无收益回退与显式并发数优先的规则不变。
  */
 export class PlannerAutomaticConcurrency {
   target = 1;
@@ -162,7 +178,11 @@ export class PlannerAutomaticConcurrency {
   }
 
   observe(sample: PlannerConcurrencySample): number {
-    const pressured = sample.lagMs >= 100 || sample.pressure === "serious" || sample.pressure === "critical";
+    // 订正 2026-10-07：退让只看"交互保护"信号，不再把普通的主线程延迟当作算力到顶。
+    // 占满 CPU 必然推迟主线程调度（27 通道时实测延迟数百毫秒），把 100ms 当压力信号
+    // 会让控制律每 4 秒砍掉 20% 并发，一路把自己测出来的平台撤掉；系统压力只把门槛减半。
+    const guardMs = sample.pressure === "critical" ? this.policy.uiGuardMs / 2 : this.policy.uiGuardMs;
+    const pressured = sample.lagMs >= guardMs;
     const elapsed = sample.at - this.windowStartedAt;
     if (elapsed < this.policy.windowMs) {
       // 窗口内只累计卡顿信号；容量调整必须等窗口跑满，避免用瞬时抖动改容量。

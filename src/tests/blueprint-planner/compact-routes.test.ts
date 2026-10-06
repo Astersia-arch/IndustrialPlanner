@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import type { BlueprintPlannerRequest } from "@/domain/blueprint-planner";
+import type { WorldEntity } from "@/domain/document/world-document";
 import { createRegistryContract } from "@/registry";
 import { PlannerCandidateError } from "@/blueprint-planner/model";
 import { PlannerRouter } from "@/blueprint-planner/router";
@@ -40,7 +41,7 @@ it("压缩未变短时完整回滚：线路记录、占用索引与实体都不�
   // 短路条件挡在压缩分支之外（原注释也承认这点），因此从未真正走到回滚。
   // 现在用一排设备当实体墙：穿越线路被迫绕远（超过曼哈顿+4 才进入压缩分支），
   // 而墙不在该线路的格子集合里、清格不会移除它，所以重排后长度相同 => 走"未变短"回滚分支。
-  const wall = Array.from({ length: 6 }, (_, index) => ({ id: `wall-${index}`, definitionId: "storager_1",
+  const wall: WorldEntity[] = Array.from({ length: 6 }, (_, index) => ({ id: `wall-${index}`, definitionId: "storager_1",
     position: { x: 6, y: 1 + index }, rotation: 0, config: {}, tags: [] }));
   const boundaryWithWall = { minimumX: 0, minimumY: 0, maximumX: 11, maximumY: 8, escapeLength: 0 };
   const from: PlannerPort = { ...source, entityId: "cross-from", cell: { x: 0, y: 3 }, outside: { x: 1, y: 3 }, edge: "EAST" };

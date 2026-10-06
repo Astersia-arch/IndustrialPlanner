@@ -44,12 +44,16 @@ export interface PlannerCapacityReport {
   /** 标定得到的并发上限：吞吐膝盖点。 */
   readonly concurrentWorkers: number;
   /**
-   * 由实测并发上限派生的验证并行度。
+   * 验证并行度的**上限**（运行期按搜索占用动态分配实际并发）。
    *
    * 2026-10-06（评审 P2）：验证跑的是一次完整 dense 仿真，比布局生成重得多，且此前从未被测量或写入，
    * 于是产品里验证池恒为 1，"并行验证"名存实亡。仿真的并发能力不在容量标定测量范围内
    * （见 capacity-probe.ts 的说明：给仿真挂满通道会因内存争用测出假平台），
-   * 因此这里按实测布局容量派生一个保守起点，档位含义见 deriveVerificationWorkers。
+   * 因此这里按实测布局容量给定上限。
+   *
+   * 订正 2026-10-07：此前这个上限是"实测容量的一半、且不超过 8"（旧 deriveVerificationWorkers），
+   * 实测证明该常量会让搜索等验证时空出来的 20 多个核无人使用，整机占用掉到 4%~8%；
+   * 现在上限就是实测容量本身，实际并发由 planVerificationParallelism 与搜索动态分配。
    */
   readonly verificationWorkers?: number;
   /** 标定得到的 GPU 布线交叉点（路由边界格数）；未测得时为 undefined。 */
