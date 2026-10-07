@@ -394,6 +394,8 @@ export class GenericDeviceSprite extends BaseRenderSprite {
   private readonly primaryOutputPlusSprites: Sprite[] = [];
   private readonly primaryOutputItemIconSprites: Sprite[] = [];
   private currentPrimaryOutputItemIds: string[] | null = null;
+  /** 各图标位置正在加载或已加载的纹理 key，与当前配方产物分开记录。 */
+  private readonly primaryOutputIconTextureKeys: Array<string | null> = [];
 
   public constructor(
     entityId: string,
@@ -1762,9 +1764,22 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       || this.currentPrimaryOutputItemIds.length !== itemIds.length
       || this.currentPrimaryOutputItemIds.some((id, i) => id !== itemIds[i])
     ) {
-      this.currentPrimaryOutputItemIds = itemIds;
+      this.currentPrimaryOutputItemIds = [...itemIds];
+      // AI-REMOVED 2026-10-07:
+      // Reason: 重置请求版本不能识别旧纹理，还会使快速来回切换时的旧请求复用版本号。
+      // Trigger: 粉碎机产物切换为蓝铁粉末后仍显示赤铜粉末图标。
+      // Evidence: syncPrimaryOutputItemIcon 原缓存判断只比较已更新的产物 ID，未核对实际纹理 key。
+      // Replacement: syncPrimaryOutputItemIcon 按纹理 key 更新图标，请求版本保持递增；下方使已移除位置的请求失效。
+      // Risk: Low - 图标切换期间暂时隐藏旧纹理。
+      // Human Review: Required
+      //
+      // Original code:
       // 重置 item icon 加载版本，触发重新加载
-      this.primaryOutputIconLoadVersions = itemIds.map(() => 0);
+      // this.primaryOutputIconLoadVersions = itemIds.map(() => 0);
+      for (let index = itemIds.length; index < this.primaryOutputIconTextureKeys.length; index += 1) {
+        this.primaryOutputIconTextureKeys[index] = null;
+        this.primaryOutputIconLoadVersions[index] = (this.primaryOutputIconLoadVersions[index] ?? 0) + 1;
+      }
     }
 
     let xOffset = 0;
@@ -1841,12 +1856,15 @@ export class GenericDeviceSprite extends BaseRenderSprite {
     sprite.anchor.set(0.5);
 
     // 如果当前位置已有正确纹理，直接显示
-    if (sprite.texture !== Texture.EMPTY
-      && this.currentPrimaryOutputItemIds?.[index] === itemId
-    ) {
-      sprite.visible = true;
+    // AI-CORRECTION 2026-10-07: 按实际请求的纹理 key 判断缓存；相同 key 正在加载时复用请求并保持图标隐藏。
+    if (this.primaryOutputIconTextureKeys[index] === textureKey) {
+      sprite.visible = sprite.texture !== Texture.EMPTY;
       return;
     }
+
+    this.primaryOutputIconTextureKeys[index] = textureKey;
+    sprite.texture = Texture.EMPTY;
+    sprite.visible = false;
 
     // 启动异步加载
     const activeVersion = loadVersion + 1;
@@ -1856,6 +1874,7 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       if (
         this.disposed
         || this.primaryOutputIconLoadVersions[index] !== activeVersion
+        || this.primaryOutputIconTextureKeys[index] !== textureKey
         || this.currentPrimaryOutputItemIds?.[index] !== itemId
       ) {
         return;
@@ -1864,9 +1883,15 @@ export class GenericDeviceSprite extends BaseRenderSprite {
       sprite.texture = createInsetItemIconTexture(texture);
       sprite.visible = true;
     }).catch(() => {
-      if (this.disposed || this.primaryOutputIconLoadVersions[index] !== activeVersion) {
+      if (
+        this.disposed
+        || this.primaryOutputIconLoadVersions[index] !== activeVersion
+        || this.primaryOutputIconTextureKeys[index] !== textureKey
+        || this.currentPrimaryOutputItemIds?.[index] !== itemId
+      ) {
         return;
       }
+      this.primaryOutputIconTextureKeys[index] = null;
       sprite.visible = false;
     });
   }

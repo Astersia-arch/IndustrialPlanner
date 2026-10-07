@@ -408,9 +408,14 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
                   : t("eda.autoConcurrency")}
               </output></label>
               */}
-              <label className={styles.parallel}><input type="checkbox" checked={controller.options.concurrency === "auto"}
-                onChange={event => controller.updateOptions({ concurrency: event.target.checked ? "auto" : 1 })} />
-                <span>{t("eda.concurrency")}</span></label>
+              <div className={styles.acceleration}>
+                <label className={styles.parallel}><input type="checkbox" checked={controller.options.concurrency === "auto"}
+                  onChange={event => controller.updateOptions({ concurrency: event.target.checked ? "auto" : 1 })} />
+                  <span>{t("eda.concurrency")}</span></label>
+                <label className={styles.parallel}><input type="checkbox" checked={controller.options.gpu === true}
+                  onChange={event => controller.updateOptions({ gpu: event.target.checked })} />
+                  <span>{t("eda.gpu")}</span></label>
+              </div>
               {!controller.blueprintRequest ? <label><span>{t("eda.converterStartup")}</span>
                 <select disabled={progress !== null} value={controller.options.converterStartup ?? "reject"}
                   onChange={event => controller.updateOptions({ converterStartup: event.target.value as "manual" | "tank" | "reject" })}>
@@ -473,7 +478,7 @@ export const BlueprintPlannerDialog = observer(function BlueprintPlannerDialog({
             {progress?.status === "running" ? <button type="button" onClick={() => act(() => planner?.actions.cancel(progress.taskId))}>{t("eda.pause")}</button> : null}
             {progress !== null && plan !== null && !busy ? <button type="button" disabled={!validRoundSettings || anyBusy}
               onClick={() => act(() => planner?.actions.continuePlanning(progress.taskId,
-                controller.options.evaluationsPerRound, controller.options.concurrency))}>{t("eda.continue")}</button> : null}
+                controller.options.evaluationsPerRound, controller.options.concurrency, controller.options.gpu))}>{t("eda.continue")}</button> : null}
             {result !== null ? <>
               <button type="button" onClick={() => {
                 appHost.blueprintPreview.open({ ...result.blueprint, parentFolderId: result.folderId }, { canDelete: false });

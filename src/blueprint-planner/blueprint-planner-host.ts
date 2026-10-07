@@ -66,6 +66,10 @@ export interface PlannerHostOptions {
   readonly resourceHints?: PlannerResourceHints;
   readonly worker?: Pick<PlannerWorkerClient, "build" | "dispose">;
   readonly workerFactory?: () => Pick<PlannerWorkerClient, "build" | "dispose">;
+  /** 内部对照入口；不新增产品设置。默认自动并发下增加一个硬件 GPU 通道。 */
+  // 订正 2026-10-07：产品已拆分 gpu 选项；此内部入口仅可禁用 GPU，不再依赖 CPU 自动并发。
+  readonly gpuLayout?: boolean;
+  readonly gpuWorkerFactory?: () => Pick<PlannerWorkerClient, "build" | "dispose" | "gpuAvailable">;
   readonly storage?: typeof edaTaskStorage | null;
   readonly roundLimit?: () => number;
   /** 并行验证上限；默认 4。各通道是独立仿真 Worker，可真正并行。 */
@@ -109,9 +113,19 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const workerFor = (index: number) => {
     const existing = workers.get(index);
     if (existing) return existing;
-    // 2026-10-06：GPU 通道不再只挂在 1 号 Worker 上。算力利用率要求并发提高，
-    // 单通道 GPU 会让其余 Worker 纯 CPU 跑；每个 Worker 各持有自己的设备与流水线，允许同时在途。
-    const created = workers.size === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient(true);
+    // AI-REMOVED 2026-10-07（合并上游 4fefd5f0）:
+    // Reason: 上游把 GPU 从「每通道 GPU 布线」改为「独立 GPU 布局批次」，仅 1 号通道持有设备。
+    // Trigger: 4fefd5f0「增加 GPU 布局加速」；Evidence: worker-runtime.ts 的归档块与新增的 gpu-layout.ts。
+    // Replacement: 下方的 index === 0 ? worker : ... new PlannerWorkerClient()。
+    // Risk: GPU 通道数由「每通道一个」降为「一个专用通道」，本地「多通道 GPU 布线」的利用率结论随之失效；
+    //       本分支标定出的 gpuCrossoverCells 也失去消费方（见 worker-runtime.ts 的订正）。
+    // Human Review: Required
+    // Original code:
+    //     // 2026-10-06：GPU 通道不再只挂在 1 号 Worker 上。算力利用率要求并发提高，
+    //     // 单通道 GPU 会让其余 Worker 纯 CPU 跑；每个 Worker 各持有自己的设备与流水线，允许同时在途。
+    //     const created = workers.size === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient(true);
+    // 2026-10-07：普通通道全部保留 CPU；GPU 通道独立领取同一队列的分片。
+    const created = index === 0 ? worker : options.workerFactory?.() ?? new PlannerWorkerClient();
     workers.set(index, created);
     return created;
   };
@@ -399,6 +413,9 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     let wake: (() => void) | null = null;
     let stopMonitoring = () => {};
     const active = new Map<number, Promise<void>>();
+    let gpuWorker: Pick<PlannerWorkerClient, "build" | "dispose" | "gpuAvailable"> | null = null;
+    let gpuShard: number | null = null, gpuLaneEvaluations = 0;
+    const cpuActiveCount = () => active.size - Number(active.has(-1));
     const live = (phase?: BlueprintPlannerProgress["phase"], message?: string) => {
       const inFlight = [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0);
       const total = point.evaluations + inFlight;
@@ -483,7 +500,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     const startVerifications = () => {
       // 验证先领取已释放的 CPU 额度；搜索和验证的在途数量之和不超过同一个上限。
       while (!task.abort.signal.aborted && verificationQueue.length > 0
-        && verificationActive.size < verificationTarget && active.size + verificationActive.size < maximum) {
+        && verificationActive.size < verificationTarget && cpuActiveCount() + verificationActive.size < maximum) {
         const { shard, portfolio } = verificationQueue.shift()!;
         const started = performance.now();
         const running = verify(shard, portfolio).then(() => {
@@ -614,6 +631,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             shard.pendingCandidate = candidate;
             point.attempt++;
             point.evaluations += used;
+            if (shard.index === gpuShard) gpuLaneEvaluations += used;
             remaining -= used;
             zeroAttempts = used === 0 ? zeroAttempts + 1 : 0;
             task.liveEvaluations.delete(shard.index);
@@ -675,6 +693,10 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     };
     try {
       const concurrency = task.file.request.options.concurrency ?? 1;
+      if (task.file.request.options.gpu === true && owned.length > 1 && options.gpuLayout !== false && (options.gpuWorkerFactory
+        || (!options.worker && !options.workerFactory && typeof navigator !== "undefined" && "gpu" in navigator))) {
+        gpuWorker = options.gpuWorkerFactory?.() ?? new PlannerWorkerClient(true);
+      }
       maximum = Math.min(owned.length, concurrency === "auto"
         ? plannerConcurrencyLimit(options.resourceHints ?? browserPlannerResources()) : concurrency);
       const capacityKey = `${maximum}/${plannerRequestKey(task.file.request)}`;
@@ -711,8 +733,11 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           const uiHost = typeof document !== "undefined" && document.visibilityState === "visible";
           const lagMs = uiHost ? Math.max(0, at - expected) : 0;
           expected = at + 1000;
-          target = controller.observe({ at, lagMs, pressure, pendingVerifications, activeWorkers: task.activeShards.size,
-            evaluations: point.evaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0),
+          target = controller.observe({ at, lagMs, pressure, pendingVerifications,
+            activeWorkers: task.activeShards.size - Number(gpuShard !== null && task.activeShards.has(gpuShard)),
+            // GPU 代理次数不得诱导 CPU 缩容；只测 CPU 分片自己的评价与忙碌时间。
+            evaluations: point.evaluations - gpuLaneEvaluations + [...task.liveEvaluations.values()].reduce((sum, value) => sum + value, 0)
+              - (gpuShard === null ? 0 : task.liveEvaluations.get(gpuShard) ?? 0),
             busyMs: searchBusyMs + [...searchStarted.values()].reduce((sum, value) => sum + at - value, 0) });
           verificationTarget = verificationController!.observe({ at, lagMs, pressure, pendingVerifications,
             activeWorkers: verificationActive.size, evaluations: completedVerifications,
@@ -721,7 +746,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         }, 1000);
         stopMonitoring = () => { clearInterval(timer); stopPressure(); };
       }
-      const claim = () => {
+      const claim = (gpu = false) => {
         // 队列有界，背压只暂停新批次；不把串行验收误报为整机 CPU 满载。
         // 订正 2026-10-06：验证已可并行；高水位跟随共享上限，两个阶段分别测量吞吐。
         if (pendingVerifications >= Math.max(2, maximum)) return null;
@@ -730,7 +755,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           if (!owned.includes(index) || leased.has(index) || verifying.has(index)) continue;
           const shard = parallel.shards[index]!;
           if (available <= 0 && shard.pendingCandidate === null) continue;
-          const quota = shard.pendingCandidate !== null ? 0 : Math.min(available, point.best ? 5_000 : 20_000);
+          const quota = shard.pendingCandidate !== null ? 0 : Math.min(available, point.best && !gpu ? 5_000 : 20_000);
           available -= quota;
           leased.add(index);
           parallel.nextShard = (index + 1) % parallel.count;
@@ -741,20 +766,28 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       // 同一批预算、分片租约与验证队列由主线程统一管理；缩容只阻止后续领批。
       while (!task.abort.signal.aborted) {
         startVerifications(); retire();
-        for (let index = 0; index < target; index++) {
-          if (active.size + verificationActive.size >= maximum) break;
+        // 初排构造主要是 CPU 工作；已有可用种子后，GPU 专注不同尺寸上的独立续搜。
+        for (const index of [...(gpuWorker?.gpuAvailable && point.best ? [-1] : []), ...Array.from({ length: target }, (_, index) => index)]) {
+          if (index >= 0 && cpuActiveCount() + verificationActive.size >= maximum) break;
           if (active.has(index)) continue;
-          const job = claim();
+          const job = claim(index === -1);
           if (job === null) break;
-          searchStarted.set(index, performance.now());
-          const running = lane(job.shard, job.quota, workerFor(index)).then(used => {
+          if (index === -1) gpuShard = job.shard.index;
+          else searchStarted.set(index, performance.now());
+          // AI-REMOVED 2026-10-07:
+          // Reason: 结算必须与 commit 同步，否则异步唤醒间隙会污染 CPU 吞吐样本。
+          // Trigger: GPU 独立通道；Evidence: lane 内 commit 后仍有 await。
+          // Replacement: commit 中累计 gpuLaneEvaluations；Risk: Low；Human Review: Required
+          // Original code: const initialEvaluations = job.shard.evaluations;
+          const running = lane(job.shard, job.quota, index === -1 ? gpuWorker! : workerFor(index)).then(used => {
             // 2026-10-02：await 期间其他 Worker 会领取额度；必须在 await 返回后读取最新 available。
             available += job.quota - used;
           }).catch(error => {
             if (interruption === null) interruption = error;
             task.abort.abort();
           }).finally(() => {
-            searchBusyMs += performance.now() - searchStarted.get(index)!;
+            if (index === -1) gpuShard = null;
+            else searchBusyMs += performance.now() - searchStarted.get(index)!;
             searchStarted.delete(index);
             leased.delete(job.shard.index); active.delete(index); retire(); wake?.();
           });
@@ -813,6 +846,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       if (active.size > 0 || pendingVerifications > 0) task.abort.abort();
       await Promise.allSettled(active.values());
       await settleVerifications();
+      gpuWorker?.dispose();
       for (const [index, current] of workers) if (index > 0) { current.dispose(); workers.delete(index); }
       await settle(task);
     }
@@ -917,7 +951,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   //           ? "计算中断，检查点已保留，可以继续计算。" : errorMessage(error) });
   //     } finally { settle(task); }
   //   }
-  function launch(task: PlannerTask, evaluations: number, concurrency: number | "auto" = task.file.request.options.concurrency ?? 1): void {
+  function launch(task: PlannerTask, evaluations: number, concurrency: number | "auto" = task.file.request.options.concurrency ?? 1,
+    gpu = task.file.request.options.gpu ?? task.file.request.options.concurrency === "auto"): void {
     if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
     // 订正 2026-10-07（PR #34 评审）：launch 是启动与续算的唯一出口，标定期间必须拦住它。
     if (calibrating) throw new Error("算力基准测试进行中，无法启动计算。");
@@ -932,8 +967,9 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
 
     if (!Number.isSafeInteger(evaluations) || evaluations < 10_000 || evaluations % 10_000 !== 0) throw new Error("尝试次数必须为不少于一万的整万数。");
     if (workspace.simulation === null) throw new Error("仿真服务不可用。");
+    if (typeof gpu !== "boolean") throw new Error("GPU 辅助计算选项必须为布尔值。");
     prepareParallel(task, concurrency);
-    task.file = { ...task.file, request: { ...task.file.request, options: { ...task.file.request.options, evaluationsPerRound: evaluations } } };
+    task.file = { ...task.file, request: { ...task.file.request, options: { ...task.file.request.options, evaluationsPerRound: evaluations, gpu } } };
     task.abort = new AbortController();
     task.roundStartedEvaluations = task.file.checkpoint.evaluations;
     task.remaining = Math.min(evaluations, options.roundLimit?.() ?? evaluations);
@@ -1097,9 +1133,9 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         launch(task, request.options.evaluationsPerRound);
         return id;
       },
-      continuePlanning(id, evaluations, concurrency) {
+      continuePlanning(id, evaluations, concurrency, gpu) {
         const task = requireTask(id);
-        launch(task, evaluations, concurrency);
+        launch(task, evaluations, concurrency, gpu);
       },
       cancel(id) {
         const task = requireTask(id);

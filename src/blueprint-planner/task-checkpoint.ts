@@ -308,6 +308,7 @@ export function validateTaskRequest(registry: RegistryContract, request: Bluepri
   }
   if (options.concurrency !== undefined && options.concurrency !== "auto" && (!Number.isSafeInteger(options.concurrency)
     || options.concurrency < 1 || options.concurrency > 32)) throw new Error("并发计算数必须介于 1 到 32。");
+  if (options.gpu !== undefined && typeof options.gpu !== "boolean") throw new Error("GPU 辅助计算选项必须为布尔值。");
   if (typeof plan.name !== "string" || typeof plan.sourceBaseId !== "string" || typeof plan.containsModules !== "boolean") throw new Error("产线信息无效。");
   for (const key of ["solidSupply", "fluidSupply", "warehouseBus", "solidOutput", "byproducts", "plantStartup"] as const) {
     const choices = { solidSupply: ["external", "warehouse"], fluidSupply: ["external", "conduit"], warehouseBus: ["straight", "corner", "u-shaped"],

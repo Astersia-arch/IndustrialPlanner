@@ -107,7 +107,9 @@ const UI: Record<string, string> = {
     // "eda.theoreticalFootprint": "Devices plus links footprint floor: {count} cells; left empty, the upper bound defaults to 3x and never exceeds the base placeable area",
     "eda.occupiedCells": "Occupied {count} cells",
     "eda.utilization": "Box utilization {percent}%",
-    "eda.concurrency": "CPU+GPU parallel computing",
+    // 订正 2026-10-07（合并上游 4fefd5f0）：上游把并行计算拆成 CPU / GPU 两个开关，以下两行取上游文案。
+    "eda.concurrency": "CPU parallel computing",
+    "eda.gpu": "GPU-assisted computing",
     "eda.capacityTest": "Compute benchmark",
     "eda.capacityMeasured": "Calibrated concurrency ceiling {count}",
     "eda.capacityMissing": "This machine's compute ceiling is not calibrated yet; planning runs at a conservative concurrency.",

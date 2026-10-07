@@ -12,6 +12,7 @@ import { restrictPort } from "./wiring";
 import { compactLayoutProposals, type PlannerPose } from "./constructive-layout";
 import { getPlannerStashDrainPorts } from "./terminals";
 import { PlannerBoundary } from "./boundary";
+import { plannerLayoutBatchSize, type PlannerLayoutBackend, type PlannerLayoutBatch } from "./layout-backend";
 
 interface Pose { x: number; y: number; rotation: GridRotation; }
 interface Geometry { width: number; height: number; ports: Map<string, PlannerPort>; }
@@ -47,6 +48,7 @@ export class CompactLayoutSearch {
   private current: Evaluation;
   private best: Pose[];
   private bestEvaluation: Evaluation;
+  private readonly pendingLayouts: Array<{ poses: Pose[]; cost: number }> = [];
   private randomState: number;
   private readonly penalties = new Map<string, number>();
   private focus: number[] = [];
@@ -65,7 +67,8 @@ export class CompactLayoutSearch {
   // private readonly initialTemperature: number;
 
   constructor(private readonly registry: RegistryContract, private readonly network: PlannerNetwork,
-    private readonly wires: PlannerWire[], readonly statistics: PlannerSearchStatistics, private readonly profile: PlannerSearchProfile = DEFAULT_SEARCH_PROFILE) {
+    private readonly wires: PlannerWire[], readonly statistics: PlannerSearchStatistics, private readonly profile: PlannerSearchProfile = DEFAULT_SEARCH_PROFILE,
+    private readonly layoutBackend?: PlannerLayoutBackend) {
     this.randomState = (statistics.seed + 1) * 2654435761 >>> 0;
     this.poses = network.nodes.map(node => ({ ...node.entity.position, rotation: node.entity.rotation }));
     this.stashDrainKeys = network.nodes.map(node => getPlannerStashDrainPorts(registry, node).map(portKey));
@@ -165,7 +168,43 @@ export class CompactLayoutSearch {
   }
 
   async advance(count: number, checkBudget: () => void): Promise<boolean> {
+    // 批内已计费的可行布局逐个交给布线，不能只保留一个后丢弃其他独立链。
+    if (this.hasPendingLayouts) return this.takePendingLayout(checkBudget);
     const end = Math.min(this.statistics.evaluationLimit, this.statistics.evaluations + count);
+    const batch = this.layoutBackend ? this.layoutBatch(end - this.statistics.evaluations) : null;
+    if (batch) {
+      checkBudget();
+      const result = await this.layoutBackend!.search(batch);
+      if (result) {
+        if (result.evaluations !== batch.chains * batch.parameters[4]!) throw new Error("GPU 布局尝试计数无效。");
+        this.statistics.evaluations += result.evaluations;
+        this.statistics.gpuEvaluations = (this.statistics.gpuEvaluations ?? 0) + result.evaluations;
+        this.statistics.gpuBatches = (this.statistics.gpuBatches ?? 0) + 1;
+        this.statistics.gpuKernelMs = (this.statistics.gpuKernelMs ?? 0) + result.kernelMs;
+        // 先结算已完成的批次，再处理暂停；Host 可保存准确的共享预算。
+        checkBudget();
+        for (const poses of result.poses) {
+          if (poses.length !== this.poses.length || poses.some(pose => !Number.isSafeInteger(pose.x)
+            || !Number.isSafeInteger(pose.y) || !ROTATIONS.includes(pose.rotation))) continue;
+          this.restore(poses);
+          const evaluation = this.evaluate();
+          this.statistics.gpuCheckedLayouts = (this.statistics.gpuCheckedLayouts ?? 0) + 1;
+          if (evaluation.feasible) {
+            this.statistics.gpuFeasibleLayouts = (this.statistics.gpuFeasibleLayouts ?? 0) + 1;
+            this.pendingLayouts.push({ poses: this.snapshot(), cost: evaluation.cost });
+          }
+          if ((evaluation.feasible && !this.bestEvaluation.feasible)
+            || (evaluation.feasible === this.bestEvaluation.feasible && evaluation.cost < this.bestEvaluation.cost)) {
+            this.best = this.snapshot(); this.bestEvaluation = evaluation;
+          }
+        }
+        this.restore(this.best); this.current = this.bestEvaluation;
+        this.statistics.remainingConflicts = this.bestEvaluation.conflicts;
+        this.statistics.finalWireLength = this.bestEvaluation.wireLength;
+        this.pendingLayouts.sort((a, b) => a.cost - b.cost);
+        return this.takePendingLayout(checkBudget);
+      }
+    }
     const repairEnabled = this.statistics.experiments?.includes("constraint-repair") === true;
     let refreshRepairAt = this.statistics.evaluations;
     while (this.statistics.evaluations < end && this.movable.length) {
@@ -258,6 +297,65 @@ export class CompactLayoutSearch {
     this.statistics.remainingConflicts = this.bestEvaluation.conflicts;
     this.statistics.finalWireLength = this.bestEvaluation.wireLength;
     return !this.pendingRebuild && this.bestEvaluation.feasible;
+  }
+
+  get hasPendingLayouts(): boolean { return this.pendingLayouts.length > 0; }
+
+  private takePendingLayout(checkBudget: () => void): boolean {
+    while (this.pendingLayouts.length) {
+      checkBudget();
+      this.restore(this.pendingLayouts.shift()!.poses);
+      const evaluation = this.evaluate();
+      if (!evaluation.feasible) continue;
+      this.best = this.snapshot(); this.bestEvaluation = evaluation; this.current = evaluation;
+      this.statistics.remainingConflicts = evaluation.conflicts;
+      this.statistics.finalWireLength = evaluation.wireLength;
+      return true;
+    }
+    return false;
+  }
+
+  /** GPU 代理评分不承载规则真相；几何、端口和可重叠关系全部取自本次搜索快照。 */
+  private layoutBatch(budget: number): PlannerLayoutBatch | null {
+    const n = this.poses.length, { width, height } = this.statistics.outline;
+    const size = plannerLayoutBatchSize(n, width * height, budget);
+    // 环境覆盖、导入保真暂不在 GPU 代理评分范围；这些任务继续完整 CPU 搜索。
+    if (!size || this.environmentPairs.length || this.network.request.blueprintSource || this.pendingRebuild) return null;
+    const geometry: number[] = [], edges: number[] = [], overlaps: number[] = [];
+    const entries = new Map(this.boundary.entries.map(entry => [entry.index, entry]));
+    const directions = ["NORTH", "EAST", "SOUTH", "WEST"];
+    for (let i = 0; i < n; i++) for (let turn = 0; turn < 4; turn++) {
+      const dimension = this.geometry[i]![turn]!, entry = entries.get(i);
+      const drains = this.stashDrainKeys[i]!.flatMap(key => {
+        const port = dimension.ports.get(key)!;
+        return [port.outside.x, port.outside.y, port.outside.x * 2 - port.cell.x, port.outside.y * 2 - port.cell.y];
+      });
+      if (drains.length > 32) return null;
+      geometry.push(dimension.width, dimension.height, entry ? directions.indexOf(entry.geometry[turn]!.edge) : -1,
+        entry?.kind === "warehouse" ? 1 : entry?.kind === "belt" ? 2 : 0, this.blockedKinds[i]!, drains.length / 2,
+        (this.localTerminals.find(pair => pair.terminal === i)?.parent ?? -1) + 1, 0, ...drains, ...Array<number>(32 - drains.length).fill(0));
+    }
+    for (const edge of this.edges) {
+      const kind = this.geometry[edge.source]![0]!.ports.get(edge.sourceKey)!.kind === "belt" ? 1 : 2;
+      edges.push(edge.source, edge.target, kind, edge.minimumCells, edge.weight,
+        Number(this.registry.queries.isGeneralLogisticsDevice(this.network.nodes[edge.source]!.definition.id)
+          || this.registry.queries.isGeneralLogisticsDevice(this.network.nodes[edge.target]!.definition.id)), 0, 0);
+      for (const [node, key] of [[edge.source, edge.sourceKey], [edge.target, edge.targetKey]] as const) {
+        for (let turn = 0; turn < 4; turn++) {
+          const port = this.geometry[node]![turn]!.ports.get(key)!;
+          edges.push(port.outside.x, port.outside.y, port.cell.x, port.cell.y);
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      overlaps.push(Number(allowsPlannerOverlap(this.registry, this.network.nodes[i]!.definition, this.network.nodes[j]!.definition)));
+    }
+    return { chains: size.chains,
+      parameters: new Int32Array([n, this.edges.length, width, height, size.steps,
+        (Math.imul(this.statistics.seed, 2654435761) + Math.imul(this.statistics.evaluations, 1013904223)) >>> 0,
+        8000, Number(this.network.request.options.warehouseBus === "straight"), 1]),
+      geometry: new Int32Array(geometry), edges: new Int32Array(edges), overlaps: new Int32Array(overlaps),
+      poses: new Int32Array(this.poses.flatMap(pose => [pose.x, pose.y, pose.rotation / 90])) };
   }
 
   /** 拿走冲突设备与近邻，保留其他设备；每个重放位置都计入当前批次的共享预算。 */

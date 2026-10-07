@@ -30,6 +30,7 @@ import { boundedPlannerScore, measurePlannerQuality } from "./quality";
 import { auditPlannerSupply, type PlannerSupplyAudit } from "./supply-audit";
 import type { PlannerDiagnosticPhase, PlannerSearchDiagnostics, PlannerSearchExperiment, PlannerSearchOptions, PlannerSearchStatistics } from "./search-types";
 import type { PlannerRoutingBackend } from "./routing-backend";
+import type { PlannerLayoutBackend } from "./layout-backend";
 import { constructCompactLayout } from "./constructive-layout";
 import { capturePlannerSeed, restorePlannerSeed, type PlannerSearchSeed } from "./search-seed";
 import { resolvePlannerAttempt } from "./search-portfolio";
@@ -51,7 +52,7 @@ export async function createPlannerCandidate(
   registry: RegistryContract, request: BlueprintPlannerRequest, variant: number,
   checkBudget: () => void, update: (phase: BlueprintPlannerPhase, message: string) => void,
   options: PlannerSearchOptions = {}, reportEvaluations: (count: number) => void = () => undefined,
-  routing?: PlannerRoutingBackend,
+  routing?: PlannerRoutingBackend, layoutBackend?: PlannerLayoutBackend,
 ): Promise<PlannerCandidate> {
   if (request.blueprintSource) return createBlueprintCandidate(registry, request, variant, checkBudget, update, options, reportEvaluations, routing);
   ({ request, variant } = resolvePlannerAttempt(request, variant));
@@ -69,6 +70,10 @@ export async function createPlannerCandidate(
   let accumulated: PlannerSearchStatistics | undefined;
   const combine = (first: PlannerSearchStatistics, last: PlannerSearchStatistics): PlannerSearchStatistics => ({ ...last, evaluationLimit: total,
     evaluations: first.evaluations + last.evaluations, acceptedMoves: first.acceptedMoves + last.acceptedMoves,
+    gpuEvaluations: (first.gpuEvaluations ?? 0) + (last.gpuEvaluations ?? 0), gpuBatches: (first.gpuBatches ?? 0) + (last.gpuBatches ?? 0),
+    gpuKernelMs: (first.gpuKernelMs ?? 0) + (last.gpuKernelMs ?? 0),
+    gpuCheckedLayouts: (first.gpuCheckedLayouts ?? 0) + (last.gpuCheckedLayouts ?? 0),
+    gpuFeasibleLayouts: (first.gpuFeasibleLayouts ?? 0) + (last.gpuFeasibleLayouts ?? 0),
     constructiveEvaluations: (first.constructiveEvaluations ?? 0) + (last.constructiveEvaluations ?? 0),
     constructivePlaced: first.constructivePlaced === true || last.constructivePlaced === true, restartEvaluations: first.evaluations,
     rebuildAttempts: (first.rebuildAttempts ?? 0) + (last.rebuildAttempts ?? 0),
@@ -97,7 +102,7 @@ export async function createPlannerCandidate(
     try {
       const result = await createPlannerAttempt(registry, request, phase.strategy === "baseline" && index > 0 ? variant % 9 : variant,
         checkBudget, update, { ...options, strategy: phase.strategy, maxEvaluations: Math.max(1, Math.floor(remaining * phase.fraction)),
-          coolingEvaluations: phase.strategy === "baseline" && index > 0 ? total : options.coolingEvaluations }, count => reportEvaluations(used + count), routing, phase.initial);
+          coolingEvaluations: phase.strategy === "baseline" && index > 0 ? total : options.coolingEvaluations }, count => reportEvaluations(used + count), routing, phase.initial, layoutBackend);
       return { ...result, search: finish(result.search) };
     } catch (error) {
       if (!(error instanceof PlannerCandidateError) || !error.search) throw error;
@@ -174,7 +179,7 @@ async function createPlannerAttempt(
   registry: RegistryContract, request: BlueprintPlannerRequest, variant: number,
   assertBudget: () => void, update: (phase: BlueprintPlannerPhase, message: string) => void,
   options: PlannerSearchOptions, reportEvaluations: (count: number) => void,
-  routing?: PlannerRoutingBackend, initialPass = false,
+  routing?: PlannerRoutingBackend, initialPass = false, layoutBackend?: PlannerLayoutBackend,
 ): Promise<PlannerCandidate> {
   let readEvaluations = () => 0;
   const checkBudget = () => { reportEvaluations(readEvaluations()); assertBudget(); };
@@ -504,7 +509,7 @@ async function createPlannerAttempt(
       statistics.constructivePlaced = poses !== null;
       if (poses) network.nodes.forEach((node, index) => { node.entity.position = { x: poses[index]!.x, y: poses[index]!.y }; node.entity.rotation = poses[index]!.rotation; });
     }
-    const search = new CompactLayoutSearch(registry, network, wires, statistics, profile);
+    const search = new CompactLayoutSearch(registry, network, wires, statistics, profile, layoutBackend);
     enterPhase("layout");
     const routingGraph = buildLayoutGraph(network.nodes.map(node => node.entity.id), wires.map(wire => ({ from: wire.source.entityId, to: wire.target.entityId })));
     const circulationLimits = routingGraph.groups.filter(group => group.cyclic).flatMap(group => {
@@ -534,11 +539,12 @@ async function createPlannerAttempt(
     let failure = "当前预算内尚未找到符合边界的合法布局";
     let reusableRoutes = options.seed?.routes ?? [];
     let inspectSeed = restored !== undefined;
-    while (statistics.evaluations < statistics.evaluationLimit) {
+    // GPU 批内的其他候选已经扣过次数，即使预算用尽也要完成其有界布线验收。
+    while (statistics.evaluations < statistics.evaluationLimit || search.hasPendingLayouts) {
       update("optimization", "正在优化布局");
       enterPhase("layout");
       // 缩边可能只切掉空地或旧线路；先检验已有摆位，避免在首次复用前随机扰动已验证结构。
-      const feasible = await search.advance(inspectSeed ? 0 : Math.min(750, statistics.evaluationLimit - statistics.evaluations), checkBudget);
+      const feasible = await search.advance(inspectSeed ? 0 : Math.min(layoutBackend ? 20_000 : 750, statistics.evaluationLimit - statistics.evaluations), checkBudget);
       inspectSeed = false;
       if (diagnostics) { diagnostics.layoutChecks++; if (feasible) diagnostics.feasibleLayouts++; }
       if (!feasible) continue;

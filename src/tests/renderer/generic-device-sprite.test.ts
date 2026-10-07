@@ -217,7 +217,7 @@ vi.mock("pixi.js", () => {
 })
 
 import { AYU_DARK_THEME, AYU_LIGHT_THEME } from "@/app/theme"
-import { Assets } from "pixi.js"
+import { Assets, Texture } from "pixi.js"
 import { EntityCollectionType } from "@/domain/editor/types/editor-types"
 import type { EntityDefinition } from "@/domain/registry/types/entity-definition"
 import {
@@ -686,6 +686,110 @@ describe("GenericDeviceSprite", () => {
     expect(internals.animationSeeking).toBe(false)
     expect(internals.animationCursor).toBeNull()
     expect(getDeviceOperatingStatus).not.toHaveBeenCalled()
+  })
+
+  it("产物变化时隐藏旧图标并加载新纹理，同一产物加载期间不重复请求", async () => {
+    const copperTexture = createLoadedTextureMock("copper-powder")
+    const ironTexture = createLoadedTextureMock("iron-powder")
+    const fixture = createPrimaryOutputIconFixture({ "item-icon-item_copper_powder": copperTexture })
+    const pendingIron = createPendingItemTexture()
+
+    try {
+      fixture.sync("item_copper_powder")
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: copperTexture, visible: true })
+
+      fixture.renderHost.textureManager.getTexture.mockReturnValueOnce(pendingIron.promise)
+      fixture.sync("item_iron_powder")
+      expect(fixture.icon()).toMatchObject({ texture: Texture.EMPTY, visible: false })
+      fixture.sync("item_iron_powder")
+      expect(fixture.renderHost.textureManager.getTexture.mock.calls.filter(([key]) => key === "item-icon-item_iron_powder"))
+        .toHaveLength(1)
+
+      pendingIron.resolve(ironTexture)
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: ironTexture, visible: true })
+      fixture.sync("item_iron_powder")
+      expect(fixture.renderHost.textureManager.getTexture.mock.calls.filter(([key]) => key === "item-icon-item_iron_powder"))
+        .toHaveLength(1)
+    } finally {
+      fixture.sprite.destroy()
+    }
+  })
+
+  it("产物快速来回切换时迟到的旧请求不能覆盖最新图标", async () => {
+    const fixture = createPrimaryOutputIconFixture({})
+    const firstCopper = createPendingItemTexture()
+    const iron = createPendingItemTexture()
+    const lastCopper = createPendingItemTexture()
+    const latestTexture = createLoadedTextureMock("latest-copper-powder")
+    fixture.renderHost.textureManager.getTexture
+      .mockReturnValueOnce(firstCopper.promise)
+      .mockReturnValueOnce(iron.promise)
+      .mockReturnValueOnce(lastCopper.promise)
+
+    try {
+      fixture.sync("item_copper_powder")
+      fixture.sync("item_iron_powder")
+      fixture.sync("item_copper_powder")
+      lastCopper.resolve(latestTexture)
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: latestTexture, visible: true })
+
+      firstCopper.resolve(createLoadedTextureMock("outdated-copper-powder"))
+      iron.resolve(createLoadedTextureMock("outdated-iron-powder"))
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: latestTexture, visible: true })
+    } finally {
+      fixture.sprite.destroy()
+    }
+  })
+
+  it("旧产物加载失败不能隐藏新产物图标", async () => {
+    const ironTexture = createLoadedTextureMock("iron-powder")
+    const fixture = createPrimaryOutputIconFixture({ "item-icon-item_iron_powder": ironTexture })
+    const pendingCopper = createPendingItemTexture()
+    fixture.renderHost.textureManager.getTexture.mockReturnValueOnce(pendingCopper.promise)
+
+    try {
+      fixture.sync("item_copper_powder")
+      fixture.sync("item_iron_powder")
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: ironTexture, visible: true })
+      pendingCopper.reject(new Error("obsolete request failed"))
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: ironTexture, visible: true })
+    } finally {
+      fixture.sprite.destroy()
+    }
+  })
+
+  it("当前产物加载失败后可重试，销毁后忽略迟到结果", async () => {
+    const ironTexture = createLoadedTextureMock("iron-powder")
+    const fixture = createPrimaryOutputIconFixture({ "item-icon-item_iron_powder": ironTexture })
+    const failedIron = createPendingItemTexture()
+    fixture.renderHost.textureManager.getTexture.mockReturnValueOnce(failedIron.promise)
+
+    try {
+      fixture.sync("item_iron_powder")
+      failedIron.reject(new Error("temporary request failure"))
+      await flushMicrotasks()
+      expect(fixture.icon().visible).toBe(false)
+      fixture.sync("item_iron_powder")
+      await flushMicrotasks()
+      expect(fixture.icon()).toMatchObject({ texture: ironTexture, visible: true })
+
+      const pendingCopper = createPendingItemTexture()
+      fixture.renderHost.textureManager.getTexture.mockReturnValueOnce(pendingCopper.promise)
+      fixture.sync("item_copper_powder")
+      const icon = fixture.icon()
+      fixture.sprite.destroy()
+      pendingCopper.resolve(createLoadedTextureMock("copper-powder"))
+      await flushMicrotasks()
+      expect(icon).toMatchObject({ texture: Texture.EMPTY, visible: false })
+    } finally {
+      fixture.sprite.destroy()
+    }
   })
 
   it("draws matching outlined top-view icon and text when the combined label fits", async () => {
@@ -3762,6 +3866,39 @@ function createRenderHostStub(
       watchTextureRecovery: vi.fn(() => () => undefined),
     },
   }
+}
+
+/** 仅验证单个图标的异步加载边界；完整产物列表同步与像素显示另用真实浏览器验证。 */
+function createPrimaryOutputIconFixture(textureByKey: Record<string, object>) {
+  const renderHost = createRenderHostStub(textureByKey, { gameShowDeviceNames: false })
+  const sprite = new GenericDeviceSprite("primary-output-device", createEntityDefinitionStub(), renderHost as never)
+  const internals = sprite as unknown as {
+    currentPrimaryOutputItemIds: string[];
+    primaryOutputItemIconSprites: RenderedSpriteSnapshot[];
+    syncPrimaryOutputItemIcon: (index: number, itemId: string, x: number, y: number, size: number) => void;
+  }
+
+  return {
+    sprite,
+    renderHost,
+    sync(itemId: string): void {
+      internals.currentPrimaryOutputItemIds = [itemId]
+      internals.syncPrimaryOutputItemIcon(0, itemId, 0, 0, 32)
+    },
+    icon(): RenderedSpriteSnapshot {
+      return internals.primaryOutputItemIconSprites[0]!
+    },
+  }
+}
+
+function createPendingItemTexture() {
+  let resolve!: (texture: ReturnType<typeof createLoadedTextureMock>) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<ReturnType<typeof createLoadedTextureMock>>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 function createRenderContextAppStub(renderHost: ReturnType<typeof createRenderHostStub>) {

@@ -1,8 +1,10 @@
 .panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 10px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .topActions {
@@ -20,6 +22,8 @@
 
 .regionList {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
   max-height: min(36vh, 360px);
   overflow: auto;
@@ -73,6 +77,7 @@
 
 .swatch {
   display: inline-block;
+  flex-shrink: 0;
   width: 12px;
   height: 12px;
   border: 1px solid color-mix(in srgb, currentColor 34%, transparent);
@@ -91,6 +96,8 @@
 .details,
 .editor {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
   padding: 9px;
   border: 1px solid var(--line);
@@ -107,22 +114,31 @@
   display: flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
+}
+
+.detailTitle strong {
+  min-width: 0;
 }
 
 .details dl {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
   margin: 0;
 }
 
 .details dl div {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
 }
 
 .details dt,
 .details dd {
+  min-width: 0;
   margin: 0;
 }
 
@@ -137,10 +153,23 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+}
+
+.detailActions button,
+.editorActions button,
+.operationButtons button,
+.linkList button {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .editor label {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
 }
 
@@ -149,7 +178,7 @@
   resize: vertical;
 }
 
-.colorField {
+.editor .colorField {
   grid-template-columns: minmax(0, 1fr) 52px;
   align-items: center;
 }
@@ -170,6 +199,8 @@
 
 .feedbackList {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
   margin: 0;
   padding-inline-start: 18px;

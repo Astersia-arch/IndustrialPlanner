@@ -106,6 +106,8 @@ export interface BlueprintPlannerOptions {
   // readonly calibratedWorkers?: number;
   // /** 基准测试标定出的并行验证容量；未标定时运行时会从保守起点自适应。 */
   // readonly calibratedVerifiers?: number;
+  /** 独立启用 GPU 辅助；旧任务缺省时沿用原 concurrency 是否为 auto 的设置。 */
+  readonly gpu?: boolean;
 }
 
 export interface BlueprintPlannerRequest {

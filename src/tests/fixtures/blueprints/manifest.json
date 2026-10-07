@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
-  "fixtureRevision": 14,
-  "updatedAt": "2026-10-06",
+  "fixtureRevision": 15,
+  "updatedAt": "2026-10-07",
   "entries": [
     {
       "file": "src/tests/fixtures/blueprints/collections/app/app-host/scene-01-variant-1.schema6.json",
@@ -3439,6 +3439,13 @@
     },
     {
       "file": "src/tests/fixtures/blueprints/blueprint-planner/power-validation/stash-beyond-limit.schema6.json",
+      "role": "test-scene",
+      "schemaVersion": 6,
+      "version": "fixture-v1",
+      "unknownDefinitionIds": []
+    },
+    {
+      "file": "src/tests/fixtures/blueprints/layout/left-dock.schema6.json",
       "role": "test-scene",
       "schemaVersion": 6,
       "version": "fixture-v1",

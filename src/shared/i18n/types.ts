@@ -112,6 +112,7 @@ export type UiKey =
   | "eda.occupiedCells"
   | "eda.utilization"
   | "eda.concurrency"
+  | "eda.gpu"
   | "eda.capacityTest"
   | "eda.capacityMeasured"
   | "eda.capacityMissing"

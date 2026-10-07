@@ -107,7 +107,10 @@ const UI: Record<string, string> = {
     // "eda.theoreticalFootprint": "设备本体与连接线理论占用下界 {count} 格；留空时上界默认取其 3 倍，且不超过基地可放置面积",
     "eda.occupiedCells": "盒内占用 {count} 格",
     "eda.utilization": "盒内利用率 {percent}%",
-    "eda.concurrency": "CPU+GPU 并行计算",
+    // 订正 2026-10-07（合并上游 4fefd5f0）：上游把并行计算拆成 CPU / GPU 两个开关，以下两行取上游文案；
+    // 本地原先的 "CPU+GPU 并行计算" 是单一开关时的措辞，不再适用。
+    "eda.concurrency": "CPU 并行计算",
+    "eda.gpu": "GPU 辅助计算",
     "eda.capacityTest": "算力基准测试",
     "eda.capacityMeasured": "已标定并发上限 {count}",
     "eda.capacityMissing": "尚未标定本机算力上限，将按保守并发运行。",

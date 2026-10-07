@@ -232,6 +232,7 @@ export default defineConfig({
           testTimeout: 30_000,
           exclude: [
             "src/tests/e2e/**",
+            "src/tests/layout/**",
             "src/tests/release/**",
             "src/tests/simulation/blueprint/**",
             "src/tests/simulation/blueprint-slow/**",
@@ -239,6 +240,19 @@ export default defineConfig({
             "src/tests/blueprint-planner/training-worker.test.ts",
             "src/tests/scripts/unpack-table-source.test.ts",
           ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "layout",
+          environment: "node",
+          include: ["src/tests/layout/**/*.test.ts"],
+          fileParallelism: false,
+          maxWorkers: 1,
+          maxConcurrency: 1,
+          // 内部服务和 CLI 先触发有界超时，保留 finally 取证与清理时间，避免下一用例提前启动。
+          testTimeout: 360_000,
         },
       },
       {
