@@ -24,7 +24,9 @@ for (const profile of SCREEN_PROFILES) {
       const initial = await attempts.inputValue();
       const defaults = await page.evaluate(() => JSON.parse(JSON.stringify(window.__industrialPlannerAppHost.blueprintPlannerDialog.options)));
       await attempts.fill('7'); await attempts.blur();
-      await dialog.getByRole('checkbox',{name:'CPU+GPU 并行计算'}).uncheck();
+      await dialog.getByRole('checkbox',{name:'CPU 并行计算'}).uncheck();
+      if (!await dialog.getByRole('checkbox',{name:'GPU 辅助计算'}).isChecked()) throw Error('CPU 开关影响了 GPU');
+      await dialog.getByRole('checkbox',{name:'GPU 辅助计算'}).uncheck();
       await dialog.getByRole('combobox',{name:'存取线形态'}).selectOption('corner');
       await page.evaluate(async () => {
         const host = window.__industrialPlannerAppHost, controller = host.blueprintPlannerDialog;
@@ -33,7 +35,8 @@ for (const profile of SCREEN_PROFILES) {
         const id = await planner.actions.importTask(planner.queries.exportDraft(controller.getRequest()));
         controller.selectTask(id, planner.queries.getLastRequest(id));
       });
-      const retained = {attempts:await attempts.inputValue(),parallel:await dialog.getByRole('checkbox',{name:'CPU+GPU 并行计算'}).isChecked()};
+      const retained = {attempts:await attempts.inputValue(),parallel:await dialog.getByRole('checkbox',{name:'CPU 并行计算'}).isChecked(),
+        gpu:await dialog.getByRole('checkbox',{name:'GPU 辅助计算'}).isChecked()};
       const original = await page.evaluate(() => {
         const h = window.__industrialPlannerAppHost;
         return h.workspace.blueprintPlanner.queries.exportTask(h.blueprintPlannerDialog.viewTaskId);
@@ -85,12 +88,13 @@ for (const profile of SCREEN_PROFILES) {
       await canvas.getByRole('button',{name:'重置布局',exact:true}).click();
       return {initial,defaults,retained,reset,resetInput,bounds,scrollTop,graphUnchanged,zoomChanged,copyPreservedHistory,footerLayout,
         resetView:await surface.getAttribute('style')===before};
-    }`) as { initial: string; defaults: unknown; retained: { attempts: string; parallel: boolean }; reset: unknown;
+    }`) as { initial: string; defaults: unknown; retained: { attempts: string; parallel: boolean; gpu: boolean }; reset: unknown;
       resetInput: string; bounds: { height: number; parentHeight: number; touchAction: string }; scrollTop: number;
       graphUnchanged: boolean; zoomChanged: boolean; resetView: boolean; copyPreservedHistory: boolean;
       footerLayout: { leftAligned: boolean; visible: boolean } };
     expect(result.initial).toBe("500");
-    expect(result.retained).toEqual({ attempts: "7", parallel: false });
+    expect(result.retained).toEqual({ attempts: "7", parallel: false, gpu: false });
+    expect(result.defaults).toMatchObject({ concurrency: "auto", gpu: true });
     expect(result.reset).toEqual(result.defaults);
     expect(result.resetInput).toBe("500");
     expect(result.bounds.height).toBe(result.bounds.parentHeight);

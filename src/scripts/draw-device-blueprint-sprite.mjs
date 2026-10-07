@@ -51,7 +51,18 @@ const blueprintPortPartCache = new Map();
 const PIPE_PORT_ASSET_TOKEN = 'fluid';
 const SOLID_PORT_ASSET_TOKEN = 'item';
 
-void main();
+// AI-REMOVED 2026-10-07:
+// Reason: 导入生成函数进行像素回归时，不应启动 CLI 或写入默认目录。
+// Trigger: 气体提纯机蓝图输入口错位，需要直接验证真实合成结果。
+// Evidence: 原入口在模块导入时无条件解析 process.argv 并调用 main。
+// Replacement: 下方仅直接执行脚本时启动 CLI 的入口判断。
+// Risk: Low；原 CLI 参数与执行流程保持不变。
+// Human Review: Required
+// Original code:
+// void main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main();
+}
 
 async function main() {
   try {
@@ -199,7 +210,7 @@ function parseCliOptions(argv) {
 //     .png();
 // }
 
-async function createDeviceBlueprintSprite(definition) {
+export async function createDeviceBlueprintSprite(definition) {
   const baseSvgMarkup = createDeviceBlueprintCanvasSvg(definition);
   const baseBuffer = await sharp(Buffer.from(baseSvgMarkup)).png().toBuffer();
   const borderOverlayBuffer = await sharp(Buffer.from(createDeviceBorderOverlaySvg(definition))).png().toBuffer();
@@ -287,7 +298,7 @@ async function generateBlueprintSprites(registryContract, outputDirectory) {
   };
 }
 
-function collectBlueprintGenerationCandidates(registryContract) {
+export function collectBlueprintGenerationCandidates(registryContract) {
   return registryContract.entityDefinitions.filter((definition) => (
     !isExcludedFromBlueprintBatch(definition, registryContract.queries)
     && definition.portGroups.some((group) => group.ports.length > 0)
@@ -908,7 +919,11 @@ async function resolvePortAssetSource(definition, isPipe, portEdge) {
         isPipe,
         portEdge.direction,
         fallbackSegment.segmentSpan,
-        portEdge.boundaryIndices.map((index) => index - fallbackSegment.segmentStart),
+        // AI-CORRECTION 2026-10-07: WEST 的 270° 旋转会反转片段内的格序，
+        // 合成前须将注册表的自上而下索引映射回源图索引，避免非对称端口上下错位。
+        portEdge.boundaryIndices.map((index) => portEdge.edge === 'WEST'
+          ? fallbackSegment.segmentStart + fallbackSegment.segmentSpan - 1 - index
+          : index - fallbackSegment.segmentStart),
       ),
       segmentStart: fallbackSegment.segmentStart,
       segmentSpan: fallbackSegment.segmentSpan,

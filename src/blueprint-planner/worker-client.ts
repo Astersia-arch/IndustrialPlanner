@@ -3,6 +3,7 @@ import type { PlannerCandidate } from "./candidate";
 import { PlannerCandidateError, PlanningBudgetExhausted } from "./model";
 import type { PlannerWorkerRequest, PlannerWorkerResponse } from "./worker-protocol";
 import type { PlannerSearchSeed } from "./search-seed";
+import type { PlannerGpuLayoutMetrics } from "./layout-backend";
 
 /** 一个 Host 复用一个布局 Worker；取消和超时直接终止计算，不回退主线程。 */
 // 订正 2026-09-30：暂停发送协作取消消息并结算计数；dispose 或异常才直接终止。
@@ -11,6 +12,8 @@ export class PlannerWorkerClient {
   private sequence = 0;
   private pending: ((error: Error) => void) | null = null;
   private disposed = false;
+  gpuAvailable = true;
+  gpuMetrics?: PlannerGpuLayoutMetrics;
 
   constructor(private readonly allowGpu = false) {}
 
@@ -44,6 +47,11 @@ export class PlannerWorkerClient {
         const response = event.data;
         if (response.id !== id) return;
         try {
+          if (this.allowGpu && response.type !== "progress") {
+            this.gpuMetrics = response.layout;
+            this.gpuAvailable = !response.layout?.fallbackReason && ((response.layout?.batches ?? 0) > 0
+              || (response.type === "completed" ? response.candidate.search.evaluations : response.evaluations) === 0);
+          }
           if (response.type === "progress") update(response.phase, response.message, response.evaluations);
           else if (response.type === "completed") { cleanup(); resolve(response.candidate); }
           else { update("optimization", response.message, response.evaluations); fail(response.kind === "timeout" ? new PlanningBudgetExhausted(response.message)
@@ -56,7 +64,8 @@ export class PlannerWorkerClient {
       worker.addEventListener("messageerror", messageFault);
       signal.addEventListener("abort", abort, { once: true });
       const timer = budgetMs === null ? undefined : setTimeout(() => fail(new PlanningBudgetExhausted("布局达到时间预算"), true), Math.max(1, budgetMs) + 1000);
-      try { worker.postMessage({ id, request, variant, budgetMs, gpu: this.allowGpu && request.options.concurrency === "auto",
+      // GPU 能力由 Host 为本轮创建的专用通道决定；种子池中的 request 可能保留旧的执行选项。
+      try { worker.postMessage({ id, request, variant, budgetMs, gpu: this.allowGpu,
         search: { maxEvaluations: evaluationsPerRound, seed, continuationStep, maximumArea, targetOutline, originSeed } } satisfies PlannerWorkerRequest); }
       catch (error) { fail(error instanceof Error ? error : new Error(String(error)), true); }
     });

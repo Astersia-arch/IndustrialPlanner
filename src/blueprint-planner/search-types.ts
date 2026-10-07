@@ -80,6 +80,12 @@ export interface PlannerSearchStatistics {
   readonly coolingEvaluations?: number;
   readonly outline: { readonly width: number; readonly height: number };
   evaluations: number;
+  /** GPU 代理搜索次数属于 evaluations 的子集，不能与完整 CPU 评分作等价性能比较。 */
+  gpuEvaluations?: number;
+  gpuBatches?: number;
+  gpuKernelMs?: number;
+  gpuCheckedLayouts?: number;
+  gpuFeasibleLayouts?: number;
   acceptedMoves: number;
   routingAttempts: number;
   wireCount?: number;

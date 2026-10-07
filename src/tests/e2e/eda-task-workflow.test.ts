@@ -189,12 +189,17 @@ for (const profile of profiles) {
       // Risk: Low。Human Review: Required
       // Original code:
       // assert(await dialog.locator('output').textContent() === '自动', '默认自动调节并发');
-      const parallel = dialog.getByRole('checkbox', {name:'CPU+GPU 并行计算'});
-      assert(await parallel.isChecked(), '默认启用自动混合调度');
+      const parallel = dialog.getByRole('checkbox', {name:'CPU 并行计算'});
+      const gpu = dialog.getByRole('checkbox', {name:'GPU 辅助计算'});
+      assert(await parallel.isChecked() && await gpu.isChecked(), '默认启用 CPU 并行与 GPU 辅助');
       await parallel.uncheck();
       assert(await page.evaluate(() => window.__industrialPlannerAppHost.blueprintPlannerDialog.options.concurrency) === 1,
         '关闭并行固定单 Worker');
+      assert(await gpu.isChecked(), '关闭 CPU 并行不影响 GPU');
+      await gpu.uncheck();
       await parallel.check();
+      assert(!await gpu.isChecked(), '开启 CPU 并行不影响 GPU');
+      await gpu.check();
       assert(await dialog.getByRole('spinbutton').count() === 1, '任务参数只允许手填提案预算');
       // AI-REMOVED 2026-10-05:
       // Reason: 全局供给与成品下拉框已由逐物品策略替代。

@@ -19,7 +19,7 @@ const ENABLED_KEY = "industrial-planner.experimental.eda";
 function createDefaultPlannerOptions(): BlueprintPlannerOptions {
   return {
     solidSupply: "warehouse", fluidSupply: "conduit", warehouseBus: "straight",
-    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", converterStartup: "reject", evaluationsPerRound: 5_000_000, concurrency: "auto",
+    solidOutput: "auto", byproducts: "destroy", plantStartup: "preload", converterStartup: "reject", evaluationsPerRound: 5_000_000, concurrency: "auto", gpu: true,
     itemPolicies: [],
   };
 }
@@ -123,6 +123,7 @@ export class BlueprintPlannerDialogController {
     if (taskId === null || !request) this.plan = null;
     if (request) { this.plan = structuredClone(request.plan); this.options = {
       ...structuredClone(request.options), converterStartup: request.options.converterStartup ?? "reject", concurrency: request.options.concurrency === 1 ? 1 : "auto",
+      gpu: request.options.gpu ?? request.options.concurrency === "auto",
     }; }
   }
 

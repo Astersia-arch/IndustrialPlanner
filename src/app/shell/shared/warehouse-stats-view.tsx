@@ -173,7 +173,10 @@ export function WarehouseStatsView({
   }
 
   return (
-    <div className={cm(styles, mode === "compact" ? "warehouse-stats-table" : "warehouse-stats-table warehouse-stats-table-dialog")}>
+    <div
+      className={cm(styles, mode === "compact" ? "warehouse-stats-table" : "warehouse-stats-table warehouse-stats-table-dialog")}
+      data-device-class={mode === "compact" ? appHost.state.screenProfile.deviceClass : undefined}
+    >
       <div className={cm(styles, "warehouse-stats-row warehouse-stats-row-head")}> 
         <span>{t("warehouseStats.item")}</span>
         <span>{t("warehouseStats.produced")}</span>

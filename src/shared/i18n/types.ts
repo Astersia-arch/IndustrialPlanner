@@ -103,6 +103,7 @@ export type UiKey =
   | "eda.budget"
   | "eda.evaluationsPerRound"
   | "eda.concurrency"
+  | "eda.gpu"
   | "eda.autoConcurrency"
   | "eda.activeConcurrency"
   | "eda.concurrencyWarning"

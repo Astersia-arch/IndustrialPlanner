@@ -64,6 +64,8 @@ export interface BlueprintPlannerOptions {
 
   readonly evaluationsPerRound: number;
   readonly concurrency?: number | "auto";
+  /** 独立启用 GPU 辅助；旧任务缺省时沿用原 concurrency 是否为 auto 的设置。 */
+  readonly gpu?: boolean;
 }
 
 export interface BlueprintPlannerRequest {
