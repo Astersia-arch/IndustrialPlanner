@@ -89,6 +89,9 @@ export interface PlannerWorkUnit {
   /**
    * 本单元的面积上界。来自用户界面指定的 areaLimit、算法自身的收缩上限，
    * 或基地可放置面积，三者已由协调者取过最小值，节点不再二次放宽。
+   *
+   * 订正 2026-10-07（PR #34 评审）：来源之一「用户界面指定的 areaLimit」已不存在——
+   * 面积上界不再暴露给用户，未指定时由 Host 取「设备面积 × 2」。其余来源与取最小值的规则不变。
    */
   readonly maximumArea?: number;
   /** 调度器指定的盒子；与 maximumArea 的“上限”语义分开（显式尺寸优先）。 */

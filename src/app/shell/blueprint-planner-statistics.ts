@@ -5,6 +5,9 @@ import type { BlueprintPlannerAreaPoint, BlueprintPlannerProgress } from "@/doma
 // Trigger: 用户指出原口径缺少连接线；同时要求未指定上界时以「理论面积 × 3」作为默认建议上界。
 // Evidence: 原函数只累加 footprint，未计任何物流；且只存在于 App 层，Planner 无法复用，会形成第二个口径。
 // Replacement: @/domain/blueprint-planner 的 resolvePlannerTheoreticalArea（含 linkCells 下界）。
+// 订正 2026-10-07（PR #34 评审）：上述 Replacement 目标已随口径废弃而删除——面积上界不再暴露给用户，
+// 未指定时由 Host 取「设备面积 × 2」（@/domain/blueprint-planner 的 resolvePlannerDeviceArea）。
+// 本归档块自此只作历史记录，不代表当前口径。
 // Risk: Low；新口径数值更大（多出连接线），界面提示文案随之更新。
 // Human Review: Required
 //

@@ -102,8 +102,13 @@ export type UiKey =
   | "eda.warehouseStartup"
   | "eda.budget"
   | "eda.evaluationsPerRound"
-  | "eda.areaLimit"
-  | "eda.theoreticalFootprint"
+  // AI-REMOVED 2026-10-07:
+  // Reason: 面积上界不再暴露给用户（PR #34 评审），这两个键失去全部消费者。
+  // Trigger: 界面输入框与理论占用标注移除。Evidence: 全仓库仅归档注释引用它们。
+  // Replacement: Host 内部按 2 倍设备面积推算默认上界。Risk: Low。Human Review: Required
+  // Original code:
+  // | "eda.areaLimit"
+  // | "eda.theoreticalFootprint"
   | "eda.occupiedCells"
   | "eda.utilization"
   | "eda.concurrency"

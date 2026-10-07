@@ -4,7 +4,7 @@ import type { WorkspaceContract } from "@/domain/document/workspace-contract";
 import type { BlueprintPlannerContract, BlueprintPlannerProgress, BlueprintPlannerRequest, BlueprintPlannerTaskFile,
   PlannerResourceHints } from "@/domain/blueprint-planner";
 import { createUuid } from "@/domain/shared/uuid";
-import { PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE, resolvePlannerTheoreticalArea } from "@/domain/blueprint-planner";
+import { PLANNER_DEFAULT_AREA_DEVICE_MULTIPLE, resolvePlannerDeviceArea } from "@/domain/blueprint-planner";
     // AI-REMOVED 2026-09-30: 浏览器蓝图库只在保存时加载，避免无头入口依赖浏览器环境。
     // Trigger: Node 客户端启动。Evidence: 同步存储依赖 import.meta.env。
     // Replacement: save 内动态 import。Risk: Low。Human Review: Required
@@ -33,7 +33,7 @@ import { assertBlueprintPreserved } from "./blueprint-constraints";
 import { browserPlannerResources, observePlannerPressure, plannerConcurrencyLimit,
   PlannerAutomaticConcurrency, PlannerConcurrencyMemory,
   type PlannerConcurrencySample } from "./automatic-concurrency";
-import { calibratePlannerCapacity } from "./capacity-calibration";
+import { calibratePlannerCapacity, type PlannerCapacityProbe, type PlannerCapacityProbeOptions } from "./capacity-calibration";
 import { measureGpuCrossover, DEFAULT_GPU_CROSSOVER_SCALES } from "./gpu-crossover";
 import { probeBrowserPlannerCapacity } from "./browser-capacity-probe";
 import { loadPlannerCapacity, plannerCapacitySignature, savePlannerCapacity } from "@/shared/storage/planner-capacity-storage";
@@ -73,6 +73,12 @@ export interface PlannerHostOptions {
   // 本项改为验证控制器自身的 maximum 上限（不填则与搜索同上限）。无头入口按实测显式填 1。
   readonly verificationConcurrency?: number;
   readonly shardSelection?: { readonly count: number; readonly start: number; readonly end: number };
+  /**
+   * 订正 2026-10-07（PR #34 评审：标定缺少独占与取消机制）：
+   * 算力探针的注入点，默认用浏览器探针。与 worker / workerFactory 同一风格：
+   * 让测试能在不起真实 Worker 的前提下验证「标定独占」与「销毁取消」两条语义。
+   */
+  readonly capacityProbe?: (probeOptions: PlannerCapacityProbeOptions) => Promise<PlannerCapacityProbe>;
 }
 
 export function createBlueprintPlannerHost(workspace: WorkspaceContract, options: PlannerHostOptions = {}): BlueprintPlannerHost {
@@ -112,6 +118,14 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const storage = options.storage === undefined ? edaTaskStorage : options.storage;
   let disposed = false, loaded = storage === null;
   const restorationAbort = new AbortController();
+  /**
+   * 订正 2026-10-07（PR #34 评审：标定缺少完整的独占和取消机制）：
+   * calibrating 让标定登记自身的忙碌状态（原先只有标定入口单向检查有没有活动任务，
+   * 于是标定期间仍能启动计算、导入或识别蓝图，测出的曲线是两者混合的结果）；
+   * calibration 交给 dispose 终止独立探针，避免 Host 销毁后仍有计算在跑。
+   */
+  let calibrating = false;
+  const calibration = new AbortController();
   let latestId: string | undefined;
   let writes: Promise<void> = Promise.resolve();
   const pendingWrites = new Set<PlannerTask>();
@@ -185,6 +199,15 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   const assertReady = () => {
     if (disposed) throw new Error("规划器已关闭。");
     if (!loaded) throw new Error("正在读取历史计算任务，请稍候。");
+  };
+  /**
+   * 订正 2026-10-07（PR #34 评审）：任务、导入与算力标定三者互斥，判定收敛到一处。
+   * 原实现在五个入口各写一遍 `state.activeTaskId !== null || importing`，标定没有对应的忙碌标记，
+   * 所以反向不成立——标定期间可以照常启动计算。
+   */
+  const assertExclusive = (action: string) => {
+    if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+    if (calibrating) throw new Error(`算力基准测试进行中，无法${action}。`);
   };
   // 草稿只封装输入与空检查点；下载不触发计算，也不写入任务历史。
   const createTaskFile = (request: BlueprintPlannerRequest, taskId = createUuid()): BlueprintPlannerTaskFile => ({
@@ -518,6 +541,10 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
             : Math.min(selection.maximumArea ?? sharedArea, sharedArea);
           const cappedMaximum = sharedMaximum === undefined ? regionCapArea
             : regionCapArea === undefined ? sharedMaximum : Math.min(sharedMaximum, regionCapArea);
+          // 订正 2026-10-07（PR #34 评审，上游维护者口径）：面积上界不再由用户指定。
+          // 维护者原话：「初始面积上限不是一个好选项，这个选项不应该暴露给用户。不是什么都要让用户去调。
+          // 这个直接设置为2倍设备面积就好。所以这个改动我不会接受。」
+          // 于是 BlueprintPlannerOptions.areaLimit 与界面输入一并移除，默认上界固定取「设备面积 × 2」。
           // 订正 2026-10-06：界面现在可直接给定面积上界（BlueprintPlannerOptions.areaLimit）。
           // 它并入同一道取最小值，因此搜索开局就在目标尺寸内进行，跳过「每轮只减 1 格」的渐进收缩；
           // 用户给的上界若比算法自身的更松，也不会放宽任何既有约束。
@@ -526,26 +553,27 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           //     理论面积 = 产线设备本体 + 连接线数量（见 resolvePlannerTheoreticalArea）；
           //   · 用户显式指定时**以用户值为准**，不再夹取——形状枚举本身仍受基地可放置范围约束
           //     （breadthOutlines 的 cap），因此不会产生超出基地的盒子。
-          const requestedAreaLimit = task.file.request.options.areaLimit;
-          const userCapArea = Number.isSafeInteger(requestedAreaLimit) && requestedAreaLimit! > 0 ? requestedAreaLimit! : undefined;
-          const theoreticalArea = resolvePlannerTheoreticalArea(workspace.registry, task.file.request.plan).totalCells;
-          const suggestedCapArea = theoreticalArea * PLANNER_DEFAULT_AREA_LIMIT_MULTIPLE;
-          const defaultCapArea = regionCapArea === undefined ? suggestedCapArea : Math.min(regionCapArea, suggestedCapArea);
-          const maximumArea = userCapArea !== undefined ? userCapArea
-            : cappedMaximum === undefined ? defaultCapArea
-              : defaultCapArea === undefined ? cappedMaximum : Math.min(cappedMaximum, defaultCapArea);
           let shapeKey: string | undefined;
           let targetOutline: { readonly width: number; readonly height: number } | undefined;
           const requestKey = plannerRequestKey(selection.request);
           const bestSeed = point.best?.candidate.seed;
           const source = selection.seed ?? (bestSeed?.requestKey === requestKey ? bestSeed : undefined);
+          // 尺寸枚举至少要留下固定设施能容纳的盒子：低于最小盒时 breadthOutlines 返回空数组，
+          // 搜索会彻底失去形状引导（原蓝图优化任务被 2 格上限压死就是这个后果），故最小盒面积参与兜底。
+          let minimum = minimumCache.get(requestKey);
+          if (!minimum) {
+            minimum = fixedOutlineMinimum(workspace.registry,
+              source?.network.nodes ?? createProductionNetwork(workspace.registry, selection.request).nodes);
+            minimumCache.set(requestKey, minimum);
+          }
+          const deviceArea = resolvePlannerDeviceArea(workspace.registry, task.file.request.plan);
+          // 设备面积为 0 表示这份任务解析不出任何产线设备（原蓝图优化任务的 recipes 为空），
+          // 此时不施加默认上界：0 或 2 格这种上界会让「按已证最优面积逐格收缩」的策略彻底失效。
+          const defaultCapArea = deviceArea === 0 ? undefined
+            : Math.max(deviceArea * PLANNER_DEFAULT_AREA_DEVICE_MULTIPLE, minimum.width * minimum.height);
+          const maximumArea = cappedMaximum === undefined ? defaultCapArea
+            : defaultCapArea === undefined ? cappedMaximum : Math.min(cappedMaximum, defaultCapArea);
           if (maximumArea !== undefined) {
-            let minimum = minimumCache.get(requestKey);
-            if (!minimum) {
-              minimum = fixedOutlineMinimum(workspace.registry,
-                source?.network.nodes ?? createProductionNetwork(workspace.registry, selection.request).nodes);
-              minimumCache.set(requestKey, minimum);
-            }
             const cacheKey = `${maximumArea}/${minimum.width}/${minimum.height}/${outlineCap?.width ?? 0}x${outlineCap?.height ?? 0}`;
             let shapes = outlineCache.get(cacheKey);
             if (!shapes) { shapes = breadthOutlines(maximumArea, minimum, outlineCap); outlineCache.set(cacheKey, shapes); }
@@ -891,6 +919,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
   //   }
   function launch(task: PlannerTask, evaluations: number, concurrency: number | "auto" = task.file.request.options.concurrency ?? 1): void {
     if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+    // 订正 2026-10-07（PR #34 评审）：launch 是启动与续算的唯一出口，标定期间必须拦住它。
+    if (calibrating) throw new Error("算力基准测试进行中，无法启动计算。");
     // AI-REMOVED 2026-09-30:
     // Reason: 改为提案预算与真实累计计数，预览保留任务窗口。
     // Trigger: 用户批准本轮接口与交互调整。
@@ -920,6 +950,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
 
   async function save(task: PlannerTask): Promise<void> {
     if (state.activeTaskId !== null || task.running !== null || importing) throw new Error("请等待当前计算、保存或导入结束。");
+    // 订正 2026-10-07（PR #34 评审）：保存要跑一次真实仿真校验，同样不能与标定抢算力。
+    if (calibrating) throw new Error("算力基准测试进行中，无法保存蓝图。");
     const result = task.file.checkpoint.result;
     if (result === null || result.blueprint.blueprintId === task.file.checkpoint.savedBlueprintId) throw new Error("当前没有可保存的新结果。");
     runInAction(() => { state.activeTaskId = task.file.taskId; });
@@ -965,7 +997,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
     actions: {
       async inspectBlueprint(blueprint, activeActivityIds, signal) {
         await ready; assertReady();
-        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        assertExclusive("识别蓝图");
         signal?.throwIfAborted();
         try {
           if (!workspace.simulation) throw new Error("仿真服务不可用。");
@@ -986,7 +1018,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
           return !configured?.itemId || boundary.itemId !== null && boundary.itemId !== configured.itemId || configured.kind !== boundary.kind;
         })) throw new Error("请补全所有边界物品，并保留蓝图中已有的物品配置。");
         assertReady();
-        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        assertExclusive("识别蓝图");
         importing = true;
         try {
           if (!workspace.simulation) throw new Error("仿真服务不可用。");
@@ -1019,23 +1051,34 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         assertReady();
         // 标定必须独占算力：与正在运行的任务同时抢核，测出来的曲线是两者混合的结果，结论无效。
         if (state.activeTaskId !== null || importing) throw new Error("请等待当前计算、保存或导入结束，再进行算力基准测试。");
+        // 订正 2026-10-07（PR #34 评审）：重复触发时第二路标定会污染前一路的测量。
+        if (calibrating) throw new Error("算力基准测试进行中，请等待其结束后重试。");
         const hints = options.resourceHints ?? browserPlannerResources();
-        const report = await calibratePlannerCapacity(options2 => probeBrowserPlannerCapacity(options2),
-          { request, engineKind: "dense-v2", confirm, onProgress, resourceHints: hints,
-            windowMs: CAPACITY_WINDOW_MS, maxLevels: CAPACITY_MAX_LEVELS,
-            // 2026-10-06：布局并发测完后，用真实 WebGPU 量出 GPU 布线的交叉规模。
-            // 这一步决定 GPU 通道的准入阈值，缺了它 GPU 在真实布局里永远不会被选中。
-            measureGpuCrossover: (progress, signal) => measureGpuCrossover({
-              scales: GPU_CROSSOVER_SCALES,
-              ...(progress ? { onProgress: progress } : {}), ...(signal ? { signal } : {}) }) });
-        savePlannerCapacity({ signature: plannerCapacitySignature(hints.hardwareConcurrency, hints.deviceMemory), report });
-        return report;
+        // 订正 2026-10-07（PR #34 评审）：标定期间登记忙碌状态，并把 Host 的取消信号接进探针，
+        // 使 dispose 能真正终止这场测量（原先探针独立运行，Host 销毁后仍在抢核）。
+        calibrating = true;
+        try {
+          const probe = options.capacityProbe ?? ((probeOptions: PlannerCapacityProbeOptions) => probeBrowserPlannerCapacity(probeOptions));
+          const report = await calibratePlannerCapacity(probe,
+            { request, engineKind: "dense-v2", confirm, onProgress, resourceHints: hints,
+              windowMs: CAPACITY_WINDOW_MS, maxLevels: CAPACITY_MAX_LEVELS,
+              signal: calibration.signal,
+              // 2026-10-06：布局并发测完后，用真实 WebGPU 量出 GPU 布线的交叉规模。
+              // 这一步决定 GPU 通道的准入阈值，缺了它 GPU 在真实布局里永远不会被选中。
+              measureGpuCrossover: (progress, signal) => measureGpuCrossover({
+                scales: GPU_CROSSOVER_SCALES,
+                ...(progress ? { onProgress: progress } : {}), ...(signal ? { signal } : {}) }) });
+          savePlannerCapacity({ signature: plannerCapacitySignature(hints.hardwareConcurrency, hints.deviceMemory), report });
+          return report;
+        } finally { calibrating = false; }
       },
       start(request) {
         assertReady();
         if (request.blueprintSource) throw new Error("请先识别蓝图，再继续已建立基线的任务。");
         validateTaskRequest(workspace.registry, request);
-        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        // 订正 2026-10-07（PR #34 评审）：必须在这里拦住标定。launch 虽然也拦，
+        // 但那时任务已写进 tasks，会留下一个永远起不来的幽灵任务。
+        assertExclusive("启动新任务");
         const id = createUuid();
         // AI-REMOVED 2026-10-04:
         // Reason: 启动与草稿导出共用任务文件封装，避免格式和初始计数分叉。
@@ -1075,7 +1118,7 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
         notify();
       },
       async importTask(file) {
-        if (state.activeTaskId !== null || importing) throw new Error("已有任务正在计算、保存或导入。");
+        assertExclusive("导入任务");
         importing = true;
         try {
           await ready;
@@ -1146,6 +1189,8 @@ export function createBlueprintPlannerHost(workspace: WorkspaceContract, options
       disposed = true;
       if (notificationTimer !== null) { clearTimeout(notificationTimer); notificationTimer = null; }
       restorationAbort.abort();
+      // 订正 2026-10-07（PR #34 评审）：销毁 Host 必须同时终止算力标定的独立探针。
+      calibration.abort();
       for (const task of tasks.values()) { task.abort.abort(); persist(task); }
       for (const current of new Set([worker, ...workers.values()])) current.dispose();
       if (workspace.blueprintPlanner === host) workspace.blueprintPlanner = null;

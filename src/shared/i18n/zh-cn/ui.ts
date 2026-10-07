@@ -101,8 +101,10 @@ const UI: Record<string, string> = {
     "eda.warehouseStartup": "仓库与准入口提供启动物品",
     "eda.budget": "本轮规划时长（秒）",
     "eda.evaluationsPerRound": "单轮最大尝试次数（万次）",
-    "eda.areaLimit": "面积上界（格）",
-    "eda.theoreticalFootprint": "设备本体与连接线理论占用下界 {count} 格；留空时上界默认取其 3 倍，且不超过基地可放置面积",
+    // AI-REMOVED 2026-10-07: 面积上界不再暴露给用户（PR #34 评审）。Risk: Low。Human Review: Required
+    // Original code:
+    // "eda.areaLimit": "面积上界（格）",
+    // "eda.theoreticalFootprint": "设备本体与连接线理论占用下界 {count} 格；留空时上界默认取其 3 倍，且不超过基地可放置面积",
     "eda.occupiedCells": "盒内占用 {count} 格",
     "eda.utilization": "盒内利用率 {percent}%",
     "eda.concurrency": "CPU+GPU 并行计算",

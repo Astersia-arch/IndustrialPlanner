@@ -67,6 +67,9 @@ export interface BlueprintPlannerOptions {
   /**
    * 用户指定的搜索面积上界（格）。
    *
+   * 订正 2026-10-07（PR #34 评审）：上游维护者否决了这个字段的存在——初始面积上界不应对用户暴露，
+   * 未指定时由 Host 直接取「设备面积 × 2」。字段已删除，以下原文仅作历史记录。
+   *
    * 2026-10-06：EDA 的默认收缩策略是「每轮只允许比已证最优小 1 格」
    * （见 search-portfolio.ts 的 maximumArea = bestArea - 1）。逐格逼近虽然单调安全，
    * 但从 288 格走到 270 格需要连续 18 次「缩一格且布局成功」，任何一次失败就会停住，
@@ -76,7 +79,13 @@ export interface BlueprintPlannerOptions {
    * 生效时该值会与「基地可放置面积」「本任务已证最优面积」一并取最小值；
    * 小于设备理论占用（所有设备 footprint 之和）时无解，界面按该下界校验。
    */
-  readonly areaLimit?: number;
+  // AI-REMOVED 2026-10-07:
+  // Reason: 面积上界不再由用户指定（维护者口径：未指定时直接取 2 倍设备面积）。
+  // Trigger: PR #34 评审。Evidence: 全仓库唯一写入点是已移除的界面输入框。
+  // Replacement: blueprint-planner-host.ts 的 defaultCapArea（resolvePlannerDeviceArea × 2）。
+  // Risk: 旧任务文件若带 areaLimit 会被静默忽略（解析不做校验），不影响加载。Human Review: Required
+  // Original code:
+  // readonly areaLimit?: number;
   // AI-REMOVED 2026-10-06:
   // Reason: 机型容量被写进可移植的任务文件是错位的，而且这两个字段从未被写入过：
   //         calibratedWorkers / calibratedVerifiers 全仓库只有读取点，没有写入点，
@@ -180,6 +189,9 @@ export interface BlueprintPlannerMetrics {
    * （传送带/管道段数更多），而物流成本已由 secondary 的 lengthPenalty 单独度量；
    * 若再让「利用率高者优」，等于奖励冗长布线，与长度惩罚方向相反。
    * 面积仍是唯一首要目标，紧凑度由 outline 盒子与用户指定的 areaLimit 负责。
+   *
+   * 订正 2026-10-07（PR #34 评审）：上面这句里的「用户指定的 areaLimit」已不存在——面积上界不再
+   * 暴露给用户，未指定时由 Host 取「设备面积 × 2」。紧密度仍由 outline 盒子负责，该句其余部分成立。
    */
   readonly occupiedCells?: number;
   /** occupiedCells / area，取值 0~1；用于一眼看出盒内空置比例。 */

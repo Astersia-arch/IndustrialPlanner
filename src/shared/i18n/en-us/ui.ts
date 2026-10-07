@@ -101,8 +101,10 @@ const UI: Record<string, string> = {
     "eda.warehouseStartup": "Depot supply through admission ports",
     "eda.budget": "Search budget (seconds)",
     "eda.evaluationsPerRound": "Maximum attempts per round (×10,000)",
-    "eda.areaLimit": "Area upper bound (cells)",
-    "eda.theoreticalFootprint": "Devices plus links footprint floor: {count} cells; left empty, the upper bound defaults to 3x and never exceeds the base placeable area",
+    // AI-REMOVED 2026-10-07: the area upper bound is no longer user-facing (PR #34 review). Risk: Low。Human Review: Required
+    // Original code:
+    // "eda.areaLimit": "Area upper bound (cells)",
+    // "eda.theoreticalFootprint": "Devices plus links footprint floor: {count} cells; left empty, the upper bound defaults to 3x and never exceeds the base placeable area",
     "eda.occupiedCells": "Occupied {count} cells",
     "eda.utilization": "Box utilization {percent}%",
     "eda.concurrency": "CPU+GPU parallel computing",

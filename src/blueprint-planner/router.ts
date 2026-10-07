@@ -91,6 +91,17 @@ interface PlannerChainRollback {
   readonly cells: readonly PlannerRouteCellSnapshot[];
   readonly paths: readonly { readonly key: number; readonly kind: LogisticsKind; readonly value: RouteCell }[];
   readonly removed: readonly { readonly index: number; readonly route: PlannerRouteRecord }[];
+  /** 订正 2026-10-07：被清格摘除索引的实体本体。压缩成功时必须把它们从 generated 里去掉。 */
+  readonly entities: readonly WorldEntity[];
+}
+
+/** 订正 2026-10-07：commit 对既有实体的就地改写，供压缩回滚逆向重放。 */
+interface PlannerEntityMutation {
+  readonly entity: WorldEntity;
+  readonly definitionId: string;
+  readonly rotation: WorldEntity["rotation"];
+  readonly cell: RouteCell;
+  readonly crossed: boolean;
 }
 
 export class PlannerRouter {
@@ -114,6 +125,21 @@ export class PlannerRouter {
   private readonly paths = new Map<number, Map<LogisticsKind, RouteCell>>();
   private readonly overlap = new Map<string, boolean>();
   private readonly generated: WorldEntity[] = [];
+  /**
+   * 订正 2026-10-07（PR #34 评审「线路压缩没有同步处理实体」）：
+   * 实体 id 原为 `eda-route-${generated.length}`，靠「数组只增不减」隐含保证唯一。
+   * 压缩成功现在会从数组中间摘除旧实体，长度回退会让后续 id 与存活实体重复，
+   * 故改为单调递增序列号：不摘除时编号与原实现完全一致，摘除后也不再重复。
+   */
+  private entitySerial = 0;
+  /**
+   * 订正 2026-10-07（同上）：commit 遇到已被同种物流占用的格子时，会把那个既有实体就地改写成
+   * 连接器（definitionId / rotation 与 RouteCell.crossed 都被改写）。原回滚只还原网格与索引，
+   * 于是「压缩未变短」会把这处改写永久留下。这里按发生顺序记账，回滚时逆向重放；
+   * 只在压缩阶段记账，避免普通布线过程无限累积。
+   */
+  private readonly entityMutations: PlannerEntityMutation[] = [];
+  private journaling = false;
   private readonly bounds: GridRect;
   private readonly escapes = new Map<string, GridPoint>();
   private readonly generalLogistics = new Set<string>();
@@ -176,6 +202,8 @@ export class PlannerRouter {
     const ports = this.portIndex();
     let improved = 0;
     const considered = new Set<number>();
+    // 订正 2026-10-07：压缩阶段才需要对实体改写记账（见 entityMutations 说明）。
+    this.journaling = true;
     for (let index = 0; index < this.routes.length; index++) {
       if (considered.has(index)) continue;
       considered.add(index);
@@ -205,6 +233,7 @@ export class PlannerRouter {
         if (!kind) fail(`压缩线路缺少端口定义：${this.routes[entry]!.sourcePort}`);
         return kind;
       });
+      const journalMark = this.entityMutations.length;
       const rollback = this.removeChain(chain, kinds);
       let replaced = false;
       try {
@@ -216,9 +245,27 @@ export class PlannerRouter {
         // 压缩失败不是候选失败；预算取消与程序错误必须继续上抛。
         if (error instanceof DOMException || !(error instanceof PlannerCandidateError)) throw error;
       }
-      if (replaced) { improved++; continue; }
-      this.restoreChain(rollback, kinds);
+      if (replaced) {
+        // 订正 2026-10-07（PR #34 评审）：成功路径必须同时摘掉旧链路的实体。原实现只删了 paths 索引
+        // 与线路记录，generated 里仍留着旧绕行实体（评审的最小复现：线路 14 格缩到 6 格，实体却由
+        // 18 增到 24，并留下重叠）。只移除已不再被任何 paths 条目引用的实体，避免误删与其他线路
+        // 共享的交叉格实体；网格占用与 paths 已由 removeChain 与 connectCpu 同步。
+        const dropped = new Set(rollback.entities);
+        if (dropped.size) {
+          const referenced = new Set<WorldEntity>();
+          for (const routed of this.paths.values()) for (const cell of routed.values()) referenced.add(cell.entity);
+          for (let at = this.generated.length - 1; at >= 0; at--) {
+            const entity = this.generated[at]!;
+            if (dropped.has(entity) && !referenced.has(entity)) this.generated.splice(at, 1);
+          }
+        }
+        this.entityMutations.length = journalMark;
+        improved++;
+        continue;
+      }
+      this.restoreChain(rollback, kinds, journalMark);
     }
+    this.journaling = false;
     return improved;
   }
 
@@ -230,7 +277,17 @@ export class PlannerRouter {
    */
   private removeChain(indices: readonly number[], kinds: readonly LogisticsKind[]): PlannerChainRollback {
     const ports = this.portIndex();
+    // 订正 2026-10-07（PR #34 评审：escapeLength: 0 时同一场景无法压缩）：
+    // 端点外侧格只保护「仍被其它线路引用」的那些。原实现无条件保留本链路自己的端点外侧格，
+    // 而生产路径（candidate.ts / blueprint-candidate.ts / reference-analysis.ts 都用 escapeLength: 0）
+    // 里路线端点就是该格，于是清格之后重排的起点/终点仍被自己刚摘除的占用挡着，
+    // connectCpu 直接判定「端口外侧被设备阻挡」，压缩永远失败、只留下清格的副作用。
     const keep = new Set<string>();
+    const shared = new Set<string>();
+    for (const [other, route] of this.routes.entries()) {
+      if (indices.includes(other)) continue;
+      for (const cell of route.cells) shared.add(cellKey(cell));
+    }
     for (const entry of indices) {
       const route = this.routes[entry]!;
       for (const value of [route.sourcePort, route.targetPort]) {
@@ -242,6 +299,8 @@ export class PlannerRouter {
     const routesBefore = this.routes.length;
     const cells: PlannerRouteCellSnapshot[] = [];
     const paths: Array<{ key: number; kind: LogisticsKind; value: RouteCell }> = [];
+    // 订正 2026-10-07：连同实体本体一起收集，压缩成功时逐个从 generated 摘除。
+    const entities: WorldEntity[] = [];
     for (const point of indices.flatMap(entry => this.routes[entry]!.cells)) {
       if (keep.has(cellKey(point))) continue;
       const key = this.grid.cell(point.x, point.y);
@@ -251,6 +310,7 @@ export class PlannerRouter {
         const cell = routed?.get(kind);
         if (!routed || cell === undefined) continue;
         paths.push({ key, kind, value: cell });
+        entities.push(cell.entity);
         routed.delete(kind);
         if (!routed.size) this.paths.delete(key);
         this.grid.updateRoute(key, kindIndex(kind), ROUTE_EMPTY_ENTER, ROUTE_OPEN & 0xffff);
@@ -261,7 +321,7 @@ export class PlannerRouter {
       removed.unshift({ index: entry, route: this.routes[entry]! });
       this.routes.splice(entry, 1);
     }
-    return { routesBefore, entitiesBefore, cells, paths, removed };
+    return { routesBefore, entitiesBefore, cells, paths, removed, entities };
   }
 
   /**
@@ -269,7 +329,15 @@ export class PlannerRouter {
    * 最后按原索引把被摘除的线路记录放回。压缩未变短或复核不通过都必须走这里，
    * 不允许留下"网格占用与线路记录不一致"的中间态。
    */
-  private restoreChain(rollback: PlannerChainRollback, kinds: readonly LogisticsKind[]): void {
+  private restoreChain(rollback: PlannerChainRollback, kinds: readonly LogisticsKind[], journalMark: number): void {
+    // 订正 2026-10-07（PR #34 评审「线路压缩没有同步处理实体」）：commit 会把交叉格上的既有实体
+    // 就地改写成连接器，回滚必须逆向重放这些改写，否则线路记录已还原、实体定义却永久变成连接器。
+    while (this.entityMutations.length > journalMark) {
+      const mutation = this.entityMutations.pop()!;
+      mutation.entity.definitionId = mutation.definitionId;
+      mutation.entity.rotation = mutation.rotation;
+      mutation.cell.crossed = mutation.crossed;
+    }
     while (this.generated.length > rollback.entitiesBefore) this.generated.pop();
     const kept = rollback.routesBefore - rollback.removed.length;
     while (this.routes.length > kept) this.routes.pop();
@@ -676,6 +744,9 @@ export class PlannerRouter {
       const key = this.grid.cell(current.point.x, current.point.y);
       const existing = this.paths.get(key)?.get(kind);
       if (existing !== undefined) {
+        // 订正 2026-10-07：改写前先记账，压缩失败时由 restoreChain 逆向重放（见 entityMutations）。
+        if (this.journaling) this.entityMutations.push({ entity: existing.entity, definitionId: existing.entity.definitionId,
+          rotation: existing.entity.rotation, cell: existing, crossed: existing.crossed });
         existing.entity.definitionId = findLogisticsDevice(this.registry, kind, "connector").id;
         existing.entity.rotation = 0;
         existing.crossed = true;
@@ -684,7 +755,8 @@ export class PlannerRouter {
       }
       const pose = resolveTransportPose(this.registry, kind, opposite(EDGES[current.direction]!), EDGES[direction]!);
       const entity: WorldEntity = {
-        id: `eda-route-${this.generated.length}`, ...pose, position: current.point, config: {}, tags: [],
+        // 订正 2026-10-07：改用单调序列号，压缩摘除实体后不再复用已存在的 id（见 entitySerial）。
+        id: `eda-route-${this.entitySerial++}`, ...pose, position: current.point, config: {}, tags: [],
       };
       this.generated.push(entity);
       const routes = this.paths.get(key) ?? new Map<LogisticsKind, RouteCell>();
